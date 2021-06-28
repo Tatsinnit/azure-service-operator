@@ -16,3 +16,7 @@ testlogs-existing.txt
 hack/generator
 hack/generated
 .git
+# See https://docs.docker.com/engine/reference/builder/#dockerignore-file
+# Put files here that you don't want copied into your bundle's invocation image
+.gitignore
+Dockerfile.tmpl

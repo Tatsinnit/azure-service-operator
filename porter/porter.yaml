@@ -1,0 +1,178 @@
+# This is the configuration for Porter
+# You must define steps for each action, but the rest is optional
+# See https://porter.sh/author-bundles for documentation on how to configure your bundle
+# Uncomment out the sections below to take full advantage of what Porter can do!
+
+name: cnab-poc-aso
+version: 0.1.1
+description: "A Porter bundle that install ASO (Azure service Operator)."
+# TODO: update the registry to your own, e.g. myregistry
+registry: tatsat/
+
+# If you want to customize the Dockerfile in use, uncomment the line below and update the referenced file. 
+# See https://porter.sh/custom-dockerfile/
+#dockerfile: Dockerfile.tmpl
+
+mixins:
+  - exec
+  - kubernetes
+
+install:
+  #  - exec:
+  #     description: "Checking if necessary environment variable exist!!"
+  #     command: ./helpers.sh
+  #     arguments:
+  #       - install
+   - exec:
+      command: bash
+      description: "testing the internal env"
+      suppress-output: false
+      flags:
+        c: '"env"'
+  #  - exec:
+  #     command: bash
+  #     description: "testing the internal env"
+  #     suppress-output: false
+  #     flags:
+  #       c: '"whoami"'
+  #  - exec:
+  #     description: "Using kubectl in an exec to demonstrate it works."
+  #     command: bash
+  #     flags:
+  #       c: "'kubectl get no'" 
+   - kubernetes:
+      description: "***PRE-REQ:*** Install operator-lifecycle-manager CRD."
+      manifests:
+        - "https://github.com/operator-framework/operator-lifecycle-manager/releases/download/v0.17.0/crds.yaml"
+      wait: true
+   - kubernetes:
+      description: "***PRE-REQ:*** Install operator-lifecycle-manager (olm)."
+      manifests:
+        - "https://github.com/operator-framework/operator-lifecycle-manager/releases/download/v0.17.0/olm.yaml"
+      wait: true
+   - kubernetes:
+      description: "***PRE-REQ:*** Install operator resource and namespaces."
+      manifests:
+        - "https://operatorhub.io/install/azure-service-operator.yaml"
+      wait: true
+   - kubernetes:
+      description: "***STEP-1:*** Create the Issuer and Certificate cert-manager resources."
+      manifests:
+        - "https://github.com/jetstack/cert-manager/releases/download/v0.12.0/cert-manager.yaml"
+      wait: true
+   - exec:
+      description: "***STEP-2:*** Check if the cert-manager pods are ready."
+      command: bash
+      flags:
+        c: "'kubectl rollout status -n cert-manager deploy/cert-manager-webhook'"
+   - kubernetes:
+      description: "***STEP-3:*** Create the Issuer and Certificate cert-manager resources."
+      manifests:
+        - /cnab/app/manifests/Issuerandcertmanager.yaml
+      wait: true
+   - kubernetes:
+      description: "***STEP-4:*** Create azureoperatorsettings within the operators Namespace."
+      manifests:
+        - /cnab/app/manifests/azureoperatorsettings.yaml
+      wait: true
+   - exec:
+      description: "***FINAL STEP:*** Azure Service Operator pod running in your cluster."
+      command: bash
+      flags:
+        c: "'kubectl get pods -n operators'"
+  #  - exec:
+  #     description: "Cert manager."
+  #     command: bash
+  #     flags:
+  #       c: "'kubectl apply -f https://github.com/jetstack/cert-manager/releases/download/v0.12.0/cert-manager.yaml'"
+  #  - exec:
+  #     command: bash
+  #     description: "using helm3 in an exec as well"
+  #     suppress-output: false
+  #     flags:
+  #       c: "'helm3 version'"
+upgrade:
+  - exec:
+      description: "World 2.0"
+      command: ./helpers.sh
+      arguments:
+        - upgrade
+
+uninstall:
+  - exec:
+      description: "Uninstall Hello World"
+      command: ./helpers.sh
+      arguments:
+        - uninstall
+
+# Below is an example of how to define credentials
+# See https://porter.sh/author-bundles/#credentials
+credentials:
+  - name: SUBSCRIPTION_ID
+    type: string
+    env: POC_AZURE_SUBSCRIPTION_ID
+  - name: CLIENT_ID
+    env: POC_AZURE_CLIENT_ID
+  - name: TENANT_ID
+    env: POC_AZURE_TENANT_ID
+  - name: CLIENT_SECRET
+    env: POC_AZURE_CLIENT_SECRET
+  - name: kubeconfig
+    path: /root/.kube/config
+
+# Below is an example of how to define parameters
+# See https://porter.sh/author-bundles/#parameters
+# parameters:
+#  - name: client_id
+#    description: "Test cliend parameter."
+#    default: $AZURE_CLIENT_ID
+#    type: string
+
+# The following values are consumed by the Azure Portal and turned into visual blades and UI elements.
+custom:
+  com.azure.creatuidef:
+    blades:
+      Kubernetes:
+        displayOrder: 1
+        label: Kubernetes Properties
+      Azure:
+        displayOrder: 2
+        label: Azure Service Principals
+    elements:
+      - name: kubeconfig
+        tooltip: A valid Kubernetes config for the Kuberentes cluster to install Kubeflow
+        displayName: Kubernetes Configuration
+        displayOrder: 1
+        uitype: Microsoft.Common.TextBox
+        bladename: Kubernetes
+      - name: deploymentTime
+        hide: true
+      - name: cnab_installation_name
+        displayOrder: 1
+        tooltip: The CNAB Bundle installation name
+        displayName: Installation Name
+        bladename: Kubernetes
+      - name: SUBSCRIPTION_ID
+        tooltip: "The id for the Azure subscription to use"
+        displayName: Subscription ID
+        displayOrder: 2
+        uitype: Microsoft.Common.PasswordBox
+        bladename: Azure
+      - name: CLIENT_ID
+        tooltip: "The Azure SP client or app id used by the Azure Service Operator"
+        displayName: Client or app ID
+        displayOrder: 2
+        uitype: Microsoft.Common.PasswordBox
+        bladename: Azure
+      - name: TENANT_ID
+        tooltip: "The Azure tenant id used by the Azure Service Operator"
+        displayName: Azure tenant ID
+        displayOrder: 2
+        uitype: Microsoft.Common.PasswordBox
+        bladename: Azure        
+      - name: CLIENT_SECRET
+        tooltip: "The Azure SP client secret or password used by the Azure Service Operator"
+        displayName: Azure client secret
+        displayOrder: 2
+        uitype: Microsoft.Common.PasswordBox
+        bladename: Azure        
