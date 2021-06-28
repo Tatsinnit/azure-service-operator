@@ -3,7 +3,7 @@
 # See https://porter.sh/author-bundles for documentation on how to configure your bundle
 # Uncomment out the sections below to take full advantage of what Porter can do!
 
-name: cnab-poc-aso
+name: cnab-porter-aso
 version: 0.1.1
 description: "A Porter bundle that install ASO (Azure service Operator)."
 # TODO: update the registry to your own, e.g. myregistry
