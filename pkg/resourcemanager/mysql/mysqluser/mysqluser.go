@@ -6,10 +6,10 @@ package mysqluser
 import (
 	"context"
 	"database/sql"
-	"fmt"
 
 	mysqlmgmt "github.com/Azure/azure-sdk-for-go/services/mysql/mgmt/2017-12-01/mysql"
 	_ "github.com/go-sql-driver/mysql" //mysql drive link
+	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/Azure/azure-service-operator/api/v1alpha2"
@@ -56,8 +56,10 @@ func (m *MySqlUserManager) GetDB(ctx context.Context, resourceGroupName string, 
 
 // GetServer retrieves a server
 func (m *MySqlUserManager) GetServer(ctx context.Context, resourceGroupName, serverName string) (mysqlmgmt.Server, error) {
-	client := mysqlserver.NewMySQLServerClient(m.Creds, m.SecretClient, m.Scheme)
-	return client.GetServer(ctx, resourceGroupName, serverName)
+	// TODO: It's only ok to pass nil for KubeReader here because we know it's not needed to perform GET server.
+	// TODO: Ideally this would be done via a different struct than the one that also does MySQLServer reconciles
+	client := mysqlserver.MakeMySQLServerAzureClient(m.Creds)
+	return client.Get(ctx, resourceGroupName, serverName)
 }
 
 // CreateUser creates user with secret credentials
@@ -66,10 +68,10 @@ func (m *MySqlUserManager) CreateUser(ctx context.Context, secret map[string][]b
 	newPassword := string(secret[MSecretPasswordKey])
 
 	if err := helpers.FindBadChars(newUser); err != nil {
-		return "", fmt.Errorf("Problem found with username: %v", err)
+		return "", errors.Wrap(err, "Problem found with username")
 	}
 	if err := helpers.FindBadChars(newPassword); err != nil {
-		return "", fmt.Errorf("Problem found with password: %v", err)
+		return "", errors.Wrap(err, "Problem found with password")
 	}
 
 	tsql := "CREATE USER IF NOT EXISTS ? IDENTIFIED BY ? "

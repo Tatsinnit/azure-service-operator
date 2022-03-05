@@ -1,13 +1,16 @@
 {
 	"folders": [
-		{ 
+		{
 			"path": "."
 		},
 		{
-			"path": "hack/generated"
+			"path": "hack/crossplane"
 		},
 		{
-			"path": "hack/generator"
+			"path": "v2"
+		},
+		{
+			"path": "v2/tools/generator"
 		}
 	],
 	"settings": {

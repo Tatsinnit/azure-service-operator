@@ -10,12 +10,14 @@ import (
 	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2019-09-01/network"
+	"github.com/pkg/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+
 	azurev1alpha1 "github.com/Azure/azure-service-operator/api/v1alpha1"
 	"github.com/Azure/azure-service-operator/pkg/errhelp"
 	"github.com/Azure/azure-service-operator/pkg/helpers"
 	"github.com/Azure/azure-service-operator/pkg/resourcemanager"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 )
 
 // Ensure makes sure that an VNet instance exists
@@ -48,7 +50,7 @@ func (g *AzureVNetManager) Ensure(ctx context.Context, obj runtime.Object, opts 
 	}
 
 	instance.Status.Provisioning = true
-	result, err := g.CreateVNet(
+	_, err = g.CreateVNet(
 		ctx,
 		location,
 		resourceGroup,
@@ -60,7 +62,7 @@ func (g *AzureVNetManager) Ensure(ctx context.Context, obj runtime.Object, opts 
 		azerr := errhelp.NewAzureError(err)
 		instance.Status.Message = err.Error()
 
-		if result.Response.Response != nil && result.Response.Response.StatusCode == http.StatusBadRequest {
+		if azerr.Code == http.StatusBadRequest {
 			instance.Status.Provisioning = false
 			return true, nil
 		}
@@ -101,7 +103,7 @@ func (g *AzureVNetManager) Ensure(ctx context.Context, obj runtime.Object, opts 
 			return true, nil
 		}
 
-		return false, fmt.Errorf("Error creating VNet: %s, %s - %v", resourceGroup, resourceName, err)
+		return false, errors.Wrapf(err, "Error creating VNet: %s, %s", resourceGroup, resourceName)
 	}
 
 	return false, nil

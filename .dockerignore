@@ -13,8 +13,7 @@ cover-existing.html
 coverage-existing.txt
 report-existing.xml
 testlogs-existing.txt
-hack/generator
-hack/generated
+v2
 .git
 # See https://docs.docker.com/engine/reference/builder/#dockerignore-file
 # Put files here that you don't want copied into your bundle's invocation image

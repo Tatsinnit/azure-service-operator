@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+  namespace: system
+spec:
+  template:
+    spec:
+      nodeSelector:
+        "kubernetes.io/os": linux
+      containers:
+        # Change the value of image field below to your controller image URL
+        - image: localhost:5000/azureserviceoperator:latest
+          name: manager
+          env:
+            - name: AZURE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: aso-controller-settings
+                  key: AZURE_CLIENT_ID
+            - name: AZURE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: aso-controller-settings
+                  key: AZURE_CLIENT_SECRET
+                  optional: true
+            - name: AZURE_TENANT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: aso-controller-settings
+                  key: AZURE_TENANT_ID
+            - name: AZURE_SUBSCRIPTION_ID
+              valueFrom:
+                secretKeyRef:
+                  name: aso-controller-settings
+                  key: AZURE_SUBSCRIPTION_ID
+            - name: AZURE_TARGET_NAMESPACES
+              valueFrom:
+                secretKeyRef:
+                  name: aso-controller-settings
+                  key: AZURE_TARGET_NAMESPACES
+                  optional: true
+            - name: AZURE_OPERATOR_MODE
+              valueFrom:
+                secretKeyRef:
+                  name: aso-controller-settings
+                  key: AZURE_OPERATOR_MODE
+                  optional: true
+            - name: AZURE_SYNC_PERIOD
+              valueFrom:
+                secretKeyRef:
+                  name: aso-controller-settings
+                  key: AZURE_SYNC_PERIOD
+                  optional: true
+            # Used for setting the operator-namespace annotation (and
+            # for aad-pod-identity once we support it).
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace

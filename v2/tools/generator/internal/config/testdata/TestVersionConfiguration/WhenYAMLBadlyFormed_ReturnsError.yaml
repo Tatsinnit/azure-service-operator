@@ -1,0 +1,9 @@
+---
+Person:
+  $nameInNextVersion: Party
+Address:
+  $nameInNextVersion: Location
+Student:
+  $nameInNextVersion: StudentRole
+bad: "value"
+---

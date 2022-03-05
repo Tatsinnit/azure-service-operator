@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//go:build all || psql
 // +build all psql
 
 package controllers
@@ -27,7 +28,7 @@ func TestPSQLDatabaseController(t *testing.T) {
 
 	// Add any setup steps that needs to be executed before each test
 	rgName = tc.resourceGroupName
-	rgLocation = tc.resourceGroupLocation
+	rgLocation = "eastus"
 
 	postgreSQLServerName = GenerateTestResourceNameWithRandom("psql-srv", 10)
 
@@ -100,5 +101,4 @@ func TestPSQLDatabaseController(t *testing.T) {
 	EnsureDelete(ctx, t, tc, postgreSQLFirewallRuleInstance)
 
 	EnsureDelete(ctx, t, tc, postgreSQLServerInstance)
-
 }

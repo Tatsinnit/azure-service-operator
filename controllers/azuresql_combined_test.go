@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//go:build all || azuresqlserver || azuresqlservercombined
 // +build all azuresqlserver azuresqlservercombined
 
 package controllers
@@ -11,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	sql "github.com/Azure/azure-sdk-for-go/services/preview/sql/mgmt/v3.0/sql"
-	"github.com/stretchr/testify/assert"
+	"github.com/Azure/azure-sdk-for-go/services/preview/sql/mgmt/v3.0/sql"
+	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -21,20 +22,22 @@ import (
 	"github.com/Azure/azure-service-operator/pkg/errhelp"
 	"github.com/Azure/azure-service-operator/pkg/resourcemanager/azuresql/azuresqlshared"
 	"github.com/Azure/azure-service-operator/pkg/resourcemanager/config"
+	resourcemanagerkeyvaults "github.com/Azure/azure-service-operator/pkg/resourcemanager/keyvaults"
 	"github.com/Azure/azure-service-operator/pkg/secrets"
+	testcommon "github.com/Azure/azure-service-operator/test/common"
 )
 
 func TestAzureSqlServerCombinedHappyPath(t *testing.T) {
 	t.Parallel()
 	defer PanicRecover(t)
 	ctx := context.Background()
-	assert := assert.New(t)
+	require := require.New(t)
 	var err error
 
 	// Add any setup steps that needs to be executed before each test
 	rgName := tc.resourceGroupName
 	sqlServerName := GenerateTestResourceNameWithRandom("sqlserver", 10)
-	rgLocation := "westus2"
+	rgLocation := "westus3"
 	rgLocation2 := "southcentralus"
 	sqlServerTwoName := GenerateTestResourceNameWithRandom("sqlserver-two", 10)
 
@@ -114,7 +117,7 @@ func TestAzureSqlServerCombinedHappyPath(t *testing.T) {
 
 			namespacedName := types.NamespacedName{Name: sqlDatabaseName2, Namespace: "default"}
 			err = tc.k8sClient.Get(ctx, namespacedName, sqlDatabaseInstance2)
-			assert.Equal(nil, err, "get sql database in k8s")
+			require.Equal(nil, err, "get sql database in k8s")
 
 			originalHash := sqlDatabaseInstance2.Status.SpecHash
 
@@ -127,41 +130,41 @@ func TestAzureSqlServerCombinedHappyPath(t *testing.T) {
 			sqlDatabaseInstance2.Spec.MaxSize = &maxSize
 
 			err = tc.k8sClient.Update(ctx, sqlDatabaseInstance2)
-			assert.Equal(nil, err, "updating sql database in k8s")
+			require.Equal(nil, err, "updating sql database in k8s")
 
-			assert.Eventually(func() bool {
+			require.Eventually(func() bool {
 				db := &v1beta1.AzureSqlDatabase{}
 				err = tc.k8sClient.Get(ctx, namespacedName, db)
-				assert.Equal(nil, err, "err getting DB from k8s")
+				require.Equal(nil, err, "err getting DB from k8s")
 				return originalHash != db.Status.SpecHash
 			}, tc.timeout, tc.retry, "wait for sql database to be updated in k8s")
 
-			assert.Eventually(func() bool {
+			require.Eventually(func() bool {
 				db, err := tc.sqlDbManager.GetDB(ctx, rgName, sqlServerName, sqlDatabaseName2)
-				assert.Equal(nil, err, "err getting DB fromAzure")
+				require.Equal(nil, err, "err getting DB fromAzure")
 				return db.Sku != nil && db.Sku.Name != nil && *db.Sku.Name == "Basic"
 			}, tc.timeout, tc.retry, "wait for sql database Sku.Name to be updated in azure")
 
-			assert.Eventually(func() bool {
+			require.Eventually(func() bool {
 				db, err := tc.sqlDbManager.GetDB(ctx, rgName, sqlServerName, sqlDatabaseName2)
-				assert.Equal(nil, err, "err getting DB fromAzure")
+				require.Equal(nil, err, "err getting DB fromAzure")
 				return db.Sku != nil && db.Sku.Tier != nil && *db.Sku.Tier == "Basic"
 			}, tc.timeout, tc.retry, "wait for sql database Sku.Tier to be updated in azure")
 
-			assert.Eventually(func() bool {
+			require.Eventually(func() bool {
 				db, err := tc.sqlDbManager.GetDB(ctx, rgName, sqlServerName, sqlDatabaseName2)
-				assert.Equal(nil, err, "err getting DB fromAzure")
+				require.Equal(nil, err, "err getting DB fromAzure")
 				return db.MaxSizeBytes != nil && *db.MaxSizeBytes == int64(maxSizeMb)*int64(1024)*int64(1024)
 			}, tc.timeout, tc.retry, "wait for sql database MaxSizeBytes to be updated in azure")
 
 			// At this point the DB should be in a stable state, ensure that the right status is set
 			db := &v1beta1.AzureSqlDatabase{}
 			err = tc.k8sClient.Get(ctx, namespacedName, db)
-			assert.Equal(nil, err, "err getting DB from k8s")
+			require.Equal(nil, err, "err getting DB from k8s")
 
-			assert.Equal(false, db.Status.Provisioning)
-			assert.Equal(false, db.Status.FailedProvisioning)
-			assert.Equal(true, db.Status.Provisioned)
+			require.Equal(false, db.Status.Provisioning)
+			require.Equal(false, db.Status.FailedProvisioning)
+			require.Equal(true, db.Status.Provisioned)
 		})
 
 		// Create a database in the new server
@@ -194,13 +197,13 @@ func TestAzureSqlServerCombinedHappyPath(t *testing.T) {
 			// Now update with an invalid retention policy
 			sqlDatabaseInstance3.Spec.ShortTermRetentionPolicy.RetentionDays = -1
 			err = tc.k8sClient.Update(ctx, sqlDatabaseInstance3)
-			assert.Equal(nil, err, "updating sql database in k8s")
+			require.Equal(nil, err, "updating sql database in k8s")
 
 			namespacedName := types.NamespacedName{Name: sqlDatabaseName3, Namespace: "default"}
-			assert.Eventually(func() bool {
+			require.Eventually(func() bool {
 				db := &v1beta1.AzureSqlDatabase{}
 				err = tc.k8sClient.Get(ctx, namespacedName, db)
-				assert.Equal(nil, err, "err getting DB from k8s")
+				require.Equal(nil, err, "err getting DB from k8s")
 				return db.Status.Provisioned == false && strings.Contains(db.Status.Message, errhelp.BackupRetentionPolicyInvalid)
 			}, tc.timeout, tc.retry, "wait for sql database to be updated in k8s")
 		})
@@ -274,7 +277,7 @@ func TestAzureSqlServerCombinedHappyPath(t *testing.T) {
 					ResourceGroup:                rgName,
 					Server:                       sqlServerName,
 					FailoverPolicy:               v1beta1.FailoverPolicyAutomatic,
-					FailoverGracePeriod:          30,
+					FailoverGracePeriod:          60,
 					SecondaryServer:              sqlServerTwoName,
 					SecondaryServerResourceGroup: rgName,
 					DatabaseList:                 []string{sqlDatabaseName1},
@@ -284,9 +287,9 @@ func TestAzureSqlServerCombinedHappyPath(t *testing.T) {
 			EnsureInstance(ctx, t, tc, sqlFailoverGroupInstance)
 
 			// verify secret has been created
-			assert.Eventually(func() bool {
+			require.Eventually(func() bool {
 				key := secrets.SecretKey{Name: sqlFailoverGroupInstance.Name, Namespace: sqlFailoverGroupInstance.Namespace, Kind: "AzureSqlFailoverGroup"}
-				var secrets, err = tc.secretClient.Get(ctx, key)
+				secrets, err := tc.secretClient.Get(ctx, key)
 
 				return err == nil && strings.Contains(string(secrets["azureSqlPrimaryServer"]), sqlServerName)
 			}, tc.timeout, tc.retry, "wait for secret store to show failovergroup server names  ")
@@ -295,22 +298,20 @@ func TestAzureSqlServerCombinedHappyPath(t *testing.T) {
 			sqlFailoverGroupInstance.Spec.FailoverGracePeriod = 0 // GracePeriod cannot be set when policy is manual
 
 			err = tc.k8sClient.Update(ctx, sqlFailoverGroupInstance)
-			assert.Equal(nil, err, "updating sql failover group in k8s")
+			require.Equal(nil, err, "updating sql failover group in k8s")
 
 			failoverGroupsClient, err := azuresqlshared.GetGoFailoverGroupsClient(config.GlobalCredentials())
-			assert.Equal(nil, err, "getting failovergroup client")
+			require.Equal(nil, err, "getting failovergroup client")
 
-			assert.Eventually(func() bool {
+			require.Eventually(func() bool {
 				fog, err := failoverGroupsClient.Get(ctx, rgName, sqlServerName, sqlFailoverGroupName)
-				assert.Equal(nil, err, "err getting failover group from Azure")
+				require.Equal(nil, err, "err getting failover group from Azure")
 				return fog.ReadWriteEndpoint.FailoverPolicy == sql.Manual
 			}, tc.timeout, tc.retry, "wait for sql failover group failover policy to be updated in Azure")
 		})
-
 	})
 
 	t.Run("group4", func(t *testing.T) {
-
 		t.Run("delete failovergroup", func(t *testing.T) {
 			t.Parallel()
 			EnsureDelete(ctx, t, tc, sqlFailoverGroupInstance)
@@ -321,11 +322,9 @@ func TestAzureSqlServerCombinedHappyPath(t *testing.T) {
 			EnsureDelete(ctx, t, tc, sqlDatabaseInstance2)
 			EnsureDelete(ctx, t, tc, sqlDatabaseInstance3)
 		})
-
 	})
 
 	t.Run("group5", func(t *testing.T) {
-
 		t.Run("delete sqlServerInstance", func(t *testing.T) {
 			t.Parallel()
 			EnsureDelete(ctx, t, tc, sqlServerInstance)
@@ -334,7 +333,49 @@ func TestAzureSqlServerCombinedHappyPath(t *testing.T) {
 			t.Parallel()
 			EnsureDelete(ctx, t, tc, sqlServerInstance2)
 		})
-
 	})
+}
 
+func TestAzureSqlServer_KeyVaultSoftDelete_CreateDeleteCreateAgain(t *testing.T) {
+	t.Parallel()
+	defer PanicRecover(t)
+	ctx := context.Background()
+	require := require.New(t)
+
+	rgLocation := "westus3"
+
+	// Create a KeyVault with soft delete enabled that we can use to perform our tests
+	keyVaultName := GenerateAlphaNumTestResourceNameWithRandom("kvsoftdel", 5)
+	objID, err := resourcemanagerkeyvaults.GetObjectID(
+		context.Background(),
+		config.GlobalCredentials(),
+		config.GlobalCredentials().TenantID(),
+		config.GlobalCredentials().ClientID())
+	require.NoError(err)
+
+	err = testcommon.CreateKeyVaultSoftDeleteEnabled(
+		context.Background(),
+		config.GlobalCredentials(),
+		tc.resourceGroupName,
+		keyVaultName,
+		rgLocation,
+		objID)
+	require.NoError(err)
+
+	sqlServerName := GenerateTestResourceNameWithRandom("sqlserver", 10)
+	sqlServerNamespacedName := types.NamespacedName{Name: sqlServerName, Namespace: "default"}
+	sqlServerInstance := v1beta1.NewAzureSQLServer(sqlServerNamespacedName, tc.resourceGroupName, rgLocation)
+	sqlServerInstance.Spec.KeyVaultToStoreSecrets = keyVaultName
+
+	// create and wait
+	RequireInstance(ctx, t, tc, sqlServerInstance)
+
+	EnsureDelete(ctx, t, tc, sqlServerInstance)
+
+	// Recreate with the same name
+	sqlServerInstance = v1beta1.NewAzureSQLServer(sqlServerNamespacedName, tc.resourceGroupName, rgLocation)
+	sqlServerInstance.Spec.KeyVaultToStoreSecrets = keyVaultName
+	RequireInstance(ctx, t, tc, sqlServerInstance)
+
+	EnsureDelete(ctx, t, tc, sqlServerInstance)
 }

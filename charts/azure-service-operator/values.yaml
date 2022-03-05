@@ -1,3 +1,9 @@
+# Create secret or use an existing secret
+createAzureOperatorSecret: true
+
+# api version to use for cert-manager custom resources. Depends on the version of cert-manager which is deployed externally to this chart
+certManagerResourcesAPIVersion: cert-manager.io/v1alpha2
+
 # azureTenantID is the AAD tenant that the subscription is in
 azureTenantID: ""
 # azureSubscriptionID is the Azure Subscription the operator will act against.
@@ -22,6 +28,18 @@ azureUseMI: False
 # azureSecretNamingVersion allows choosing the algorithm used to derive secret names. Version 2 is recommended.
 azureSecretNamingVersion: "2"
 
+# purgeDeletedKeyVaultSecrets determines if the operator should issue a secret Purge request in addition
+# to Delete when deleting secrets in Azure Key Vault. This only applies to secrets that are stored in Azure Key Vault.
+# It does nothing if the secret is stored in Kubernetes.
+purgeDeletedKeyVaultSecrets: False
+
+# recoverSoftDeletedKeyVaultSecrets determines if the operator should issue a secret Recover request when it
+# encounters an "ObjectIsDeletedButRecoverable" error from Azure Key Vault during secret creation. This error
+# can occur when a Key Vault has soft delete enabled and an ASO resource was deleted and recreated with the same name.
+# This only applies to secrets that are stored in Azure Key Vault.
+# It does nothing if the secret is stored in Kubernetes.
+recoverSoftDeletedKeyVaultSecrets: True
+
 # image defines the container image the ASO pod should run
 # Note: This should use the latest released tag number explicitly. If
 # it's ':latest' and someone deploys the chart after a new version has
@@ -30,7 +48,8 @@ azureSecretNamingVersion: "2"
 # corresponding CRD yaml in the cart (and so no CRD in the k8s
 # repository).
 image:
-  repository: mcr.microsoft.com/k8s/azureserviceoperator:1.0.24492
+  repository: mcr.microsoft.com/k8s/azureserviceoperator:1.0.28631
+  kubeRBACProxy: gcr.io/kubebuilder/kube-rbac-proxy:v0.5.0
 
 # installAadPodIdentity determines if the aad-pod-identity subchart should be installed.
 installAadPodIdentity: False

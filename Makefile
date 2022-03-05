@@ -72,6 +72,24 @@ test-no-target-namespaces: generate fmt vet manifests
 		-run TestTargetNamespaces \
 		./controllers/...
 
+# Check that we do the right thing in webhooks-only mode.
+.PHONY: test-webhooks-only-mode
+test-webhooks-only-mode: generate fmt vet manifests
+	TEST_RESOURCE_PREFIX=$(TEST_RESOURCE_PREFIX) TEST_USE_EXISTING_CLUSTER=false REQUEUE_AFTER=20 \
+	AZURE_OPERATOR_MODE=webhooks \
+	go test -v -tags "$(BUILD_TAGS)" -coverprofile=reports/webhooks-only-coverage-output.txt -coverpkg=./... -covermode count -parallel 4 -timeout 45m \
+		-run TestOperatorMode \
+		./controllers
+
+# Check that when there are no target namespaces all namespaces are watched
+.PHONY: test-watchers-only-mode
+test-watchers-only-mode: generate fmt vet manifests
+	TEST_RESOURCE_PREFIX=$(TEST_RESOURCE_PREFIX) TEST_USE_EXISTING_CLUSTER=false REQUEUE_AFTER=20 \
+	AZURE_OPERATOR_MODE=watchers \
+	go test -v -tags "$(BUILD_TAGS)" -coverprofile=reports/watchers-only-coverage-output.txt -coverpkg=./... -covermode count -parallel 4 -timeout 45m \
+		-run TestOperatorMode \
+		./controllers
+
 # Run subset of tests with v1 secret naming enabled to ensure no regression in old secret naming
 .PHONY: test-v1-secret-naming
 test-v1-secret-naming: generate fmt vet manifests
@@ -189,6 +207,7 @@ validate-cainjection-files:
 # Generate manifests for helm and package them up
 .PHONY: helm-chart-manifests
 helm-chart-manifests: LATEST_TAG := $(shell curl -sL https://api.github.com/repos/Azure/azure-service-operator/releases/latest  | jq '.tag_name' --raw-output )
+helm-chart-manifests: KUBE_RBAC_PROXY := gcr.io/kubebuilder/kube-rbac-proxy:v0.5.0
 helm-chart-manifests: generate
 	@echo "Latest released tag is $(LATEST_TAG)"
 	# substitute released tag into values file.
@@ -205,8 +224,13 @@ helm-chart-manifests: generate
 	find ./charts/azure-service-operator/templates/generated/*_customresourcedefinition_* -exec mv '{}' ./charts/azure-service-operator/crds \;
 	# remove namespace as we will let Helm manage it
 	rm charts/azure-service-operator/templates/generated/*_namespace_*
-	# replace hard coded ASO image with Helm templating
+	# replace hard coded ASO and kube-rbac images with Helm templating
 	perl -pi -e s,controller:latest,"{{ .Values.image.repository }}",g ./charts/azure-service-operator/templates/generated/*_deployment_*
+	# Ensure that what we're about to try to replace actually exists (if it doesn't we want to fail)
+	grep -E $(KUBE_RBAC_PROXY) ./charts/azure-service-operator/templates/generated/*_deployment_*
+	perl -pi -e s,$(KUBE_RBAC_PROXY),"{{ .Values.image.kubeRBACProxy }}",g ./charts/azure-service-operator/templates/generated/*_deployment_*
+	# replace hard coded cert-manager version with templating
+	sed -i "s@apiVersion: cert-manager.io/.*@apiVersion: {{ .Values.certManagerResourcesAPIVersion }}@g" ./charts/azure-service-operator/templates/generated/*cert-manager.io*
 	# replace hard coded namespace with Helm templating
 	find ./charts/azure-service-operator/templates/generated/ -type f -exec perl -pi -e s,azureoperator-system,"{{ .Release.Namespace }}",g {} \;
 	# create unique names so each instance of the operator has its own role binding 
@@ -239,7 +263,7 @@ vet:
 # Generate code
 .PHONY: generate
 generate: manifests
-	$(CONTROLLER_GEN) object:headerFile=./hack/boilerplate.go.txt paths=./api/...
+	$(CONTROLLER_GEN) object:headerFile=./v2/boilerplate.go.txt paths=./api/...
 
 .PHONY: install-bindata
 install-bindata:
@@ -303,15 +327,18 @@ endif
 	sed -i'' -e 's@image: .*@image: '"IMAGE_URL"'@' ./config/default/manager_image_patch.yaml
 
 .PHONY: install-kubebuilder
+install-kubebuilder: OS := $(shell go env GOOS)
+install-kubebuilder: ARCH := $(shell go env GOARCH)
+install-kubebuilder: KUBEBUILDER_VERSION := 2.3.1
+install-kubebuilder: KUBEBUILDER_DEST := $(shell go env GOPATH)/kubebuilder
 install-kubebuilder:
 ifeq (,$(shell which kubebuilder))
 	@echo "installing kubebuilder"
-	# download kubebuilder and extract it to tmp
-	curl -sL https://go.kubebuilder.io/dl/2.3.1/$(shell go env GOOS)/$(shell go env GOARCH) | tar -xz -C $(TMPDIR)
-	# move to a long-term location and put it on your path
-	# (you'll need to set the KUBEBUILDER_ASSETS env var if you put it somewhere else)
-	mv $(TMPDIR)/kubebuilder_2.3.1_$(shell go env GOOS)_$(shell go env GOARCH) $(shell go env GOPATH)/kubebuilder
-	export PATH=$$PATH:$(shell go env GOPATH)/kubebuilder/bin
+
+	@echo "Installing kubebuilder ${KUBEBUILDER_VERSION} (${OS} ${ARCH})..."
+	curl -L "https://github.com/kubernetes-sigs/kubebuilder/releases/download/v${KUBEBUILDER_VERSION}/kubebuilder_${KUBEBUILDER_VERSION}_${OS}_${ARCH}.tar.gz" | tar -xz -C $(TMPDIR)/
+	mv "$(TMPDIR)/kubebuilder_${KUBEBUILDER_VERSION}_${OS}_${ARCH}" "${KUBEBUILDER_DEST}"
+	export PATH=$$PATH:${KUBEBUILDER_DEST}/bin
 else
 	@echo "kubebuilder has been installed"
 endif
@@ -335,7 +362,7 @@ install-test-tools: install-tools
 	&& go get github.com/axw/gocov/gocov \
 	&& go get github.com/AlekSi/gocov-xml \
 	&& go get github.com/wadey/gocovmerge \
-	&& go get sigs.k8s.io/kind@v0.9.0
+	&& go get sigs.k8s.io/kind@v0.11.1
 	rm -r $(TEST_TOOLS_MOD_DIR)
 
 .PHONY: install-tools
@@ -351,19 +378,19 @@ install-tools:
     CONTROLLER_GEN=$(shell go env GOPATH)/bin/controller-gen
 
 # Operator-sdk release version
-RELEASE_VERSION ?= v1.0.1
+RELEASE_VERSION ?= v1.11.0
 
 .PHONY: install-operator-sdk
 install-operator-sdk:
 ifeq ($(shell uname -s), Darwin)
-	curl -LO https://github.com/operator-framework/operator-sdk/releases/download/${RELEASE_VERSION}/operator-sdk-${RELEASE_VERSION}-x86_64-apple-darwin
-	chmod +x operator-sdk-${RELEASE_VERSION}-x86_64-apple-darwin && sudo mkdir -p /usr/local/bin/ && sudo cp operator-sdk-${RELEASE_VERSION}-x86_64-apple-darwin /usr/local/bin/operator-sdk && rm operator-sdk-${RELEASE_VERSION}-x86_64-apple-darwin
+	curl -LO https://github.com/operator-framework/operator-sdk/releases/download/${RELEASE_VERSION}/operator-sdk_darwin_amd64
+	chmod +x operator-sdk_darwin_amd64 && sudo mkdir -p /usr/local/bin/ && sudo cp operator-sdk_darwin_amd64 /usr/local/bin/operator-sdk && rm operator-sdk_darwin_amd64
 else
-	curl -LO https://github.com/operator-framework/operator-sdk/releases/download/${RELEASE_VERSION}/operator-sdk-${RELEASE_VERSION}-x86_64-linux-gnu
-	chmod +x operator-sdk-${RELEASE_VERSION}-x86_64-linux-gnu && sudo mkdir -p /usr/local/bin/ && sudo cp operator-sdk-${RELEASE_VERSION}-x86_64-linux-gnu /usr/local/bin/operator-sdk && rm operator-sdk-${RELEASE_VERSION}-x86_64-linux-gnu
+	curl -LO https://github.com/operator-framework/operator-sdk/releases/download/${RELEASE_VERSION}/operator-sdk_linux_amd64
+	chmod +x operator-sdk_linux_amd64 && sudo mkdir -p /usr/local/bin/ && sudo cp operator-sdk_linux_amd64 /usr/local/bin/operator-sdk && rm operator-sdk_linux_amd64
 endif
 
-PREVIOUS_BUNDLE_VERSION ?= 0.37.0
+PREVIOUS_BUNDLE_VERSION ?= 1.0.28631
 
 .PHONY: generate-operator-bundle
 generate-operator-bundle: LATEST_TAG := $(shell curl -sL https://api.github.com/repos/Azure/azure-service-operator/releases/latest  | jq '.tag_name' --raw-output )
@@ -372,10 +399,16 @@ generate-operator-bundle: manifests
 	@echo "Previous bundle version is $(PREVIOUS_BUNDLE_VERSION)"
 	rm -rf "bundle/manifests"
 	kustomize build config/operator-bundle | operator-sdk generate bundle --version $(LATEST_TAG) --channels stable --default-channel stable --overwrite --kustomize-dir config/operator-bundle
-	# This is only needed until CRD conversion support is released in OpenShift 4.6.x/Operator Lifecycle Manager 0.16.x
-	scripts/add-openshift-cert-handling.sh
+	# Building the docker bundle requires a tests/scorecard directory.
+	mkdir -p bundle/tests/scorecard
+	# Remove the webhook service - OLM will create one when installing
+	# the bundle.
+	rm bundle/manifests/azureoperator-webhook-service_v1_service.yaml
 	# Inject the container reference into the bundle.
 	scripts/inject-container-reference.sh "$(PUBLIC_REPO):$(LATEST_TAG)"
+	# Update webhooks to use operator namespace and remove
+	# cert-manager annotations.
+	scripts/update-webhook-references-in-operator-bundle.sh
 	# Include the replaces field with the old version.
 	yq eval -i ".spec.replaces = \"azure-service-operator.v$(PREVIOUS_BUNDLE_VERSION)\"" bundle/manifests/azure-service-operator.clusterserviceversion.yaml
 	# Rename the csv to simplify adding to the community-operators repo for a PR

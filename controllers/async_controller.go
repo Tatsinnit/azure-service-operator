@@ -9,12 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Azure/azure-service-operator/pkg/resourcemanager"
-	"github.com/Azure/azure-service-operator/pkg/resourcemanager/config"
-	"github.com/Azure/azure-service-operator/pkg/secrets"
-	keyvaultsecretlib "github.com/Azure/azure-service-operator/pkg/secrets/keyvault"
-	telemetry "github.com/Azure/azure-service-operator/pkg/telemetry"
-	multierror "github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/go-multierror"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,13 +18,20 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
+	"github.com/Azure/azure-service-operator/pkg/resourcemanager"
+	"github.com/Azure/azure-service-operator/pkg/resourcemanager/config"
+	"github.com/Azure/azure-service-operator/pkg/secrets"
+	keyvaultsecretlib "github.com/Azure/azure-service-operator/pkg/secrets/keyvault"
+	"github.com/Azure/azure-service-operator/pkg/telemetry"
 )
 
 const (
-	finalizerName    string        = "azure.microsoft.com/finalizer"
-	requeueDuration  time.Duration = time.Second * 20
-	successMsg       string        = "successfully provisioned"
-	reconcileTimeout time.Duration = time.Minute * 5
+	finalizerName       string        = "azure.microsoft.com/finalizer"
+	namespaceAnnotation string        = "azure.microsoft.com/operator-namespace"
+	requeueDuration     time.Duration = time.Second * 20
+	successMsg          string        = "successfully provisioned"
+	reconcileTimeout    time.Duration = time.Minute * 5
 )
 
 // AsyncReconciler is a generic reconciler for Azure resources.
@@ -43,8 +45,8 @@ type AsyncReconciler struct {
 }
 
 // Reconcile reconciles the change request
-func (r *AsyncReconciler) Reconcile(req ctrl.Request, obj runtime.Object) (result ctrl.Result, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), reconcileTimeout)
+func (r *AsyncReconciler) Reconcile(ctx context.Context, req ctrl.Request, obj client.Object) (result ctrl.Result, err error) {
+	ctx, cancel := context.WithTimeout(ctx, reconcileTimeout)
 	defer cancel()
 
 	if err := r.Get(ctx, req.NamespacedName, obj); err != nil {
@@ -76,7 +78,12 @@ func (r *AsyncReconciler) Reconcile(req ctrl.Request, obj runtime.Object) (resul
 	keyVaultName := keyvaultsecretlib.GetKeyVaultName(obj)
 	if len(keyVaultName) != 0 {
 		// Instantiate the KeyVault Secret Client
-		keyvaultSecretClient = keyvaultsecretlib.New(keyVaultName, config.GlobalCredentials(), config.SecretNamingVersion())
+		keyvaultSecretClient = keyvaultsecretlib.New(
+			keyVaultName,
+			config.GlobalCredentials(),
+			config.SecretNamingVersion(),
+			config.PurgeDeletedKeyVaultSecrets(),
+			config.RecoverSoftDeletedKeyVaultSecrets())
 	}
 
 	// Check to see if the skipreconcile annotation is on
@@ -96,6 +103,31 @@ func (r *AsyncReconciler) Reconcile(req ctrl.Request, obj runtime.Object) (resul
 			}
 		}
 		r.Recorder.Event(obj, corev1.EventTypeNormal, "Skipping", "Skipping reconcile based on provided annotation")
+		return ctrl.Result{}, r.Update(ctx, obj)
+	}
+
+	// Ensure the resource is tagged with the operator's namespace.
+	reconcilerNamespace := annotations[namespaceAnnotation]
+	podNamespace := config.PodNamespace()
+	if reconcilerNamespace != podNamespace && reconcilerNamespace != "" {
+		// We don't want to get into a fight with another operator -
+		// so treat some other operator's annotation in a very similar
+		// way as the skip annotation above. This will do the right
+		// thing in the case of two operators trying to manage the
+		// same namespace. It makes moving objects between namespaces
+		// or changing which operator owns a namespace fiddlier (since
+		// you'd need to remove the annotation) but those operations
+		// are likely to be rare.
+		message := fmt.Sprintf("Operators in %q and %q are both configured to manage this resource", podNamespace, reconcilerNamespace)
+		r.Recorder.Event(obj, corev1.EventTypeWarning, "Overlap", message)
+		return ctrl.Result{}, r.Update(ctx, obj)
+	} else if reconcilerNamespace == "" {
+		// Set the annotation to this operator's namespace and go around again.
+		if annotations == nil {
+			annotations = make(map[string]string)
+		}
+		annotations[namespaceAnnotation] = podNamespace
+		res.SetAnnotations(annotations)
 		return ctrl.Result{}, r.Update(ctx, obj)
 	}
 

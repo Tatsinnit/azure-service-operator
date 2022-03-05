@@ -51,7 +51,10 @@ func TestAPIs(t *testing.T) {
 
 var _ = BeforeSuite(func() {
 
-	zaplogger := zap.LoggerTo(GinkgoWriter, true)
+	zaplogger := zap.New(func(o *zap.Options) {
+		o.DestWriter = GinkgoWriter
+		o.Development = true
+	})
 	logf.SetLogger(zaplogger)
 
 	By("bootstrapping test environment")
@@ -108,7 +111,7 @@ var _ = AfterSuite(func() {
 				log.Println("resource group deleted")
 				break
 			} else {
-				log.Println(fmt.Sprintf("cannot delete resource group: %v", err))
+				log.Println(fmt.Sprintf("cannot delete resource group: %s", err))
 				return
 			}
 		}

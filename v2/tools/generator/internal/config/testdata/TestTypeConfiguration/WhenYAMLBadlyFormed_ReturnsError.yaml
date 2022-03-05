@@ -1,0 +1,12 @@
+---
+$nameInNextVersion: Demo
+Name:
+  $nameInNextVersion: FullName
+LastName:
+  $nameInNextVersion: FamilyName
+FirstName:
+  $nameInNextVersion: KnownAs
+Nickname:
+  $nameInNextVersion: AKA
+bad: "value"
+---

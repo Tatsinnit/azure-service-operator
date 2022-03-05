@@ -1,0 +1,9 @@
+---
+microsoft.person:
+  v20200101:
+    Person:
+      $nameInNextVersion: Party
+  v20200615:
+    Person:
+      $nameInNextVersion: Party
+---

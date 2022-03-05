@@ -14,6 +14,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/Azure/azure-service-operator/pkg/resourcemanager/config"
+	mysqlserver "github.com/Azure/azure-service-operator/pkg/resourcemanager/mysql/server"
+
 	"github.com/Azure/azure-service-operator/api/v1alpha1"
 	"github.com/Azure/azure-service-operator/api/v1alpha2"
 	"github.com/Azure/azure-service-operator/pkg/errhelp"
@@ -42,7 +45,12 @@ func (s *MySqlUserManager) Ensure(ctx context.Context, obj runtime.Object, opts 
 
 	adminSecretClient := s.SecretClient
 	if len(instance.Spec.AdminSecretKeyVault) != 0 {
-		adminSecretClient = keyvaultSecrets.New(instance.Spec.AdminSecretKeyVault, s.Creds, s.SecretClient.GetSecretNamingVersion())
+		adminSecretClient = keyvaultSecrets.New(
+			instance.Spec.AdminSecretKeyVault,
+			s.Creds,
+			s.SecretClient.GetSecretNamingVersion(),
+			config.PurgeDeletedKeyVaultSecrets(),
+			config.RecoverSoftDeletedKeyVaultSecrets())
 	}
 
 	adminSecretKey := secrets.SecretKey{Name: instance.Spec.GetAdminSecretName(), Namespace: instance.Namespace, Kind: reflect.TypeOf(v1alpha2.MySQLServer{}).Name()}
@@ -75,9 +83,9 @@ func (s *MySqlUserManager) Ensure(ctx context.Context, obj runtime.Object, opts 
 		return false, err
 	}
 
-	adminUser := string(adminSecret["fullyQualifiedUsername"])
-	adminPassword := string(adminSecret[MSecretPasswordKey])
-	fullServerName := string(adminSecret["fullyQualifiedServerName"])
+	adminUser := string(adminSecret[mysqlserver.FullyQualifiedUsernameSecretKey])
+	adminPassword := string(adminSecret[mysqlserver.PasswordSecretKey])
+	fullServerName := string(adminSecret[mysqlserver.FullyQualifiedServerNameSecretKey])
 
 	db, err := mysql.ConnectToSqlDB(
 		ctx,
@@ -104,6 +112,7 @@ func (s *MySqlUserManager) Ensure(ctx context.Context, obj runtime.Object, opts 
 
 		return false, err
 	}
+	defer db.Close()
 
 	secretKey := secrets.SecretKey{Name: instance.Name, Namespace: instance.Namespace, Kind: instance.TypeMeta.Kind}
 	// create or get new user secret
@@ -186,7 +195,12 @@ func (s *MySqlUserManager) Delete(ctx context.Context, obj runtime.Object, opts 
 
 	// if the admin secret keyvault is not specified, fall back to configured secretclient
 	if len(instance.Spec.AdminSecretKeyVault) != 0 {
-		adminSecretClient = keyvaultSecrets.New(instance.Spec.AdminSecretKeyVault, s.Creds, s.SecretClient.GetSecretNamingVersion())
+		adminSecretClient = keyvaultSecrets.New(
+			instance.Spec.AdminSecretKeyVault,
+			s.Creds,
+			s.SecretClient.GetSecretNamingVersion(),
+			config.PurgeDeletedKeyVaultSecrets(),
+			config.RecoverSoftDeletedKeyVaultSecrets())
 	}
 
 	adminSecret, err := adminSecretClient.Get(ctx, adminSecretKey)
@@ -228,6 +242,7 @@ func (s *MySqlUserManager) Delete(ctx context.Context, obj runtime.Object, opts 
 		}
 		return false, err
 	}
+	defer db.Close()
 
 	var userSecretClient secrets.SecretClient
 	if options.SecretClient != nil {

@@ -1,0 +1,16 @@
+---
+$NameInNextVersion: Demo
+$export: true
+$exportAs: Demo
+$azureGeneratedSecrets:
+  - PrimaryKey
+  - SecondaryKey
+Name:
+  $nameInNextVersion: FullName
+LastName:
+  $nameInNextVersion: FamilyName
+FirstName:
+  $nameInNextVersion: KnownAs
+Nickname:
+  $nameInNextVersion: AKA
+---

@@ -1,7 +1,7 @@
 # See here for image contents: https://github.com/microsoft/vscode-dev-containers/tree/v0.137.0/containers/go/.devcontainer/base.Dockerfile
 
 # This is pinned to a particular version of go:
-FROM mcr.microsoft.com/vscode/devcontainers/go:0-1.16
+FROM mcr.microsoft.com/vscode/devcontainers/go:0-1.17
 
 # APT dependencies
 ENV DEBIAN_FRONTEND=noninteractive
@@ -28,7 +28,9 @@ ENV PATH=$PATH:/usr/local/kubebuilder/bin
 # RUN sed -i '/^completions=/a kubectl\ngo\ntask' "/home/vscode/.bashrc"
 
 # Make kubectl completions work with 'k' alias
+RUN echo 'alias k=kubectl' >> "/home/vscode/.bashrc"
 RUN echo 'complete -F __start_kubectl k' >> "/home/vscode/.bashrc"
+RUN echo 'source <(kubectl completion bash)' >> "/home/vscode/.bashrc"
 
 # Setup go-task completions
 RUN curl -sL "https://raw.githubusercontent.com/go-task/task/v3.0.0/completion/bash/task.bash" > "/home/vscode/.task.completion.sh" \
@@ -38,6 +40,11 @@ ENV KIND_CLUSTER_NAME=aso
 
 # install docker, from: https://github.com/microsoft/vscode-dev-containers/blob/main/script-library/docs/docker.md
 COPY library-scripts/docker-debian.sh /tmp/library-scripts/
-RUN bash /tmp/library-scripts/docker-debian.sh
+
+# these are all the default values except for the last one (USE_MOBY) which is what we want to set.
+# currently packages.microsoft.com does not have Moby packages for Debian Bullseye, which the 
+# devcontainer image is based on: https://github.com/microsoft/vscode-dev-containers/issues/1008
+RUN bash /tmp/library-scripts/docker-debian.sh true /var/run/docker-host.sock /var/run/docker.sock automatic false
+
 ENTRYPOINT ["/usr/local/share/docker-init.sh"]
 CMD ["sleep", "infinity"]

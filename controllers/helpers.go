@@ -13,12 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/keyvault/mgmt/2018-02-14/keyvault"
-	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/go-logr/logr"
-	uuid "github.com/gofrs/uuid"
-	"github.com/pkg/errors"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -36,7 +31,6 @@ import (
 	resourcemanagersqlfirewallrule "github.com/Azure/azure-service-operator/pkg/resourcemanager/azuresql/azuresqlfirewallrule"
 	resourcemanagersqlserver "github.com/Azure/azure-service-operator/pkg/resourcemanager/azuresql/azuresqlserver"
 	resourcemanagersqluser "github.com/Azure/azure-service-operator/pkg/resourcemanager/azuresql/azuresqluser"
-	"github.com/Azure/azure-service-operator/pkg/resourcemanager/config"
 	resourcemanagerconfig "github.com/Azure/azure-service-operator/pkg/resourcemanager/config"
 	resourcemanagereventhub "github.com/Azure/azure-service-operator/pkg/resourcemanager/eventhubs"
 	resourcemanagerkeyvaults "github.com/Azure/azure-service-operator/pkg/resourcemanager/keyvaults"
@@ -85,7 +79,7 @@ type TestContext struct {
 
 // Fetch retrieves an object by namespaced name from the API server and puts the contents in the runtime.Object parameter.
 // TODO(ace): refactor onto base reconciler struct
-func Fetch(ctx context.Context, client client.Client, namespacedName types.NamespacedName, obj runtime.Object, log logr.Logger) error {
+func Fetch(ctx context.Context, client client.Client, namespacedName types.NamespacedName, obj client.Object, log logr.Logger) error {
 	if err := client.Get(ctx, namespacedName, obj); err != nil {
 		// dont't requeue not found
 		if apierrs.IsNotFound(err) {
@@ -99,7 +93,7 @@ func Fetch(ctx context.Context, client client.Client, namespacedName types.Names
 
 // AddFinalizerAndUpdate removes a finalizer from a runtime object and attempts to update that object in the API server.
 // It returns an error if either operation failed.
-func AddFinalizerAndUpdate(ctx context.Context, client client.Client, finalizer string, o runtime.Object) error {
+func AddFinalizerAndUpdate(ctx context.Context, client client.Client, finalizer string, o client.Object) error {
 	m, err := meta.Accessor(o)
 	if err != nil {
 		return err
@@ -116,7 +110,7 @@ func AddFinalizerAndUpdate(ctx context.Context, client client.Client, finalizer 
 
 // RemoveFinalizerAndUpdate removes a finalizer from a runtime object and attempts to update that object in the API server.
 // It returns an error if either operation failed.
-func RemoveFinalizerAndUpdate(ctx context.Context, client client.Client, finalizer string, o runtime.Object) error {
+func RemoveFinalizerAndUpdate(ctx context.Context, client client.Client, finalizer string, o client.Object) error {
 	m, err := meta.Accessor(o)
 	if err != nil {
 		return err
@@ -167,7 +161,7 @@ func HasFinalizer(o metav1.Object, finalizer string) bool {
 
 // RemoveFinalizerIfPossible tries to convert a runtime object to a metav1 object and remove the provided finalizer.
 // It returns an error if the provided object cannot provide an accessor.
-func RemoveFinalizerIfPossible(o runtime.Object, finalizer string) error {
+func RemoveFinalizerIfPossible(o client.Object, finalizer string) error {
 	m, err := meta.Accessor(o)
 	if err != nil {
 		return err
@@ -176,7 +170,7 @@ func RemoveFinalizerIfPossible(o runtime.Object, finalizer string) error {
 	return nil
 }
 
-func DeleteIfFound(ctx context.Context, client client.Client, obj runtime.Object) error {
+func DeleteIfFound(ctx context.Context, client client.Client, obj client.Object) error {
 	if err := client.Delete(ctx, obj); err != nil && !apierrs.IsNotFound(err) {
 		return err
 	}
@@ -216,19 +210,19 @@ func removeString(slice []string, s string) []string {
 }
 
 // EnsureInstance creates the instance and waits for it to exist or timeout
-func EnsureInstance(ctx context.Context, t *testing.T, tc TestContext, instance runtime.Object) {
+func EnsureInstance(ctx context.Context, t *testing.T, tc TestContext, instance client.Object) {
 	EnsureInstanceWithResult(ctx, t, tc, instance, successMsg, true)
 }
 
-func EnsureInstanceWithResult(ctx context.Context, t *testing.T, tc TestContext, instance runtime.Object, message string, provisioned bool) {
-	assert := assert.New(t)
+func EnsureInstanceWithResult(ctx context.Context, t *testing.T, tc TestContext, instance client.Object, message string, provisioned bool) {
+	require := require.New(t)
 	typeOf := fmt.Sprintf("%T", instance)
 
 	err := tc.k8sClient.Create(ctx, instance)
-	assert.Equal(nil, err, fmt.Sprintf("create %s in k8s", typeOf))
+	require.Equal(nil, err, fmt.Sprintf("create %s in k8s", typeOf))
 
 	res, err := meta.Accessor(instance)
-	assert.Equal(nil, err, "not a metav1 object")
+	require.Equal(nil, err, "not a metav1 object")
 
 	names := types.NamespacedName{Name: res.GetName(), Namespace: res.GetNamespace()}
 
@@ -244,7 +238,7 @@ func EnsureInstanceWithResult(ctx context.Context, t *testing.T, tc TestContext,
 		}
 		return nil
 	})
-	assert.Nil(err, "error waiting for %s to have finalizer", typeOf)
+	require.Nil(err, "error waiting for %s to have finalizer", typeOf)
 
 	// wait for provisioned and message to be as expected
 	err = helpers.Retry(tc.timeout, tc.retry, func() error {
@@ -255,13 +249,14 @@ func EnsureInstanceWithResult(ctx context.Context, t *testing.T, tc TestContext,
 
 		statused := ConvertToStatus(instance)
 		// if we expect this resource to end up with provisioned == true then failedProvisioning == true is unrecoverable
+		// TODO: Implement fmt.Stringer on Status types
 		if provisioned && statused.Status.FailedProvisioning {
 			if strings.Contains(statused.Status.Message, "already exists") || strings.Contains(statused.Status.Message, "AlreadyExists") {
 				t.Log("")
 				t.Log("-------")
 				t.Log("unexpected failed provisioning encountered")
-				t.Logf("%+v\n", statused.Status)
-				t.Logf("current time %v\n", time.Now())
+				t.Logf("%s (%s)\n", statused.Status.Message, statused.Status.State)
+				t.Logf("current time %s\n", time.Now().Format("2006-01-02 15:04:05"))
 				t.Log("-------")
 				t.Log("")
 			}
@@ -284,24 +279,24 @@ func EnsureInstanceWithResult(ctx context.Context, t *testing.T, tc TestContext,
 		}
 		return nil
 	})
-	assert.Nil(err, "wait for %s to provision", typeOf)
+	require.Nil(err, "wait for %s to provision", typeOf)
 
 }
 
 // EnsureDelete deletes the instance and waits for it to be gone or timeout
-func EnsureDelete(ctx context.Context, t *testing.T, tc TestContext, instance runtime.Object) {
-	assert := assert.New(t)
+func EnsureDelete(ctx context.Context, t *testing.T, tc TestContext, instance client.Object) {
+	require := require.New(t)
 	typeOf := fmt.Sprintf("%T", instance)
 
 	err := tc.k8sClient.Delete(ctx, instance)
-	assert.Equal(nil, err, fmt.Sprintf("delete %s in k8s", typeOf))
+	require.Equal(nil, err, fmt.Sprintf("delete %s in k8s", typeOf))
 
 	res, err := meta.Accessor(instance)
-	assert.Equal(nil, err, "not a metav1 object")
+	require.Equal(nil, err, "not a metav1 object")
 
 	names := types.NamespacedName{Name: res.GetName(), Namespace: res.GetNamespace()}
 
-	assert.Eventually(func() bool {
+	require.Eventually(func() bool {
 		err = tc.k8sClient.Get(ctx, names, instance)
 		return apierrors.IsNotFound(err)
 	}, tc.timeout, tc.retry, fmt.Sprintf("wait for %s to be gone from k8s", typeOf))
@@ -309,7 +304,7 @@ func EnsureDelete(ctx context.Context, t *testing.T, tc TestContext, instance ru
 }
 
 func EnsureSecrets(ctx context.Context, t *testing.T, tc TestContext, instance runtime.Object, secretClient secrets.SecretClient, secretKey secrets.SecretKey) {
-	assert := assert.New(t)
+	require := require.New(t)
 	typeOf := fmt.Sprintf("%T", instance)
 
 	// Wait for secret
@@ -318,11 +313,11 @@ func EnsureSecrets(ctx context.Context, t *testing.T, tc TestContext, instance r
 		_, err := secretClient.Get(ctx, secretKey)
 		return err
 	})
-	assert.Nil(err, "error waiting for %s to have secret", typeOf)
+	require.Nil(err, "error waiting for %s to have secret", typeOf)
 
 }
 func EnsureSecretsWithValue(ctx context.Context, t *testing.T, tc TestContext, instance runtime.Object, secretclient secrets.SecretClient, secretKey secrets.SecretKey, secretSubKey string, secretvalue string) {
-	assert := assert.New(t)
+	require := require.New(t)
 	typeOf := fmt.Sprintf("%T", instance)
 
 	// Wait for secret
@@ -333,19 +328,19 @@ func EnsureSecretsWithValue(ctx context.Context, t *testing.T, tc TestContext, i
 			return err
 		}
 		if !strings.Contains(string(secrets[secretSubKey]), secretvalue) {
-			return fmt.Errorf("secret with key %+v not equal to %s", secretKey, secretvalue)
+			return fmt.Errorf("secret with key %s not equal to %s", secretKey, secretvalue)
 		}
 
 		return nil
 	})
-	assert.Nil(err, "error waiting for %s to have correct secret", typeOf)
+	require.Nil(err, "error waiting for %s to have correct secret", typeOf)
 }
 
-func RequireInstance(ctx context.Context, t *testing.T, tc TestContext, instance runtime.Object) {
+func RequireInstance(ctx context.Context, t *testing.T, tc TestContext, instance client.Object) {
 	RequireInstanceWithResult(ctx, t, tc, instance, successMsg, true)
 }
 
-func RequireInstanceWithResult(ctx context.Context, t *testing.T, tc TestContext, instance runtime.Object, message string, provisioned bool) {
+func RequireInstanceWithResult(ctx context.Context, t *testing.T, tc TestContext, instance client.Object, message string, provisioned bool) {
 	require := require.New(t)
 	typeOf := fmt.Sprintf("%T", instance)
 
@@ -441,62 +436,4 @@ func GenerateRandomSshPublicKeyString() string {
 	publicRsaKey, _ := ssh.NewPublicKey(&privateKey.PublicKey)
 	sshPublicKeyData := string(ssh.MarshalAuthorizedKey(publicRsaKey))
 	return sshPublicKeyData
-}
-
-//CreateVaultWithAccessPolicies creates a new key vault and provides access policies to the specified user - used in test
-func CreateVaultWithAccessPolicies(ctx context.Context, creds config.Credentials, groupName string, vaultName string, location string, clientID string) error {
-	vaultsClient, err := resourcemanagerkeyvaults.GetKeyVaultClient(creds)
-	if err != nil {
-		return errors.Wrapf(err, "couldn't get vaults client")
-	}
-	id, err := uuid.FromString(creds.TenantID())
-	if err != nil {
-		return errors.Wrapf(err, "couldn't convert tenantID to UUID")
-	}
-
-	apList := []keyvault.AccessPolicyEntry{}
-	ap := keyvault.AccessPolicyEntry{
-		TenantID: &id,
-		Permissions: &keyvault.Permissions{
-			Keys: &[]keyvault.KeyPermissions{
-				keyvault.KeyPermissionsCreate,
-			},
-			Secrets: &[]keyvault.SecretPermissions{
-				keyvault.SecretPermissionsSet,
-				keyvault.SecretPermissionsGet,
-				keyvault.SecretPermissionsDelete,
-				keyvault.SecretPermissionsList,
-			},
-		},
-	}
-	if clientID != "" {
-		objID, err := resourcemanagerkeyvaults.GetObjectID(ctx, creds, creds.TenantID(), clientID)
-		if err != nil {
-			return err
-		}
-		if objID != nil {
-			ap.ObjectID = objID
-			apList = append(apList, ap)
-		}
-
-	}
-
-	params := keyvault.VaultCreateOrUpdateParameters{
-		Properties: &keyvault.VaultProperties{
-			TenantID:       &id,
-			AccessPolicies: &apList,
-			Sku: &keyvault.Sku{
-				Family: to.StringPtr("A"),
-				Name:   keyvault.Standard,
-			},
-		},
-		Location: to.StringPtr(location),
-	}
-
-	future, err := vaultsClient.CreateOrUpdate(ctx, groupName, vaultName, params)
-	if err != nil {
-		return err
-	}
-
-	return future.WaitForCompletionRef(ctx, vaultsClient.Client)
 }
