@@ -4,30 +4,29 @@
 package v1alpha1api20181130storage
 
 import (
+	"fmt"
+	v20181130s "github.com/Azure/azure-service-operator/v2/api/managedidentity/v1beta20181130storage"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
 	"github.com/pkg/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/conversion"
 )
-
-// +kubebuilder:rbac:groups=managedidentity.azure.com,resources=userassignedidentities,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=managedidentity.azure.com,resources={userassignedidentities/status,userassignedidentities/finalizers},verbs=get;update;patch
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Severity",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].severity"
 // +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].reason"
 // +kubebuilder:printcolumn:name="Message",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].message"
-//Storage version of v1alpha1api20181130.UserAssignedIdentity
-//Generated from: https://schema.management.azure.com/schemas/2018-11-30/Microsoft.ManagedIdentity.json#/resourceDefinitions/userAssignedIdentities
+// Storage version of v1alpha1api20181130.UserAssignedIdentity
+// Deprecated version of UserAssignedIdentity. Use v1beta20181130.UserAssignedIdentity instead
 type UserAssignedIdentity struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec              UserAssignedIdentities_Spec `json:"spec,omitempty"`
-	Status            Identity_Status             `json:"status,omitempty"`
+	Spec              UserAssignedIdentity_Spec `json:"spec,omitempty"`
+	Status            Identity_STATUS           `json:"status,omitempty"`
 }
 
 var _ conditions.Conditioner = &UserAssignedIdentity{}
@@ -42,6 +41,28 @@ func (identity *UserAssignedIdentity) SetConditions(conditions conditions.Condit
 	identity.Status.Conditions = conditions
 }
 
+var _ conversion.Convertible = &UserAssignedIdentity{}
+
+// ConvertFrom populates our UserAssignedIdentity from the provided hub UserAssignedIdentity
+func (identity *UserAssignedIdentity) ConvertFrom(hub conversion.Hub) error {
+	source, ok := hub.(*v20181130s.UserAssignedIdentity)
+	if !ok {
+		return fmt.Errorf("expected managedidentity/v1beta20181130storage/UserAssignedIdentity but received %T instead", hub)
+	}
+
+	return identity.AssignProperties_From_UserAssignedIdentity(source)
+}
+
+// ConvertTo populates the provided hub UserAssignedIdentity from our UserAssignedIdentity
+func (identity *UserAssignedIdentity) ConvertTo(hub conversion.Hub) error {
+	destination, ok := hub.(*v20181130s.UserAssignedIdentity)
+	if !ok {
+		return fmt.Errorf("expected managedidentity/v1beta20181130storage/UserAssignedIdentity but received %T instead", hub)
+	}
+
+	return identity.AssignProperties_To_UserAssignedIdentity(destination)
+}
+
 var _ genruntime.KubernetesResource = &UserAssignedIdentity{}
 
 // AzureName returns the Azure name of the resource
@@ -51,12 +72,12 @@ func (identity *UserAssignedIdentity) AzureName() string {
 
 // GetAPIVersion returns the ARM API version of the resource. This is always "2018-11-30"
 func (identity UserAssignedIdentity) GetAPIVersion() string {
-	return "2018-11-30"
+	return string(APIVersion_Value)
 }
 
-// GetResourceKind returns the kind of the resource
-func (identity *UserAssignedIdentity) GetResourceKind() genruntime.ResourceKind {
-	return genruntime.ResourceKindNormal
+// GetResourceScope returns the scope of the resource
+func (identity *UserAssignedIdentity) GetResourceScope() genruntime.ResourceScope {
+	return genruntime.ResourceScopeResourceGroup
 }
 
 // GetSpec returns the specification of this resource
@@ -76,7 +97,7 @@ func (identity *UserAssignedIdentity) GetType() string {
 
 // NewEmptyStatus returns a new empty (blank) status
 func (identity *UserAssignedIdentity) NewEmptyStatus() genruntime.ConvertibleStatus {
-	return &Identity_Status{}
+	return &Identity_STATUS{}
 }
 
 // Owner returns the ResourceReference of the owner, or nil if there is no owner
@@ -92,13 +113,13 @@ func (identity *UserAssignedIdentity) Owner() *genruntime.ResourceReference {
 // SetStatus sets the status of this resource
 func (identity *UserAssignedIdentity) SetStatus(status genruntime.ConvertibleStatus) error {
 	// If we have exactly the right type of status, assign it
-	if st, ok := status.(*Identity_Status); ok {
+	if st, ok := status.(*Identity_STATUS); ok {
 		identity.Status = *st
 		return nil
 	}
 
 	// Convert status to required version
-	var st Identity_Status
+	var st Identity_STATUS
 	err := status.ConvertStatusTo(&st)
 	if err != nil {
 		return errors.Wrap(err, "failed to convert status")
@@ -108,8 +129,57 @@ func (identity *UserAssignedIdentity) SetStatus(status genruntime.ConvertibleSta
 	return nil
 }
 
-// Hub marks that this UserAssignedIdentity is the hub type for conversion
-func (identity *UserAssignedIdentity) Hub() {}
+// AssignProperties_From_UserAssignedIdentity populates our UserAssignedIdentity from the provided source UserAssignedIdentity
+func (identity *UserAssignedIdentity) AssignProperties_From_UserAssignedIdentity(source *v20181130s.UserAssignedIdentity) error {
+
+	// ObjectMeta
+	identity.ObjectMeta = *source.ObjectMeta.DeepCopy()
+
+	// Spec
+	var spec UserAssignedIdentity_Spec
+	err := spec.AssignProperties_From_UserAssignedIdentity_Spec(&source.Spec)
+	if err != nil {
+		return errors.Wrap(err, "calling AssignProperties_From_UserAssignedIdentity_Spec() to populate field Spec")
+	}
+	identity.Spec = spec
+
+	// Status
+	var status Identity_STATUS
+	err = status.AssignProperties_From_Identity_STATUS(&source.Status)
+	if err != nil {
+		return errors.Wrap(err, "calling AssignProperties_From_Identity_STATUS() to populate field Status")
+	}
+	identity.Status = status
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_UserAssignedIdentity populates the provided destination UserAssignedIdentity from our UserAssignedIdentity
+func (identity *UserAssignedIdentity) AssignProperties_To_UserAssignedIdentity(destination *v20181130s.UserAssignedIdentity) error {
+
+	// ObjectMeta
+	destination.ObjectMeta = *identity.ObjectMeta.DeepCopy()
+
+	// Spec
+	var spec v20181130s.UserAssignedIdentity_Spec
+	err := identity.Spec.AssignProperties_To_UserAssignedIdentity_Spec(&spec)
+	if err != nil {
+		return errors.Wrap(err, "calling AssignProperties_To_UserAssignedIdentity_Spec() to populate field Spec")
+	}
+	destination.Spec = spec
+
+	// Status
+	var status v20181130s.Identity_STATUS
+	err = identity.Status.AssignProperties_To_Identity_STATUS(&status)
+	if err != nil {
+		return errors.Wrap(err, "calling AssignProperties_To_Identity_STATUS() to populate field Status")
+	}
+	destination.Status = status
+
+	// No error
+	return nil
+}
 
 // OriginalGVK returns a GroupValueKind for the original API version used to create the resource
 func (identity *UserAssignedIdentity) OriginalGVK() *schema.GroupVersionKind {
@@ -121,16 +191,24 @@ func (identity *UserAssignedIdentity) OriginalGVK() *schema.GroupVersionKind {
 }
 
 // +kubebuilder:object:root=true
-//Storage version of v1alpha1api20181130.UserAssignedIdentity
-//Generated from: https://schema.management.azure.com/schemas/2018-11-30/Microsoft.ManagedIdentity.json#/resourceDefinitions/userAssignedIdentities
+// Storage version of v1alpha1api20181130.UserAssignedIdentity
+// Deprecated version of UserAssignedIdentity. Use v1beta20181130.UserAssignedIdentity instead
 type UserAssignedIdentityList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []UserAssignedIdentity `json:"items"`
 }
 
-//Storage version of v1alpha1api20181130.Identity_Status
-type Identity_Status struct {
+// Storage version of v1alpha1api20181130.APIVersion
+// Deprecated version of APIVersion. Use v1beta20181130.APIVersion instead
+// +kubebuilder:validation:Enum={"2018-11-30"}
+type APIVersion string
+
+const APIVersion_Value = APIVersion("2018-11-30")
+
+// Storage version of v1alpha1api20181130.Identity_STATUS
+// Deprecated version of Identity_STATUS. Use v1beta20181130.Identity_STATUS instead
+type Identity_STATUS struct {
 	ClientId    *string                `json:"clientId,omitempty"`
 	Conditions  []conditions.Condition `json:"conditions,omitempty"`
 	Id          *string                `json:"id,omitempty"`
@@ -143,58 +221,279 @@ type Identity_Status struct {
 	Type        *string                `json:"type,omitempty"`
 }
 
-var _ genruntime.ConvertibleStatus = &Identity_Status{}
+var _ genruntime.ConvertibleStatus = &Identity_STATUS{}
 
-// ConvertStatusFrom populates our Identity_Status from the provided source
-func (identity *Identity_Status) ConvertStatusFrom(source genruntime.ConvertibleStatus) error {
-	if source == identity {
-		return errors.New("attempted conversion between unrelated implementations of github.com/Azure/azure-service-operator/v2/pkg/genruntime/ConvertibleStatus")
+// ConvertStatusFrom populates our Identity_STATUS from the provided source
+func (identity *Identity_STATUS) ConvertStatusFrom(source genruntime.ConvertibleStatus) error {
+	src, ok := source.(*v20181130s.Identity_STATUS)
+	if ok {
+		// Populate our instance from source
+		return identity.AssignProperties_From_Identity_STATUS(src)
 	}
 
-	return source.ConvertStatusTo(identity)
-}
-
-// ConvertStatusTo populates the provided destination from our Identity_Status
-func (identity *Identity_Status) ConvertStatusTo(destination genruntime.ConvertibleStatus) error {
-	if destination == identity {
-		return errors.New("attempted conversion between unrelated implementations of github.com/Azure/azure-service-operator/v2/pkg/genruntime/ConvertibleStatus")
+	// Convert to an intermediate form
+	src = &v20181130s.Identity_STATUS{}
+	err := src.ConvertStatusFrom(source)
+	if err != nil {
+		return errors.Wrap(err, "initial step of conversion in ConvertStatusFrom()")
 	}
 
-	return destination.ConvertStatusFrom(identity)
+	// Update our instance from src
+	err = identity.AssignProperties_From_Identity_STATUS(src)
+	if err != nil {
+		return errors.Wrap(err, "final step of conversion in ConvertStatusFrom()")
+	}
+
+	return nil
 }
 
-//Storage version of v1alpha1api20181130.UserAssignedIdentities_Spec
-type UserAssignedIdentities_Spec struct {
-	//AzureName: The name of the resource in Azure. This is often the same as the name of the resource in Kubernetes but it
-	//doesn't have to be.
-	AzureName       string  `json:"azureName"`
+// ConvertStatusTo populates the provided destination from our Identity_STATUS
+func (identity *Identity_STATUS) ConvertStatusTo(destination genruntime.ConvertibleStatus) error {
+	dst, ok := destination.(*v20181130s.Identity_STATUS)
+	if ok {
+		// Populate destination from our instance
+		return identity.AssignProperties_To_Identity_STATUS(dst)
+	}
+
+	// Convert to an intermediate form
+	dst = &v20181130s.Identity_STATUS{}
+	err := identity.AssignProperties_To_Identity_STATUS(dst)
+	if err != nil {
+		return errors.Wrap(err, "initial step of conversion in ConvertStatusTo()")
+	}
+
+	// Update dst from our instance
+	err = dst.ConvertStatusTo(destination)
+	if err != nil {
+		return errors.Wrap(err, "final step of conversion in ConvertStatusTo()")
+	}
+
+	return nil
+}
+
+// AssignProperties_From_Identity_STATUS populates our Identity_STATUS from the provided source Identity_STATUS
+func (identity *Identity_STATUS) AssignProperties_From_Identity_STATUS(source *v20181130s.Identity_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// ClientId
+	identity.ClientId = genruntime.ClonePointerToString(source.ClientId)
+
+	// Conditions
+	identity.Conditions = genruntime.CloneSliceOfCondition(source.Conditions)
+
+	// Id
+	identity.Id = genruntime.ClonePointerToString(source.Id)
+
+	// Location
+	identity.Location = genruntime.ClonePointerToString(source.Location)
+
+	// Name
+	identity.Name = genruntime.ClonePointerToString(source.Name)
+
+	// PrincipalId
+	identity.PrincipalId = genruntime.ClonePointerToString(source.PrincipalId)
+
+	// Tags
+	identity.Tags = genruntime.CloneMapOfStringToString(source.Tags)
+
+	// TenantId
+	identity.TenantId = genruntime.ClonePointerToString(source.TenantId)
+
+	// Type
+	identity.Type = genruntime.ClonePointerToString(source.Type)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		identity.PropertyBag = propertyBag
+	} else {
+		identity.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_Identity_STATUS populates the provided destination Identity_STATUS from our Identity_STATUS
+func (identity *Identity_STATUS) AssignProperties_To_Identity_STATUS(destination *v20181130s.Identity_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(identity.PropertyBag)
+
+	// ClientId
+	destination.ClientId = genruntime.ClonePointerToString(identity.ClientId)
+
+	// Conditions
+	destination.Conditions = genruntime.CloneSliceOfCondition(identity.Conditions)
+
+	// Id
+	destination.Id = genruntime.ClonePointerToString(identity.Id)
+
+	// Location
+	destination.Location = genruntime.ClonePointerToString(identity.Location)
+
+	// Name
+	destination.Name = genruntime.ClonePointerToString(identity.Name)
+
+	// PrincipalId
+	destination.PrincipalId = genruntime.ClonePointerToString(identity.PrincipalId)
+
+	// Tags
+	destination.Tags = genruntime.CloneMapOfStringToString(identity.Tags)
+
+	// TenantId
+	destination.TenantId = genruntime.ClonePointerToString(identity.TenantId)
+
+	// Type
+	destination.Type = genruntime.ClonePointerToString(identity.Type)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20181130.UserAssignedIdentity_Spec
+type UserAssignedIdentity_Spec struct {
+	// AzureName: The name of the resource in Azure. This is often the same as the name of the resource in Kubernetes but it
+	// doesn't have to be.
+	AzureName       string  `json:"azureName,omitempty"`
 	Location        *string `json:"location,omitempty"`
-	OriginalVersion string  `json:"originalVersion"`
+	OriginalVersion string  `json:"originalVersion,omitempty"`
 
 	// +kubebuilder:validation:Required
-	Owner       genruntime.KnownResourceReference `group:"resources.azure.com" json:"owner" kind:"ResourceGroup"`
-	PropertyBag genruntime.PropertyBag            `json:"$propertyBag,omitempty"`
-	Tags        map[string]string                 `json:"tags,omitempty"`
+	// Owner: The owner of the resource. The owner controls where the resource goes when it is deployed. The owner also
+	// controls the resources lifecycle. When the owner is deleted the resource will also be deleted. Owner is expected to be a
+	// reference to a resources.azure.com/ResourceGroup resource
+	Owner       *genruntime.KnownResourceReference `group:"resources.azure.com" json:"owner,omitempty" kind:"ResourceGroup"`
+	PropertyBag genruntime.PropertyBag             `json:"$propertyBag,omitempty"`
+	Tags        map[string]string                  `json:"tags,omitempty"`
 }
 
-var _ genruntime.ConvertibleSpec = &UserAssignedIdentities_Spec{}
+var _ genruntime.ConvertibleSpec = &UserAssignedIdentity_Spec{}
 
-// ConvertSpecFrom populates our UserAssignedIdentities_Spec from the provided source
-func (identities *UserAssignedIdentities_Spec) ConvertSpecFrom(source genruntime.ConvertibleSpec) error {
-	if source == identities {
-		return errors.New("attempted conversion between unrelated implementations of github.com/Azure/azure-service-operator/v2/pkg/genruntime/ConvertibleSpec")
+// ConvertSpecFrom populates our UserAssignedIdentity_Spec from the provided source
+func (identity *UserAssignedIdentity_Spec) ConvertSpecFrom(source genruntime.ConvertibleSpec) error {
+	src, ok := source.(*v20181130s.UserAssignedIdentity_Spec)
+	if ok {
+		// Populate our instance from source
+		return identity.AssignProperties_From_UserAssignedIdentity_Spec(src)
 	}
 
-	return source.ConvertSpecTo(identities)
+	// Convert to an intermediate form
+	src = &v20181130s.UserAssignedIdentity_Spec{}
+	err := src.ConvertSpecFrom(source)
+	if err != nil {
+		return errors.Wrap(err, "initial step of conversion in ConvertSpecFrom()")
+	}
+
+	// Update our instance from src
+	err = identity.AssignProperties_From_UserAssignedIdentity_Spec(src)
+	if err != nil {
+		return errors.Wrap(err, "final step of conversion in ConvertSpecFrom()")
+	}
+
+	return nil
 }
 
-// ConvertSpecTo populates the provided destination from our UserAssignedIdentities_Spec
-func (identities *UserAssignedIdentities_Spec) ConvertSpecTo(destination genruntime.ConvertibleSpec) error {
-	if destination == identities {
-		return errors.New("attempted conversion between unrelated implementations of github.com/Azure/azure-service-operator/v2/pkg/genruntime/ConvertibleSpec")
+// ConvertSpecTo populates the provided destination from our UserAssignedIdentity_Spec
+func (identity *UserAssignedIdentity_Spec) ConvertSpecTo(destination genruntime.ConvertibleSpec) error {
+	dst, ok := destination.(*v20181130s.UserAssignedIdentity_Spec)
+	if ok {
+		// Populate destination from our instance
+		return identity.AssignProperties_To_UserAssignedIdentity_Spec(dst)
 	}
 
-	return destination.ConvertSpecFrom(identities)
+	// Convert to an intermediate form
+	dst = &v20181130s.UserAssignedIdentity_Spec{}
+	err := identity.AssignProperties_To_UserAssignedIdentity_Spec(dst)
+	if err != nil {
+		return errors.Wrap(err, "initial step of conversion in ConvertSpecTo()")
+	}
+
+	// Update dst from our instance
+	err = dst.ConvertSpecTo(destination)
+	if err != nil {
+		return errors.Wrap(err, "final step of conversion in ConvertSpecTo()")
+	}
+
+	return nil
+}
+
+// AssignProperties_From_UserAssignedIdentity_Spec populates our UserAssignedIdentity_Spec from the provided source UserAssignedIdentity_Spec
+func (identity *UserAssignedIdentity_Spec) AssignProperties_From_UserAssignedIdentity_Spec(source *v20181130s.UserAssignedIdentity_Spec) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// AzureName
+	identity.AzureName = source.AzureName
+
+	// Location
+	identity.Location = genruntime.ClonePointerToString(source.Location)
+
+	// OriginalVersion
+	identity.OriginalVersion = source.OriginalVersion
+
+	// Owner
+	if source.Owner != nil {
+		owner := source.Owner.Copy()
+		identity.Owner = &owner
+	} else {
+		identity.Owner = nil
+	}
+
+	// Tags
+	identity.Tags = genruntime.CloneMapOfStringToString(source.Tags)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		identity.PropertyBag = propertyBag
+	} else {
+		identity.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_UserAssignedIdentity_Spec populates the provided destination UserAssignedIdentity_Spec from our UserAssignedIdentity_Spec
+func (identity *UserAssignedIdentity_Spec) AssignProperties_To_UserAssignedIdentity_Spec(destination *v20181130s.UserAssignedIdentity_Spec) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(identity.PropertyBag)
+
+	// AzureName
+	destination.AzureName = identity.AzureName
+
+	// Location
+	destination.Location = genruntime.ClonePointerToString(identity.Location)
+
+	// OriginalVersion
+	destination.OriginalVersion = identity.OriginalVersion
+
+	// Owner
+	if identity.Owner != nil {
+		owner := identity.Owner.Copy()
+		destination.Owner = &owner
+	} else {
+		destination.Owner = nil
+	}
+
+	// Tags
+	destination.Tags = genruntime.CloneMapOfStringToString(identity.Tags)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
 }
 
 func init() {

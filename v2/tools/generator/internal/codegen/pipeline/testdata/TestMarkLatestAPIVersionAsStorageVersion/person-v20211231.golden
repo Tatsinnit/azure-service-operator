@@ -15,7 +15,7 @@
  	metav1.TypeMeta   `json:",inline"`
  	metav1.ObjectMeta `json:"metadata,omitempty"`
  	Spec              Person_Spec   `json:"spec,omitempty"`
- 	Status            Person_Status `json:"status,omitempty"`
+ 	Status            Person_STATUS `json:"status,omitempty"`
  }
  
  // +kubebuilder:object:root=true
@@ -26,12 +26,13 @@
  }
  
  type Person_Spec struct {
- 	//FullName: As would be used to address mail
- 	FullName string `json:"fullName"`
+ 	// FullName: As would be used to address mail
+ 	FullName string `json:"fullName,omitempty"`
  }
  
- type Person_Status struct {
- 	Status string `json:"status"`
+ type Person_STATUS struct {
+ 	// Status: Current status
+ 	Status string `json:"status,omitempty"`
  }
  
  func init() {

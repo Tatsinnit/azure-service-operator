@@ -11,7 +11,7 @@ type Person struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 	Spec              Person_Spec   `json:"spec,omitempty"`
-	Status            Person_Status `json:"status,omitempty"`
+	Status            Person_STATUS `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -22,14 +22,14 @@ type PersonList struct {
 }
 
 type Person_Spec struct {
-	//FamilyName: Shared name of the family
-	FamilyName string `json:"familyName"`
+	// FamilyName: Shared name of the family
+	FamilyName string `json:"familyName,omitempty"`
 
-	//FullName: As would be used to address mail
-	FullName string `json:"fullName"`
+	// FullName: As would be used to address mail
+	FullName string `json:"fullName,omitempty"`
 
-	//KnownAs: How the person is generally known
-	KnownAs string `json:"knownAs"`
+	// KnownAs: How the person is generally known
+	KnownAs string `json:"knownAs,omitempty"`
 }
 
 // OriginalVersion returns the original API version used to create the resource.
@@ -37,8 +37,9 @@ func (person *Person_Spec) OriginalVersion() string {
 	return GroupVersion.Version
 }
 
-type Person_Status struct {
-	Status string `json:"status"`
+type Person_STATUS struct {
+	// Status: Current status
+	Status string `json:"status,omitempty"`
 }
 
 func init() {

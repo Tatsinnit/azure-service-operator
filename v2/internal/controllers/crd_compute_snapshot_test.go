@@ -11,7 +11,7 @@ import (
 	"github.com/Azure/go-autorest/autorest/to"
 	. "github.com/onsi/gomega"
 
-	compute "github.com/Azure/azure-service-operator/v2/api/compute/v1alpha1api20200930"
+	compute "github.com/Azure/azure-service-operator/v2/api/compute/v1beta20200930"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 )
 
@@ -23,11 +23,12 @@ func Test_Compute_Snapshot_CRUD(t *testing.T) {
 	rg := tc.CreateTestResourceGroupAndWait()
 
 	tc.LogSection("Create Snapshot")
+	createOption := compute.CreationData_CreateOption_Empty
 	snapshot := &compute.Snapshot{
 		ObjectMeta: tc.MakeObjectMeta("snapshot"),
-		Spec: compute.Snapshots_Spec{
-			CreationData: compute.CreationData{
-				CreateOption: compute.CreationDataCreateOptionEmpty,
+		Spec: compute.Snapshot_Spec{
+			CreationData: &compute.CreationData{
+				CreateOption: &createOption,
 			},
 			DiskSizeGB: to.IntPtr(32),
 			Location:   tc.AzureRegion,
@@ -37,8 +38,8 @@ func Test_Compute_Snapshot_CRUD(t *testing.T) {
 
 	tc.CreateResourceAndWait(snapshot)
 	tc.Expect(snapshot.Status.Id).ToNot(BeNil())
-	tc.Expect(*snapshot.Status.DiskSizeGB).To(Equal(*snapshot.Spec.DiskSizeGB))
-	tc.Expect(*snapshot.Status.Location).To(Equal(snapshot.Spec.Location))
+	tc.Expect(snapshot.Status.DiskSizeGB).To(Equal(snapshot.Spec.DiskSizeGB))
+	tc.Expect(snapshot.Status.Location).To(Equal(snapshot.Spec.Location))
 	armId := *snapshot.Status.Id
 
 	// Perform a simple patch to resize the disk
@@ -52,10 +53,10 @@ func Test_Compute_Snapshot_CRUD(t *testing.T) {
 
 	// Delete VM and resources.
 	tc.LogSection("Clean up")
-	tc.DeleteResourcesAndWait(snapshot, rg)
+	tc.DeleteResourceAndWait(snapshot)
 
 	// Ensure that the resource was really deleted in Azure
-	exists, retryAfter, err := tc.AzureClient.HeadByID(tc.Ctx, armId, string(compute.SnapshotsSpecAPIVersion20200930))
+	exists, retryAfter, err := tc.AzureClient.HeadByID(tc.Ctx, armId, string(compute.APIVersion_Value))
 	tc.Expect(err).ToNot(HaveOccurred())
 	tc.Expect(retryAfter).To(BeZero())
 	tc.Expect(exists).To(BeFalse())

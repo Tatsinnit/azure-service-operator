@@ -93,7 +93,8 @@ func newSkippingPropertyDetector(definitions astmodel.TypeDefinitionSet, convers
 // AddProperties adds all the properties from the specified type to the graph.
 func (detector *skippingPropertyDetector) AddProperties(
 	name astmodel.TypeName,
-	properties ...*astmodel.PropertyDefinition) error {
+	properties ...*astmodel.PropertyDefinition,
+) error {
 	var errs []error
 	for _, property := range properties {
 		if err := detector.AddProperty(name, property); err != nil {
@@ -112,7 +113,8 @@ func (detector *skippingPropertyDetector) AddProperties(
 // AddProperty adds a single property from a type to the graph, marking it as observed
 func (detector *skippingPropertyDetector) AddProperty(
 	name astmodel.TypeName,
-	property *astmodel.PropertyDefinition) error {
+	property *astmodel.PropertyDefinition,
+) error {
 	ref := astmodel.MakePropertyReference(name, property.PropertyName())
 	if err := detector.establishPropertyChain(ref); err != nil {
 		return errors.Wrapf(err, "adding property %s", property.PropertyName())
@@ -124,8 +126,8 @@ func (detector *skippingPropertyDetector) AddProperty(
 
 // CheckForSkippedProperties scans for properties that skip versions, and returns an error summarizing the results
 func (detector *skippingPropertyDetector) CheckForSkippedProperties() error {
-	var errs []error
 	chains := detector.findChains().AsSlice()
+	errs := make([]error, 0, len(chains))
 	for _, ref := range chains {
 		err := detector.checkChain(ref)
 		errs = append(errs, err)
@@ -201,8 +203,15 @@ func (detector *skippingPropertyDetector) checkChain(start astmodel.PropertyRefe
 		return nil
 	}
 
+	// If the properties have the same type, we don't have a break here - so we check the remainder of the chain
+	// (This is Ok because the value serialized into the property bag from lastObserved will deserialize into the
+	// reintroduced property intact.)
+	if detector.propertiesHaveSameType(lastObserved, reintroduced) {
+		return detector.checkChain(reintroduced)
+	}
+
 	return errors.Errorf(
-		"property %s was discontinued but later reintroduced as %s; "+
+		"property %s was discontinued but later reintroduced as %s with a different type; "+
 			"see https://github.com/Azure/azure-service-operator/issues/1776 for why this is a problem",
 		lastObserved,
 		reintroduced)
@@ -220,8 +229,8 @@ func (detector *skippingPropertyDetector) wasPropertyObserved(ref astmodel.Prope
 // If ref is empty, will return <empty>, <empty>
 func (detector *skippingPropertyDetector) findBreak(
 	ref astmodel.PropertyReference,
-	predicate func(astmodel.PropertyReference) bool) (astmodel.PropertyReference, astmodel.PropertyReference) {
-
+	predicate func(astmodel.PropertyReference) bool,
+) (astmodel.PropertyReference, astmodel.PropertyReference) {
 	next := detector.lookupNext(ref)
 	if next.IsEmpty() || predicate(ref) != predicate(next) {
 		return ref, next
@@ -239,4 +248,38 @@ func (detector *skippingPropertyDetector) lookupNext(ref astmodel.PropertyRefere
 	}
 
 	return astmodel.EmptyPropertyReference
+}
+
+// propertiesHaveSameType returns true if both the passed property references exist and have the same underlying type
+func (detector *skippingPropertyDetector) propertiesHaveSameType(
+	left astmodel.PropertyReference,
+	right astmodel.PropertyReference,
+) bool {
+	leftType, leftOk := detector.lookupPropertyType(left)
+	rightType, rightOk := detector.lookupPropertyType(right)
+
+	return leftOk && rightOk && leftType.Equals(rightType, astmodel.EqualityOverrides{})
+}
+
+// lookupPropertyType accepts a PropertyReference and looks up the actual type of the property
+func (detector *skippingPropertyDetector) lookupPropertyType(ref astmodel.PropertyReference) (astmodel.Type, bool) {
+	def, ok := detector.definitions[ref.DeclaringType()]
+	if !ok {
+		// Type not found
+		return nil, false
+	}
+
+	container, ok := astmodel.AsPropertyContainer(def.Type())
+	if !ok {
+		// Not a property container
+		return nil, false
+	}
+
+	prop, ok := container.Property(ref.Property())
+	if !ok {
+		// Not a known property
+		return nil, false
+	}
+
+	return prop.PropertyType(), true
 }

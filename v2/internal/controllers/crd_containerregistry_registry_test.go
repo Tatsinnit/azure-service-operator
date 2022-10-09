@@ -10,7 +10,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	containerregistry "github.com/Azure/azure-service-operator/v2/api/containerregistry/v1alpha1api20210901"
+	containerregistry "github.com/Azure/azure-service-operator/v2/api/containerregistry/v1beta20210901"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 )
 
@@ -21,22 +21,23 @@ func Test_ContainerRegistry_Registry_CRUD(t *testing.T) {
 
 	rg := tc.CreateTestResourceGroupAndWait()
 
-	publicNetworkAccess := containerregistry.RegistryPropertiesPublicNetworkAccessEnabled
-	zoneRedundancy := containerregistry.RegistryPropertiesZoneRedundancyDisabled
+	publicNetworkAccess := containerregistry.RegistryProperties_PublicNetworkAccess_Enabled
+	zoneRedundancy := containerregistry.RegistryProperties_ZoneRedundancy_Disabled
 	adminUserEnabled := false
 	name := tc.NoSpaceNamer.GenerateName("registry")
 
 	// Create a ContainerRegistry
+	skuName := containerregistry.Sku_Name_Basic
 	acct := containerregistry.Registry{
 		ObjectMeta: tc.MakeObjectMetaWithName(name),
-		Spec: containerregistry.Registries_Spec{
+		Spec: containerregistry.Registry_Spec{
 			AdminUserEnabled:    &adminUserEnabled,
 			AzureName:           name,
 			Location:            tc.AzureRegion,
 			Owner:               testcommon.AsOwner(rg),
 			PublicNetworkAccess: &publicNetworkAccess,
-			Sku: containerregistry.Sku{
-				Name: containerregistry.SkuNameBasic,
+			Sku: &containerregistry.Sku{
+				Name: &skuName,
 			},
 			ZoneRedundancy: &zoneRedundancy,
 		},

@@ -123,17 +123,20 @@ func (st statusTypes) findResourceType(typeName astmodel.TypeName) (astmodel.Typ
 
 type resourceLookup map[astmodel.TypeName]astmodel.Type
 
-func lowerCase(name astmodel.TypeName) astmodel.TypeName {
-	return astmodel.MakeTypeName(name.PackageReference, strings.ToLower(name.Name()))
+func asKey(name astmodel.TypeName) astmodel.TypeName {
+	n := strings.ToLower(name.Name())
+	n = strings.ReplaceAll(n, "_", "")
+
+	return astmodel.MakeTypeName(name.PackageReference, n)
 }
 
 func (resourceLookup resourceLookup) tryFind(name astmodel.TypeName) (astmodel.Type, bool) {
-	result, ok := resourceLookup[lowerCase(name)]
+	result, ok := resourceLookup[asKey(name)]
 	return result, ok
 }
 
 func (resourceLookup resourceLookup) add(name astmodel.TypeName, theType astmodel.Type) {
-	lower := lowerCase(name)
+	lower := asKey(name)
 	if _, ok := resourceLookup[lower]; ok {
 		panic(fmt.Sprintf("lowercase name collision: %s", name))
 	}
@@ -141,11 +144,11 @@ func (resourceLookup resourceLookup) add(name astmodel.TypeName, theType astmode
 	resourceLookup[lower] = theType
 }
 
-// statusTypeRenamer appends "_Status" to all types
+// statusTypeRenamer appends our standard StatusSuffix '_Status` to all types
 var statusTypeRenamer = astmodel.NewRenamingVisitorFromLambda(appendStatusSuffix)
 
 func appendStatusSuffix(typeName astmodel.TypeName) astmodel.TypeName {
-	return astmodel.MakeTypeName(typeName.PackageReference, typeName.Name()+"_Status")
+	return astmodel.MakeTypeName(typeName.PackageReference, typeName.Name()+astmodel.StatusSuffix)
 }
 
 // generateStatusTypes returns the statusTypes for the input Swagger types
@@ -359,7 +362,8 @@ func generateRenaming(
 	idFactory astmodel.IdentifierFactory,
 	original astmodel.TypeName,
 	filePath string,
-	typeNames map[astmodel.TypeName]int) astmodel.TypeName {
+	typeNames map[astmodel.TypeName]int,
+) astmodel.TypeName {
 	name := filepath.Base(filePath)
 	name = strings.TrimSuffix(name, filepath.Ext(name))
 
@@ -407,8 +411,8 @@ func structurallyIdentical(
 	leftType astmodel.Type,
 	leftDefinitions astmodel.TypeDefinitionSet,
 	rightType astmodel.Type,
-	rightDefinitions astmodel.TypeDefinitionSet) bool {
-
+	rightDefinitions astmodel.TypeDefinitionSet,
+) bool {
 	// we cannot simply recurse when we hit TypeNames as there can be cycles in types.
 	// instead we store all TypeNames that need to be checked in here, and
 	// check them one at a time until there is nothing left to be checked:
@@ -478,8 +482,8 @@ func loadAllSchemas(
 	rootPath string,
 	localPathPrefix string,
 	idFactory astmodel.IdentifierFactory,
-	overrides []config.SchemaOverride) (map[string]jsonast.PackageAndSwagger, error) {
-
+	overrides []config.SchemaOverride,
+) (map[string]jsonast.PackageAndSwagger, error) {
 	var mutex sync.Mutex
 	schemas := make(map[string]jsonast.PackageAndSwagger)
 
@@ -509,8 +513,8 @@ func loadAllSchemas(
 			pkg := astmodel.MakeLocalPackageReference(
 				localPathPrefix,
 				idFactory.CreateGroupName(group),
-				astmodel.CreateLocalPackageNameFromVersion(version),
-			)
+				astmodel.GeneratorVersion,
+				version)
 
 			// all files are loaded in parallel to speed this up
 			eg.Go(func() error {

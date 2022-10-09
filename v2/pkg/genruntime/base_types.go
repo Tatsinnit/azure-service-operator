@@ -6,23 +6,23 @@
 package genruntime
 
 import (
-	"context"
-
-	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
 )
 
-type ResourceKind string
+type ResourceScope string
 
 const (
-	// ResourceKindNormal is a standard ARM resource.
-	ResourceKindNormal = ResourceKind("normal")
-	// ResourceKindExtension is an extension resource. Extension resources can have any resource as their parent.
-	ResourceKindExtension = ResourceKind("extension")
+	// ResourceScopeLocation is a resource that is deployed into a location
+	ResourceScopeLocation = ResourceScope("location")
+	// ResourceScopeResourceGroup is a resource that is deployed into a resource group
+	ResourceScopeResourceGroup = ResourceScope("resourcegroup")
+	// ResourceScopeExtension is an extension resource. Extension resources can have any resource as their parent.
+	ResourceScopeExtension = ResourceScope("extension")
+	// ResourceScopeTenant is an Azure resource rooted to the tenant (examples include subscription, managementGroup, etc)
+	ResourceScopeTenant = ResourceScope("tenant")
 )
 
 // TODO: It's weird that this is isn't with the other annotations
@@ -30,31 +30,34 @@ const (
 // TODO: to serviceoperator-internal.azure.com to signify they are internal?
 const (
 	ResourceIDAnnotation = "serviceoperator.azure.com/resource-id"
+
+	// ChildResourceIDOverrideAnnotation is an annotation that can be used to force child resources
+	// to be owned by a different resource ID than it would normally. This is primarily used for
+	// resources like SubscriptionAlias + Subscription, where the create API doesn't use the same
+	// ResourceID as needed by child resources of the subscription.
+	// When present, this takes precedent over the resources AzureName() and Type.
+	// TODO: Currently this annotation can only be used on the root resource in a resource hierarchy.
+	// TODO: For example if A owns B owns C, this annotation can be used on A but not on B or C.
+	ChildResourceIDOverrideAnnotation = "serviceoperator.azure.com/child-resource-id-override"
 )
 
 // MetaObject represents an arbitrary ASO custom resource
 type MetaObject interface {
 	runtime.Object
 	metav1.Object
+	conditions.Conditioner
+}
+
+// ARMMetaObject represents an arbitrary ASO resource that is an ARM resource
+type ARMMetaObject interface {
+	MetaObject
 	KubernetesResource
 }
 
-type Reconciler interface {
-	Reconcile(ctx context.Context, log logr.Logger, obj MetaObject) (ctrl.Result, error)
-}
-
-// TODO: We really want these methods to be on MetaObject itself -- should update code generator to make them at some point
-func GetResourceID(obj MetaObject) (string, bool) {
-	result, ok := obj.GetAnnotations()[ResourceIDAnnotation]
-	return result, ok
-}
-
-func GetResourceIDOrDefault(obj MetaObject) string {
-	return obj.GetAnnotations()[ResourceIDAnnotation]
-}
-
-func SetResourceID(obj MetaObject, id string) {
-	AddAnnotation(obj, ResourceIDAnnotation, id)
+// ARMOwnedMetaObject represents an arbitrary ASO resource that is owned by an ARM resource
+type ARMOwnedMetaObject interface {
+	MetaObject
+	ARMOwned
 }
 
 // AddAnnotation adds the specified annotation to the object.
@@ -132,7 +135,7 @@ func (resource *armResourceImpl) GetID() string {
 }
 
 // GetReadyCondition gets the ready condition from the object
-func GetReadyCondition(obj MetaObject) *conditions.Condition {
+func GetReadyCondition(obj conditions.Conditioner) *conditions.Condition {
 	for _, c := range obj.GetConditions() {
 		if c.Type == conditions.ConditionTypeReady {
 			return &c

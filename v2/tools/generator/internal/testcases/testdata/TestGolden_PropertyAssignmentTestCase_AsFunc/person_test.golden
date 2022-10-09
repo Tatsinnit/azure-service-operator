@@ -3,21 +3,21 @@
 // Licensed under the MIT license.
 package v20200101
 
-import person "github.com/Azure/azure-service-operator/testing/person/v20211231"
+import v20211231 "github.com/Azure/azure-service-operator/testing/person/v20211231"
 
 type Person_Spec struct {
-	//FamilyName: Shared name of the family
-	FamilyName string `json:"familyName"`
+	// FamilyName: Shared name of the family
+	FamilyName string `json:"familyName,omitempty"`
 
-	//FullName: As would be used to address mail
-	FullName string `json:"fullName"`
+	// FullName: As would be used to address mail
+	FullName string `json:"fullName,omitempty"`
 
-	//KnownAs: How the person is generally known
-	KnownAs string `json:"knownAs"`
+	// KnownAs: How the person is generally known
+	KnownAs string `json:"knownAs,omitempty"`
 }
 
-// AssignPropertiesFromPersonSpec populates our Person_Spec from the provided source Person_Spec
-func (person *Person_Spec) AssignPropertiesFromPersonSpec(source *person.Person_Spec) error {
+// AssignProperties_From_Person_Spec populates our Person_Spec from the provided source Person_Spec
+func (person *Person_Spec) AssignProperties_From_Person_Spec(source *v20211231.Person_Spec) error {
 
 	// FamilyName
 	person.FamilyName = source.FamilyName
@@ -32,8 +32,8 @@ func (person *Person_Spec) AssignPropertiesFromPersonSpec(source *person.Person_
 	return nil
 }
 
-// AssignPropertiesToPersonSpec populates the provided destination Person_Spec from our Person_Spec
-func (person *Person_Spec) AssignPropertiesToPersonSpec(destination *person.Person_Spec) error {
+// AssignProperties_To_Person_Spec populates the provided destination Person_Spec from our Person_Spec
+func (person *Person_Spec) AssignProperties_To_Person_Spec(destination *v20211231.Person_Spec) error {
 
 	// FamilyName
 	destination.FamilyName = person.FamilyName

@@ -12,9 +12,9 @@ import (
 	"github.com/Azure/go-autorest/autorest/to"
 	. "github.com/onsi/gomega"
 
-	insightswebtest "github.com/Azure/azure-service-operator/v2/api/insights/v1alpha1api20180501preview"
-	insights "github.com/Azure/azure-service-operator/v2/api/insights/v1alpha1api20200202"
-	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1alpha1api20200601"
+	insightswebtest "github.com/Azure/azure-service-operator/v2/api/insights/v1beta20180501preview"
+	insights "github.com/Azure/azure-service-operator/v2/api/insights/v1beta20200202"
+	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 )
 
@@ -26,20 +26,21 @@ func Test_Insights_Component_CRUD(t *testing.T) {
 	rg := tc.CreateTestResourceGroupAndWait()
 
 	// Create a component
+	applicationType := insights.ApplicationInsightsComponentProperties_Application_Type_Other
 	component := &insights.Component{
 		ObjectMeta: tc.MakeObjectMeta("component"),
-		Spec: insights.Components_Spec{
+		Spec: insights.Component_Spec{
 			Location: tc.AzureRegion,
 			Owner:    testcommon.AsOwner(rg),
 			// According to their documentation you can set anything here, it's ignored.
-			ApplicationType: insights.ApplicationInsightsComponentPropertiesApplicationTypeOther,
-			Kind:            "web",
+			Application_Type: &applicationType,
+			Kind:             to.StringPtr("web"),
 		},
 	}
 
 	tc.CreateResourceAndWait(component)
 
-	tc.Expect(component.Status.Location).To(Equal(&tc.AzureRegion))
+	tc.Expect(component.Status.Location).To(Equal(tc.AzureRegion))
 	tc.Expect(component.Status.Kind).To(Equal(to.StringPtr("web")))
 	tc.Expect(component.Status.Id).ToNot(BeNil())
 	armId := *component.Status.Id
@@ -64,7 +65,7 @@ func Test_Insights_Component_CRUD(t *testing.T) {
 	exists, _, err := tc.AzureClient.HeadByID(
 		tc.Ctx,
 		armId,
-		string(insights.ComponentsSpecAPIVersion20200202))
+		string(insights.APIVersion_Value))
 	tc.Expect(err).ToNot(HaveOccurred())
 	tc.Expect(exists).To(BeFalse())
 }
@@ -73,18 +74,21 @@ func Insights_WebTest_CRUD(tc *testcommon.KubePerTestContext, rg *resources.Reso
 	horribleHiddenLink := fmt.Sprintf("hidden-link:%s", to.String(component.Status.Id))
 
 	// Create a webtest
+	om := tc.MakeObjectMeta("webtest")
+	kind := insightswebtest.WebTestProperties_Kind_Standard
 	webtest := &insightswebtest.Webtest{
-		ObjectMeta: tc.MakeObjectMeta("webtest"),
-		Spec: insightswebtest.Webtests_Spec{
-			Location: tc.AzureRegion,
-			Owner:    testcommon.AsOwner(rg),
+		ObjectMeta: om,
+		Spec: insightswebtest.Webtest_Spec{
+			Location:           tc.AzureRegion,
+			Owner:              testcommon.AsOwner(rg),
+			SyntheticMonitorId: &om.Name,
 			Tags: map[string]string{
 				horribleHiddenLink: "Resource",
 			},
-			Name:      "mywebtest",
+			Name:      to.StringPtr("mywebtest"),
 			Enabled:   to.BoolPtr(true),
 			Frequency: to.IntPtr(300),
-			Kind:      insightswebtest.WebTestPropertiesKindStandard,
+			Kind:      &kind,
 			Locations: []insightswebtest.WebTestGeolocation{
 				{
 					Id: to.StringPtr("us-ca-sjc-azr"), // This is US west...
@@ -104,8 +108,8 @@ func Insights_WebTest_CRUD(tc *testcommon.KubePerTestContext, rg *resources.Reso
 
 	tc.CreateResourceAndWait(webtest)
 
-	expectedKind := insightswebtest.WebTestPropertiesStatusKindStandard
-	tc.Expect(webtest.Status.Location).To(Equal(&tc.AzureRegion))
+	expectedKind := insightswebtest.WebTestProperties_Kind_STATUS_Standard
+	tc.Expect(webtest.Status.Location).To(Equal(tc.AzureRegion))
 	tc.Expect(webtest.Status.Kind).To(Equal(&expectedKind))
 	tc.Expect(webtest.Status.Id).ToNot(BeNil())
 	armId := *webtest.Status.Id
@@ -122,8 +126,7 @@ func Insights_WebTest_CRUD(tc *testcommon.KubePerTestContext, rg *resources.Reso
 	exists, _, err := tc.AzureClient.HeadByID(
 		tc.Ctx,
 		armId,
-		string(insightswebtest.WebtestsSpecAPIVersion20180501Preview))
+		string(insightswebtest.APIVersion_Value))
 	tc.Expect(err).ToNot(HaveOccurred())
 	tc.Expect(exists).To(BeFalse())
-
 }

@@ -7,8 +7,7 @@ package pipeline
 
 import (
 	"context"
-	"strings"
-
+	"fmt"
 	"github.com/pkg/errors"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/armconversion"
@@ -96,7 +95,7 @@ func (c *armConversionApplier) transformResourceStatuses() (astmodel.TypeDefinit
 		_, ok := astmodel.AsObjectType(def.Type())
 		// TODO: We need labels
 		// Some status types are initially anonymous and then get named later (so end with a _Status_Xyz suffix)
-		return ok && strings.Contains(def.Name().Name(), "_Status") && !astmodel.ARMFlag.IsOn(def.Type())
+		return ok && def.Name().IsStatus() && !astmodel.ARMFlag.IsOn(def.Type())
 	})
 
 	for _, td := range statusDefs {
@@ -175,13 +174,10 @@ func (c *armConversionApplier) transformSpec(resourceType *astmodel.ResourceType
 	}
 
 	injectOwnerProperty := func(t *astmodel.ObjectType) (*astmodel.ObjectType, error) {
-		if resourceType.Owner() != nil && resourceType.Kind() == astmodel.ResourceKindNormal {
-			ownerProperty, propErr := c.createOwnerProperty(resourceType.Owner())
-			if propErr != nil {
-				return nil, propErr
-			}
+		if resourceType.Owner() != nil && resourceType.Scope() == astmodel.ResourceScopeResourceGroup {
+			ownerProperty := c.createOwnerProperty(resourceType.Owner())
 			t = t.WithProperty(ownerProperty)
-		} else if resourceType.Kind() == astmodel.ResourceKindExtension {
+		} else if resourceType.Scope() == astmodel.ResourceScopeExtension {
 			t = t.WithProperty(c.createExtensionResourceOwnerProperty())
 		}
 
@@ -198,8 +194,14 @@ func (c *armConversionApplier) transformSpec(resourceType *astmodel.ResourceType
 			return t, nil
 		}
 
-		// rename Name to AzureName
-		azureNameProp := armconversion.GetAzureNameProperty(c.idFactory).WithType(nameProp.PropertyType())
+		// rename Name to AzureName and promote type if needed
+		// Note: if this type ends up wrapped in another type we may need to use a visitor to do this instead of
+		// doing it manually.
+		namePropType := nameProp.PropertyType()
+		if optional, ok := namePropType.(*astmodel.OptionalType); ok {
+			namePropType = optional.Element()
+		}
+		azureNameProp := armconversion.GetAzureNameProperty(c.idFactory).WithType(namePropType)
 		return t.WithoutProperty(astmodel.NameProperty).WithProperty(azureNameProp), nil
 	}
 
@@ -241,27 +243,36 @@ func (c *armConversionApplier) addARMConversionInterface(
 	return result, nil
 }
 
-func (c *armConversionApplier) createOwnerProperty(ownerTypeName *astmodel.TypeName) (*astmodel.PropertyDefinition, error) {
+func (c *armConversionApplier) createOwnerProperty(ownerTypeName *astmodel.TypeName) *astmodel.PropertyDefinition {
+	grp, _ := ownerTypeName.PackageReference.GroupVersion()
+	group := grp + astmodel.GroupSuffix
+	kind := ownerTypeName.Name()
+
 	prop := astmodel.NewPropertyDefinition(
 		c.idFactory.CreatePropertyName(astmodel.OwnerProperty, astmodel.Exported),
 		c.idFactory.CreateIdentifier(astmodel.OwnerProperty, astmodel.NotExported),
-		astmodel.KnownResourceReferenceType)
+		astmodel.NewOptionalType(astmodel.KnownResourceReferenceType))
+	prop = prop.WithDescription(
+		fmt.Sprintf("The owner of the resource. The owner controls where the resource goes when it is deployed. "+
+			"The owner also controls the resources lifecycle. "+
+			"When the owner is deleted the resource will also be deleted. Owner is expected to "+
+			"be a reference to a %s/%s resource", group, kind))
+	prop = prop.WithTag("group", group)
+	prop = prop.WithTag("kind", kind)
+	prop = prop.MakeRequired() // Owner is always required
 
-	ref := ownerTypeName.PackageReference
-	if group, _, ok := ref.GroupVersion(); ok {
-		prop = prop.WithTag("group", group+astmodel.GroupSuffix)
-		prop = prop.WithTag("kind", ownerTypeName.Name())
-		prop = prop.MakeRequired() // Owner is always required
-	} else {
-		return nil, errors.Errorf("owners from external package %s not currently supported", ref)
-	}
-
-	return prop, nil
+	return prop
 }
 
 func (c *armConversionApplier) createExtensionResourceOwnerProperty() *astmodel.PropertyDefinition {
-	return astmodel.NewPropertyDefinition(
+	prop := astmodel.NewPropertyDefinition(
 		c.idFactory.CreatePropertyName(astmodel.OwnerProperty, astmodel.Exported),
 		c.idFactory.CreateIdentifier(astmodel.OwnerProperty, astmodel.NotExported),
-		astmodel.ArbitraryOwnerReference).MakeRequired()
+		astmodel.NewOptionalType(astmodel.ArbitraryOwnerReference)).MakeRequired()
+	prop = prop.WithDescription(
+		"The owner of the resource. The owner controls where the resource goes when it is deployed. " +
+			"The owner also controls the resources lifecycle. " +
+			"When the owner is deleted the resource will also be deleted. " +
+			"This resource is an extension resource, which means that any other Azure resource can be its owner.")
+	return prop
 }

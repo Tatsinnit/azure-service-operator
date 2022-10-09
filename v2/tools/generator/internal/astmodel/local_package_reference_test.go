@@ -6,26 +6,31 @@
 package astmodel
 
 import (
+	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
 )
 
 func makeTestLocalPackageReference(group string, version string) LocalPackageReference {
-	return MakeLocalPackageReference("github.com/Azure/azure-service-operator/v2/api", group, version)
+	// We use a fixed path and version prefixes to ensure consistency across testing
+	// For convenience, we tolerate the prefix already being present
+	version = strings.TrimPrefix(version, "v")
+	return MakeLocalPackageReference("github.com/Azure/azure-service-operator/v2/api", group, "v", version)
 }
 
 func TestMakeLocalPackageReference_GivenGroupAndPackage_ReturnsInstanceWithProperties(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name  string
-		group string
-		pkg   string
+		name       string
+		group      string
+		apiVersion string
+		pkg        string
 	}{
-		{"Networking", "microsoft.networking", "v20200901"},
-		{"Batch (new)", "microsoft.batch", "v20200901"},
-		{"Batch (old)", "microsoft.batch", "v20150101"},
+		{"Networking", "microsoft.networking", "2020-09-01", "v20200901"},
+		{"Batch (new)", "microsoft.batch", "2020-09-01", "v20200901"},
+		{"Batch (old)", "microsoft.batch", "2015-01-01", "v20150101"},
 	}
 	for _, c := range cases {
 		c := c
@@ -33,12 +38,10 @@ func TestMakeLocalPackageReference_GivenGroupAndPackage_ReturnsInstanceWithPrope
 			t.Parallel()
 			g := NewGomegaWithT(t)
 
-			ref := makeTestLocalPackageReference(c.group, c.pkg)
-			grp := ref.Group()
-			pkg := ref.PackageName()
-
-			g.Expect(grp).To(Equal(c.group))
-			g.Expect(pkg).To(Equal(c.pkg))
+			ref := makeTestLocalPackageReference(c.group, c.apiVersion)
+			g.Expect(ref.Group()).To(Equal(c.group))
+			g.Expect(ref.PackageName()).To(Equal(c.pkg))
+			g.Expect(ref.ApiVersion()).To(Equal(c.apiVersion))
 		})
 	}
 }
@@ -49,24 +52,28 @@ func TestLocalPackageReferences_ReturnExpectedProperties(t *testing.T) {
 	cases := []struct {
 		name         string
 		group        string
+		version      string
 		pkg          string
 		expectedPath string
 	}{
 		{
 			"Networking",
 			"microsoft.networking",
+			"2020-09-01",
 			"v20200901",
 			"github.com/Azure/azure-service-operator/v2/api/microsoft.networking/v20200901",
 		},
 		{
 			"Batch (new)",
 			"microsoft.batch",
+			"2020-09-01",
 			"v20200901",
 			"github.com/Azure/azure-service-operator/v2/api/microsoft.batch/v20200901",
 		},
 		{
 			"Batch (old)",
 			"microsoft.batch",
+			"2015-01-01",
 			"v20150101",
 			"github.com/Azure/azure-service-operator/v2/api/microsoft.batch/v20150101",
 		},
@@ -77,7 +84,7 @@ func TestLocalPackageReferences_ReturnExpectedProperties(t *testing.T) {
 			t.Parallel()
 			g := NewGomegaWithT(t)
 
-			ref := makeTestLocalPackageReference(c.group, c.pkg)
+			ref := makeTestLocalPackageReference(c.group, c.version)
 			grp := ref.Group()
 			g.Expect(ref.PackageName()).To(Equal(c.pkg))
 			g.Expect(ref.PackagePath()).To(Equal(c.expectedPath))
@@ -144,9 +151,8 @@ func TestLocalPackageReferenceIsPreview(t *testing.T) {
 			t.Parallel()
 			g := NewGomegaWithT(t)
 
-			ref := makeTestLocalPackageReference(
-				"microsoft.storage",
-				CreateLocalPackageNameFromVersion(c.version))
+			// Using GeneratorVersion here to make sure IsPreview isn't fooled
+			ref := MakeLocalPackageReference("prefix", "microsoft.storage", GeneratorVersion, c.version)
 
 			g.Expect(ref.IsPreview()).To(Equal(c.isPreview))
 		})

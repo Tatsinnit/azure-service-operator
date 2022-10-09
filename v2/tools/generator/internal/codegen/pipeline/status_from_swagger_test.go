@@ -12,6 +12,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
+	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/test"
 )
 
 func Test_ShouldSkipDir_GivenPath_HasExpectedResult(t *testing.T) {
@@ -68,25 +69,21 @@ func Test_ShouldSkipDir_GivenPath_HasExpectedResult(t *testing.T) {
 	}
 }
 
-func makeTestLocalPackageReference(group string, version string) astmodel.LocalPackageReference {
-	return astmodel.MakeLocalPackageReference("github.com/Azure/azure-service-operator/v2/api", group, version)
-}
-
 func Test_StructurallyIdentical_RecursesIntoTypeNames(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
-	pkg := makeTestLocalPackageReference("abc", "123")
+	pkg := test.MakeLocalPackageReference("abc", "123")
 	name := func(n string) astmodel.TypeName { return astmodel.MakeTypeName(pkg, n) }
 
-	types1 := astmodel.MakeTypes(map[astmodel.TypeName]astmodel.Type{
+	types1 := astmodel.MakeTypeDefinitionSet(map[astmodel.TypeName]astmodel.Type{
 		name("LeafInt"): astmodel.IntType,
 		name("X"): astmodel.NewObjectType().WithProperties(
 			astmodel.NewPropertyDefinition("Prop", "prop", name("LeafInt")),
 		),
 	})
 
-	types2 := astmodel.MakeTypes(map[astmodel.TypeName]astmodel.Type{
+	types2 := astmodel.MakeTypeDefinitionSet(map[astmodel.TypeName]astmodel.Type{
 		name("AnotherLeafInt"): astmodel.IntType,
 		name("X"): astmodel.NewObjectType().WithProperties(
 			astmodel.NewPropertyDefinition("Prop", "prop", name("AnotherLeafInt")),
@@ -108,17 +105,17 @@ func Test_StructurallyIdentical_DistinguishesIdenticalTypeNames(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
-	pkg := makeTestLocalPackageReference("abc", "123")
+	pkg := test.MakeLocalPackageReference("abc", "123")
 	name := func(n string) astmodel.TypeName { return astmodel.MakeTypeName(pkg, n) }
 
-	types1 := astmodel.MakeTypes(map[astmodel.TypeName]astmodel.Type{
+	types1 := astmodel.MakeTypeDefinitionSet(map[astmodel.TypeName]astmodel.Type{
 		name("Leaf"): astmodel.IntType,
 		name("X"): astmodel.NewObjectType().WithProperties(
 			astmodel.NewPropertyDefinition("Prop", "prop", name("Leaf")),
 		),
 	})
 
-	types2 := astmodel.MakeTypes(map[astmodel.TypeName]astmodel.Type{
+	types2 := astmodel.MakeTypeDefinitionSet(map[astmodel.TypeName]astmodel.Type{
 		name("Leaf"): astmodel.StringType, // string, not int
 		name("X"): astmodel.NewObjectType().WithProperties(
 			astmodel.NewPropertyDefinition("Prop", "prop", name("Leaf")),

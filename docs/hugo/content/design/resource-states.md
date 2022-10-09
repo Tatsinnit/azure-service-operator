@@ -1,5 +1,7 @@
-# Proposal for reporting resource Status
-
+---
+title: Proposal for reporting resource Status
+linktitle: Resource status
+---
 ## What Status are we talking about?
 There are two types of Status that we're interested in understanding and reporting to the user when running an operator that creates resources in Azure:
 
@@ -56,7 +58,7 @@ as annotations (`deploymentId` possibly), while others are obviously status and 
 ## Examining other projects like ASO
 A quick look across the field of projects similar to ASO suggests that there is a relatively standard approach to solving this problem:
 
-* Crossplane reports status through a [Ready condition](https://crossplane.io/docs/v1.3/reference/troubleshoot.html#resource-status-and-conditions)
+* Crossplane reports status through a [Ready condition](https://crossplane.io/docs/v1.9/reference/troubleshoot.html#resource-status-and-conditions)
 * ACK reports status through a [variety of conditions](https://github.com/aws-controllers-k8s/runtime/blob/8191f606c5975d5ba0a1433fab695533980733ba/apis/core/v1alpha1/conditions.go), including `ACK.Adopted`, `ACK.resourceSynced`, `ACK.Terminal`, etc.
 * Cluster API originally used a `phase` and `failureReason`/`failureMessage` pattern, but has since [moved to use conditions](https://github.com/kubernetes-sigs/cluster-api/blob/master/docs/proposals/20200506-conditions.md) and is deprecating the old pattern.
 * Pod uses a combination of [phase](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-phase) and [conditions](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-conditions), including `PodScheduled`, `ContainersReady`, `Initialized`, and `Ready`.

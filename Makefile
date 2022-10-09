@@ -207,7 +207,7 @@ validate-cainjection-files:
 # Generate manifests for helm and package them up
 .PHONY: helm-chart-manifests
 helm-chart-manifests: LATEST_TAG := $(shell curl -sL https://api.github.com/repos/Azure/azure-service-operator/releases/latest  | jq '.tag_name' --raw-output )
-helm-chart-manifests: KUBE_RBAC_PROXY := gcr.io/kubebuilder/kube-rbac-proxy:v0.5.0
+helm-chart-manifests: KUBE_RBAC_PROXY := gcr.io/kubebuilder/kube-rbac-proxy:v0.13.0
 helm-chart-manifests: generate
 	@echo "Latest released tag is $(LATEST_TAG)"
 	# substitute released tag into values file.
@@ -347,7 +347,7 @@ endif
 install-cert-manager:
 	kubectl create namespace cert-manager
 	kubectl label namespace cert-manager cert-manager.io/disable-validation=true
-	kubectl apply -f https://github.com/jetstack/cert-manager/releases/download/v1.1.0/cert-manager.yaml
+	kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.7.2/cert-manager.yaml
 
 .PHONY: install-aad-pod-identity
 install-aad-pod-identity:
@@ -362,19 +362,16 @@ install-test-tools: install-tools
 	&& go get github.com/axw/gocov/gocov \
 	&& go get github.com/AlekSi/gocov-xml \
 	&& go get github.com/wadey/gocovmerge \
-	&& go get sigs.k8s.io/kind@v0.11.1
+	&& go get sigs.k8s.io/kind@v0.14.0
 	rm -r $(TEST_TOOLS_MOD_DIR)
 
 .PHONY: install-tools
 install-tools: TEMP_DIR := $(shell mktemp -d -t goinstall_XXXXXXXXXX)
 install-tools:
-	cd $(TEMP_DIR) \
-	&& go mod init fake/mod \
-	&& go get github.com/mikefarah/yq/v4 \
-	&& go get k8s.io/code-generator/cmd/conversion-gen@v0.18.2 \
-	&& go get sigs.k8s.io/kustomize/kustomize/v3@v3.8.6 \
-	&& go get sigs.k8s.io/controller-tools/cmd/controller-gen@v0.4.0
-	rm -r $(TEMP_DIR)
+	go install github.com/mikefarah/yq/v4@v4.23.1
+	go install k8s.io/code-generator/cmd/conversion-gen@v0.23.5
+	go install sigs.k8s.io/kustomize/kustomize/v4@v4.5.4 
+	go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.8.0
     CONTROLLER_GEN=$(shell go env GOPATH)/bin/controller-gen
 
 # Operator-sdk release version

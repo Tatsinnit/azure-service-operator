@@ -20,6 +20,10 @@ var (
 
 	// Reusable Properties - any package version
 
+	// Properties to simplate an actual ARM resource
+	NameProperty = astmodel.NewPropertyDefinition("Name", "name", astmodel.StringType).
+			WithDescription("The name of the resource")
+
 	FullNameProperty = astmodel.NewPropertyDefinition("FullName", "fullName", astmodel.StringType).
 				WithDescription("As would be used to address mail")
 
@@ -38,6 +42,9 @@ var (
 	StatusProperty = astmodel.NewPropertyDefinition("Status", "status", astmodel.StringType).
 			WithDescription("Current status")
 
+	OptionalStringProperty = astmodel.NewPropertyDefinition("OptionalString", "optionalString", astmodel.NewOptionalType(astmodel.StringType)).
+				WithDescription("An optional string")
+
 	PropertyBagProperty = astmodel.NewPropertyDefinition("PropertyBag", "$propertyBag", astmodel.PropertyBagType).
 				WithDescription("Stash for extra properties")
 
@@ -46,7 +53,8 @@ var (
 	Pkg2020s = astmodel.MakeStoragePackageReference(Pkg2020)
 
 	// Reference Package 2021 preview
-	Pkg2021Preview = MakeLocalPackageReference(Group, "v20211231preview")
+	Pkg2021Preview        = MakeLocalPackageReference(Group, "v20211231preview")
+	Pkg2021PreviewStorage = astmodel.MakeStoragePackageReference(Pkg2021Preview)
 
 	// Reference Packages for 2021
 	Pkg2021  = MakeLocalPackageReference(Group, "v20211231")
@@ -57,10 +65,21 @@ var (
 	Pkg2022s = astmodel.MakeStoragePackageReference(Pkg2022)
 
 	// Reference Package Batch 2020
-	BatchPkg2020 = MakeLocalPackageReference(BatchGroup, "v20200101")
+	BatchPkg2020  = MakeLocalPackageReference(BatchGroup, "v20200101")
+	BatchPkg2020s = astmodel.MakeStoragePackageReference(BatchPkg2020)
 
 	// Reference Package Batch 2021
-	BatchPkg2021 = MakeLocalPackageReference(BatchGroup, "v20210630")
+	BatchPkg2021  = MakeLocalPackageReference(BatchGroup, "v20210630")
+	BatchPkg2021s = astmodel.MakeStoragePackageReference(BatchPkg2021)
+
+	// Reference Package Batch 2021 - beta
+	BatchPkgBeta2021  = MakeLocalPackageReference(BatchGroup, "v1beta20210101")
+	BatchPkgBeta2021s = astmodel.MakeStoragePackageReference(BatchPkg2021)
+
+	// Objects in Pkg2020
+	Pkg2020APIVersion = astmodel.MakeTypeDefinition(
+		astmodel.MakeTypeName(Pkg2020, "APIVersion"),
+		astmodel.NewEnumType(astmodel.StringType, astmodel.EnumValue{Identifier: "v2020", Value: "v2020"}))
 
 	// Objects in Pkg2021
 

@@ -11,7 +11,7 @@ import (
 	"github.com/Azure/go-autorest/autorest/to"
 	. "github.com/onsi/gomega"
 
-	operationalinsights "github.com/Azure/azure-service-operator/v2/api/operationalinsights/v1alpha1api20210601"
+	operationalinsights "github.com/Azure/azure-service-operator/v2/api/operationalinsights/v1beta20210601"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 )
 
@@ -23,20 +23,21 @@ func Test_OperationalInsights_Workspace_CRUD(t *testing.T) {
 	rg := tc.CreateTestResourceGroupAndWait()
 
 	// Create a workspace
+	sku := operationalinsights.WorkspaceSku_Name_Standalone
 	workspace := &operationalinsights.Workspace{
 		ObjectMeta: tc.MakeObjectMeta("workspace"),
-		Spec: operationalinsights.Workspaces_Spec{
+		Spec: operationalinsights.Workspace_Spec{
 			Location: tc.AzureRegion,
 			Owner:    testcommon.AsOwner(rg),
 			Sku: &operationalinsights.WorkspaceSku{
-				Name: operationalinsights.WorkspaceSkuNameStandalone,
+				Name: &sku,
 			},
 		},
 	}
 
 	tc.CreateResourceAndWait(workspace)
 
-	tc.Expect(workspace.Status.Location).To(Equal(&tc.AzureRegion))
+	tc.Expect(workspace.Status.Location).To(Equal(tc.AzureRegion))
 	tc.Expect(workspace.Status.Id).ToNot(BeNil())
 	armId := *workspace.Status.Id
 
@@ -52,7 +53,7 @@ func Test_OperationalInsights_Workspace_CRUD(t *testing.T) {
 	exists, _, err := tc.AzureClient.HeadByID(
 		tc.Ctx,
 		armId,
-		string(operationalinsights.WorkspacesSpecAPIVersion20210601))
+		string(operationalinsights.APIVersion_Value))
 	tc.Expect(err).ToNot(HaveOccurred())
 	tc.Expect(exists).To(BeFalse())
 }

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+
+	"github.com/Azure/azure-service-operator/v2/internal/set"
 )
 
 // \W is all non-word characters (https://golang.org/pkg/regexp/syntax/)
@@ -39,8 +41,9 @@ type IdentifierFactory interface {
 type identifierFactory struct {
 	renames                   map[string]string
 	reservedWords             map[string]string
-	forbiddenReceiverSuffixes StringSet
+	forbiddenReceiverSuffixes set.Set[string]
 
+	internCache   internCache
 	idCache       idCache
 	receiverCache map[string]string
 	rwLock        sync.RWMutex
@@ -49,6 +52,23 @@ type identifierFactory struct {
 type idCacheKey struct {
 	name       string
 	visibility Visibility
+}
+
+// Even though we cache input → result for identifier generation,
+// we could (and do) generate the same result many times,
+// for different inputs.
+// internCache lets us share the same result for each different input, which
+// reduces overall memory usage (and speeds up string comparisons,
+// but this is unmeasured).
+type internCache map[string]string
+
+func (c internCache) intern(value string) string {
+	if interned, ok := c[value]; ok {
+		return interned
+	}
+
+	c[value] = value
+	return value
 }
 
 type idCache map[idCacheKey]string
@@ -62,6 +82,7 @@ func NewIdentifierFactory() IdentifierFactory {
 		renames:                   createRenames(),
 		reservedWords:             createReservedWords(),
 		idCache:                   make(idCache),
+		internCache:               make(internCache),
 		receiverCache:             make(map[string]string),
 		forbiddenReceiverSuffixes: createForbiddenReceiverSuffixes(),
 	}
@@ -79,6 +100,7 @@ func (factory *identifierFactory) CreateIdentifier(name string, visibility Visib
 
 	result := factory.createIdentifierUncached(name, visibility)
 	factory.rwLock.Lock()
+	result = factory.internCache.intern(result)
 	factory.idCache[cacheKey] = result
 	factory.rwLock.Unlock()
 	return result
@@ -86,8 +108,11 @@ func (factory *identifierFactory) CreateIdentifier(name string, visibility Visib
 
 func (factory *identifierFactory) createIdentifierUncached(name string, visibility Visibility) string {
 
+	// Trim any leading or trailing underscores before proceeding.
+	name = strings.Trim(name, "_")
+
 	if identifier, ok := factory.renames[name]; ok {
-		// Just lowercase the first character according to visibility
+		// Adjust letter case of the first character according to visibility
 		r := []rune(identifier)
 		if visibility == NotExported {
 			r[0] = unicode.ToLower(r[0])
@@ -98,27 +123,52 @@ func (factory *identifierFactory) createIdentifierUncached(name string, visibili
 		return string(r)
 	}
 
-	// replace non-word characters with spaces so title-casing works nicely
-	clean := filterRegex.ReplaceAllLiteralString(name, " ")
-
-	cleanWords := sliceIntoWords(clean)
-	var caseCorrectedWords []string
-	for i, word := range cleanWords {
-		if visibility == NotExported && i == 0 {
-			caseCorrectedWords = append(caseCorrectedWords, strings.ToLower(word))
-		} else {
-			caseCorrectedWords = append(caseCorrectedWords, strings.Title(word))
+	// Split into parts based on `_` and process each individually
+	parts := strings.Split(name, "_")
+	cleanParts := make([]string, 0, len(parts))
+	partVisibility := visibility
+	for _, part := range parts {
+		clean := factory.cleanPart(part, partVisibility)
+		if len(clean) > 0 {
+			cleanParts = append(cleanParts, clean)
 		}
+
+		partVisibility = Exported
 	}
 
-	result := strings.Join(caseCorrectedWords, "")
+	result := strings.Join(cleanParts, "_")
 
 	if alternateWord, ok := factory.reservedWords[result]; ok {
-		// This is a reserved word, we need to use an alternate word
+		// This is a reserved word, we need to use an alternate identifier
 		return alternateWord
 	}
 
 	return result
+}
+
+// cleanPart cleans up a part of an identifier
+func (factory *identifierFactory) cleanPart(part string, visibility Visibility) string {
+	clean := filterRegex.ReplaceAllLiteralString(part, " ")
+	cleanWords := sliceIntoWords(clean)
+	caseCorrectedWords := make([]string, 0, len(cleanWords))
+	for ix, word := range cleanWords {
+		var w string
+		if ix == 0 && visibility == NotExported {
+			w = strings.ToLower(word)
+		} else {
+			// Disable lint: the suggested "replacement" for this in /x/cases has fundamental
+			// differences in how it works (e.g. 'JSON' becomes 'Json'; we don’t want that).
+			// Furthermore, the cases (ha) that it "fixes" are not relevant to us
+			// (something about better handling of various punctuation characters;
+			// our words are punctuation-free).
+			//nolint:staticcheck
+			w = strings.Title(word)
+		}
+
+		caseCorrectedWords = append(caseCorrectedWords, w)
+	}
+
+	return strings.Join(caseCorrectedWords, "")
 }
 
 func (factory *identifierFactory) CreatePropertyName(propertyName string, visibility Visibility) PropertyName {
@@ -133,7 +183,6 @@ func (factory *identifierFactory) CreateLocal(name string) string {
 
 // CreateReceiver creates an identifier for a method receiver
 func (factory *identifierFactory) CreateReceiver(name string) string {
-
 	// Check the cache first
 	factory.rwLock.RLock()
 	result, found := factory.receiverCache[name]
@@ -174,6 +223,7 @@ func (factory *identifierFactory) CreateReceiver(name string) string {
 	result = factory.CreateLocal(base)
 
 	factory.rwLock.Lock()
+	result = factory.internCache.intern(result)
 	factory.receiverCache[name] = result
 	factory.rwLock.Unlock()
 
@@ -220,12 +270,12 @@ func createReservedWords() map[string]string {
 }
 
 // createForbiddenReceiverSuffixes creates a case-sensitive list of words we don't want to use as receiver names
-func createForbiddenReceiverSuffixes() StringSet {
-	result := MakeStringSet()
-	result.Add("Status")
-	result.Add("Spec")
-	result.Add("ARM")
-	return result
+func createForbiddenReceiverSuffixes() set.Set[string] {
+	// If/when Status or Spec are all capitals, ARM isn't separated as a different word
+	status := strings.TrimPrefix(StatusSuffix, "_")
+	spec := strings.TrimPrefix(SpecSuffix, "_")
+	arm := strings.TrimPrefix(ARMSuffix, "_")
+	return set.Make(status, spec, arm, status+arm, spec+arm)
 }
 
 func (factory *identifierFactory) CreateGroupName(group string) string {
@@ -241,9 +291,11 @@ func transformToSnakeCase(input string) string {
 	words := sliceIntoWords(input)
 
 	// my kingdom for LINQ
-	var lowerWords []string
+	lowerWords := make([]string, 0, len(words))
 	for _, word := range words {
-		lowerWords = append(lowerWords, strings.ToLower(word))
+		if len(word) > 0 {
+			lowerWords = append(lowerWords, strings.ToLower(word))
+		}
 	}
 
 	return strings.Join(lowerWords, "_")
@@ -293,12 +345,12 @@ func sliceIntoWords(identifier string) []string {
 		preceedingLower := i > 0 && unicode.IsLower(chars[i-1])
 		preceedingDigit := i > 0 && unicode.IsDigit(chars[i-1])
 		succeedingLower := i+1 < len(chars) && unicode.IsLower(chars[i+1]) // This case is for handling acronyms like XMLDocument
-		isSpace := unicode.IsSpace(chars[i])
+		isSeparator := unicode.IsSpace(chars[i]) || chars[i] == '_'
 		foundUpper := unicode.IsUpper(chars[i])
 		foundDigit := unicode.IsDigit(chars[i])
 		caseTransition := foundUpper && (preceedingLower || succeedingLower)
 		digitTransition := (foundDigit && !preceedingDigit) || (!foundDigit && preceedingDigit)
-		if isSpace {
+		if isSeparator {
 			r := string(chars[lastStart:i])
 			r = strings.Trim(r, " ")
 			// If r is entirely spaces... just don't append anything

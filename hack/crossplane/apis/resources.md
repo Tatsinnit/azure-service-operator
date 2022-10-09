@@ -1,23 +1,20 @@
-# Supported Resources
-
-These are the resources with Azure Service Operator support committed to our **main** branch, grouped by the originating ARM service. (Newly supported resources will appear in this list prior to inclusion in any ASO release.)
-
-## cache
-
-
-### ARM version 2020-06-01
-
-- github.com/Azure/azure-service-operator/hack/crossplane/apis/cache/v1alpha1api20200601/Redis
-
-Use CRD version `v1alpha1api20200601`
-
-## sql
+---
+title: Supported Resources
+---
+These are the Crossplane resources committed to our **main** branch, grouped by the originating ARM service.
+(Newly supported resources will appear in this list prior to inclusion in any ASO release.)
 
 
-### ARM version 2020-11-01-preview
+## Cache
 
-- github.com/Azure/azure-service-operator/hack/crossplane/apis/sql/v1alpha1api20201101preview/Server
-- github.com/Azure/azure-service-operator/hack/crossplane/apis/sql/v1alpha1api20201101preview/ServersDatabase
+| Resource | ARM Version | CRD Version    | Supported From | Sample |
+|----------|-------------|----------------|----------------|--------|
+| Redis    | 2020-06-01  | v1beta20200601 | -              | -      |
 
-Use CRD version `v1alpha1api20201101preview`
+## Sql
+
+| Resource         | ARM Version        | CRD Version           | Supported From | Sample |
+|------------------|--------------------|-----------------------|----------------|--------|
+| Server           | 2020-11-01-preview | v1beta20201101preview | -              | -      |
+| Servers_Database | 2020-11-01-preview | v1beta20201101preview | -              | -      |
 

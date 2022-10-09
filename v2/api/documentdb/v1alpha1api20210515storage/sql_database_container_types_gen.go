@@ -4,30 +4,29 @@
 package v1alpha1api20210515storage
 
 import (
+	"fmt"
+	v20210515s "github.com/Azure/azure-service-operator/v2/api/documentdb/v1beta20210515storage"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
 	"github.com/pkg/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/conversion"
 )
-
-// +kubebuilder:rbac:groups=documentdb.azure.com,resources=sqldatabasecontainers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=documentdb.azure.com,resources={sqldatabasecontainers/status,sqldatabasecontainers/finalizers},verbs=get;update;patch
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Severity",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].severity"
 // +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].reason"
 // +kubebuilder:printcolumn:name="Message",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].message"
-//Storage version of v1alpha1api20210515.SqlDatabaseContainer
-//Generated from: https://schema.management.azure.com/schemas/2021-05-15/Microsoft.DocumentDB.json#/resourceDefinitions/databaseAccounts_sqlDatabases_containers
+// Storage version of v1alpha1api20210515.SqlDatabaseContainer
+// Deprecated version of SqlDatabaseContainer. Use v1beta20210515.SqlDatabaseContainer instead
 type SqlDatabaseContainer struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec              DatabaseAccountsSqlDatabasesContainers_Spec `json:"spec,omitempty"`
-	Status            SqlContainerGetResults_Status               `json:"status,omitempty"`
+	Spec              DatabaseAccounts_SqlDatabases_Container_Spec `json:"spec,omitempty"`
+	Status            SqlContainerGetResults_STATUS                `json:"status,omitempty"`
 }
 
 var _ conditions.Conditioner = &SqlDatabaseContainer{}
@@ -42,6 +41,28 @@ func (container *SqlDatabaseContainer) SetConditions(conditions conditions.Condi
 	container.Status.Conditions = conditions
 }
 
+var _ conversion.Convertible = &SqlDatabaseContainer{}
+
+// ConvertFrom populates our SqlDatabaseContainer from the provided hub SqlDatabaseContainer
+func (container *SqlDatabaseContainer) ConvertFrom(hub conversion.Hub) error {
+	source, ok := hub.(*v20210515s.SqlDatabaseContainer)
+	if !ok {
+		return fmt.Errorf("expected documentdb/v1beta20210515storage/SqlDatabaseContainer but received %T instead", hub)
+	}
+
+	return container.AssignProperties_From_SqlDatabaseContainer(source)
+}
+
+// ConvertTo populates the provided hub SqlDatabaseContainer from our SqlDatabaseContainer
+func (container *SqlDatabaseContainer) ConvertTo(hub conversion.Hub) error {
+	destination, ok := hub.(*v20210515s.SqlDatabaseContainer)
+	if !ok {
+		return fmt.Errorf("expected documentdb/v1beta20210515storage/SqlDatabaseContainer but received %T instead", hub)
+	}
+
+	return container.AssignProperties_To_SqlDatabaseContainer(destination)
+}
+
 var _ genruntime.KubernetesResource = &SqlDatabaseContainer{}
 
 // AzureName returns the Azure name of the resource
@@ -51,12 +72,12 @@ func (container *SqlDatabaseContainer) AzureName() string {
 
 // GetAPIVersion returns the ARM API version of the resource. This is always "2021-05-15"
 func (container SqlDatabaseContainer) GetAPIVersion() string {
-	return "2021-05-15"
+	return string(APIVersion_Value)
 }
 
-// GetResourceKind returns the kind of the resource
-func (container *SqlDatabaseContainer) GetResourceKind() genruntime.ResourceKind {
-	return genruntime.ResourceKindNormal
+// GetResourceScope returns the scope of the resource
+func (container *SqlDatabaseContainer) GetResourceScope() genruntime.ResourceScope {
+	return genruntime.ResourceScopeResourceGroup
 }
 
 // GetSpec returns the specification of this resource
@@ -76,7 +97,7 @@ func (container *SqlDatabaseContainer) GetType() string {
 
 // NewEmptyStatus returns a new empty (blank) status
 func (container *SqlDatabaseContainer) NewEmptyStatus() genruntime.ConvertibleStatus {
-	return &SqlContainerGetResults_Status{}
+	return &SqlContainerGetResults_STATUS{}
 }
 
 // Owner returns the ResourceReference of the owner, or nil if there is no owner
@@ -92,13 +113,13 @@ func (container *SqlDatabaseContainer) Owner() *genruntime.ResourceReference {
 // SetStatus sets the status of this resource
 func (container *SqlDatabaseContainer) SetStatus(status genruntime.ConvertibleStatus) error {
 	// If we have exactly the right type of status, assign it
-	if st, ok := status.(*SqlContainerGetResults_Status); ok {
+	if st, ok := status.(*SqlContainerGetResults_STATUS); ok {
 		container.Status = *st
 		return nil
 	}
 
 	// Convert status to required version
-	var st SqlContainerGetResults_Status
+	var st SqlContainerGetResults_STATUS
 	err := status.ConvertStatusTo(&st)
 	if err != nil {
 		return errors.Wrap(err, "failed to convert status")
@@ -108,8 +129,57 @@ func (container *SqlDatabaseContainer) SetStatus(status genruntime.ConvertibleSt
 	return nil
 }
 
-// Hub marks that this SqlDatabaseContainer is the hub type for conversion
-func (container *SqlDatabaseContainer) Hub() {}
+// AssignProperties_From_SqlDatabaseContainer populates our SqlDatabaseContainer from the provided source SqlDatabaseContainer
+func (container *SqlDatabaseContainer) AssignProperties_From_SqlDatabaseContainer(source *v20210515s.SqlDatabaseContainer) error {
+
+	// ObjectMeta
+	container.ObjectMeta = *source.ObjectMeta.DeepCopy()
+
+	// Spec
+	var spec DatabaseAccounts_SqlDatabases_Container_Spec
+	err := spec.AssignProperties_From_DatabaseAccounts_SqlDatabases_Container_Spec(&source.Spec)
+	if err != nil {
+		return errors.Wrap(err, "calling AssignProperties_From_DatabaseAccounts_SqlDatabases_Container_Spec() to populate field Spec")
+	}
+	container.Spec = spec
+
+	// Status
+	var status SqlContainerGetResults_STATUS
+	err = status.AssignProperties_From_SqlContainerGetResults_STATUS(&source.Status)
+	if err != nil {
+		return errors.Wrap(err, "calling AssignProperties_From_SqlContainerGetResults_STATUS() to populate field Status")
+	}
+	container.Status = status
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_SqlDatabaseContainer populates the provided destination SqlDatabaseContainer from our SqlDatabaseContainer
+func (container *SqlDatabaseContainer) AssignProperties_To_SqlDatabaseContainer(destination *v20210515s.SqlDatabaseContainer) error {
+
+	// ObjectMeta
+	destination.ObjectMeta = *container.ObjectMeta.DeepCopy()
+
+	// Spec
+	var spec v20210515s.DatabaseAccounts_SqlDatabases_Container_Spec
+	err := container.Spec.AssignProperties_To_DatabaseAccounts_SqlDatabases_Container_Spec(&spec)
+	if err != nil {
+		return errors.Wrap(err, "calling AssignProperties_To_DatabaseAccounts_SqlDatabases_Container_Spec() to populate field Spec")
+	}
+	destination.Spec = spec
+
+	// Status
+	var status v20210515s.SqlContainerGetResults_STATUS
+	err = container.Status.AssignProperties_To_SqlContainerGetResults_STATUS(&status)
+	if err != nil {
+		return errors.Wrap(err, "calling AssignProperties_To_SqlContainerGetResults_STATUS() to populate field Status")
+	}
+	destination.Status = status
+
+	// No error
+	return nil
+}
 
 // OriginalGVK returns a GroupValueKind for the original API version used to create the resource
 func (container *SqlDatabaseContainer) OriginalGVK() *schema.GroupVersionKind {
@@ -121,100 +191,575 @@ func (container *SqlDatabaseContainer) OriginalGVK() *schema.GroupVersionKind {
 }
 
 // +kubebuilder:object:root=true
-//Storage version of v1alpha1api20210515.SqlDatabaseContainer
-//Generated from: https://schema.management.azure.com/schemas/2021-05-15/Microsoft.DocumentDB.json#/resourceDefinitions/databaseAccounts_sqlDatabases_containers
+// Storage version of v1alpha1api20210515.SqlDatabaseContainer
+// Deprecated version of SqlDatabaseContainer. Use v1beta20210515.SqlDatabaseContainer instead
 type SqlDatabaseContainerList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []SqlDatabaseContainer `json:"items"`
 }
 
-//Storage version of v1alpha1api20210515.DatabaseAccountsSqlDatabasesContainers_Spec
-type DatabaseAccountsSqlDatabasesContainers_Spec struct {
-	//AzureName: The name of the resource in Azure. This is often the same as the name of the resource in Kubernetes but it
-	//doesn't have to be.
-	AzureName       string               `json:"azureName"`
+// Storage version of v1alpha1api20210515.DatabaseAccounts_SqlDatabases_Container_Spec
+type DatabaseAccounts_SqlDatabases_Container_Spec struct {
+	// AzureName: The name of the resource in Azure. This is often the same as the name of the resource in Kubernetes but it
+	// doesn't have to be.
+	AzureName       string               `json:"azureName,omitempty"`
 	Location        *string              `json:"location,omitempty"`
 	Options         *CreateUpdateOptions `json:"options,omitempty"`
-	OriginalVersion string               `json:"originalVersion"`
+	OriginalVersion string               `json:"originalVersion,omitempty"`
 
 	// +kubebuilder:validation:Required
-	Owner       genruntime.KnownResourceReference `group:"documentdb.azure.com" json:"owner" kind:"SqlDatabase"`
-	PropertyBag genruntime.PropertyBag            `json:"$propertyBag,omitempty"`
-	Resource    *SqlContainerResource             `json:"resource,omitempty"`
-	Tags        map[string]string                 `json:"tags,omitempty"`
+	// Owner: The owner of the resource. The owner controls where the resource goes when it is deployed. The owner also
+	// controls the resources lifecycle. When the owner is deleted the resource will also be deleted. Owner is expected to be a
+	// reference to a documentdb.azure.com/SqlDatabase resource
+	Owner       *genruntime.KnownResourceReference `group:"documentdb.azure.com" json:"owner,omitempty" kind:"SqlDatabase"`
+	PropertyBag genruntime.PropertyBag             `json:"$propertyBag,omitempty"`
+	Resource    *SqlContainerResource              `json:"resource,omitempty"`
+	Tags        map[string]string                  `json:"tags,omitempty"`
 }
 
-var _ genruntime.ConvertibleSpec = &DatabaseAccountsSqlDatabasesContainers_Spec{}
+var _ genruntime.ConvertibleSpec = &DatabaseAccounts_SqlDatabases_Container_Spec{}
 
-// ConvertSpecFrom populates our DatabaseAccountsSqlDatabasesContainers_Spec from the provided source
-func (containers *DatabaseAccountsSqlDatabasesContainers_Spec) ConvertSpecFrom(source genruntime.ConvertibleSpec) error {
-	if source == containers {
-		return errors.New("attempted conversion between unrelated implementations of github.com/Azure/azure-service-operator/v2/pkg/genruntime/ConvertibleSpec")
+// ConvertSpecFrom populates our DatabaseAccounts_SqlDatabases_Container_Spec from the provided source
+func (container *DatabaseAccounts_SqlDatabases_Container_Spec) ConvertSpecFrom(source genruntime.ConvertibleSpec) error {
+	src, ok := source.(*v20210515s.DatabaseAccounts_SqlDatabases_Container_Spec)
+	if ok {
+		// Populate our instance from source
+		return container.AssignProperties_From_DatabaseAccounts_SqlDatabases_Container_Spec(src)
 	}
 
-	return source.ConvertSpecTo(containers)
-}
-
-// ConvertSpecTo populates the provided destination from our DatabaseAccountsSqlDatabasesContainers_Spec
-func (containers *DatabaseAccountsSqlDatabasesContainers_Spec) ConvertSpecTo(destination genruntime.ConvertibleSpec) error {
-	if destination == containers {
-		return errors.New("attempted conversion between unrelated implementations of github.com/Azure/azure-service-operator/v2/pkg/genruntime/ConvertibleSpec")
+	// Convert to an intermediate form
+	src = &v20210515s.DatabaseAccounts_SqlDatabases_Container_Spec{}
+	err := src.ConvertSpecFrom(source)
+	if err != nil {
+		return errors.Wrap(err, "initial step of conversion in ConvertSpecFrom()")
 	}
 
-	return destination.ConvertSpecFrom(containers)
+	// Update our instance from src
+	err = container.AssignProperties_From_DatabaseAccounts_SqlDatabases_Container_Spec(src)
+	if err != nil {
+		return errors.Wrap(err, "final step of conversion in ConvertSpecFrom()")
+	}
+
+	return nil
 }
 
-//Storage version of v1alpha1api20210515.SqlContainerGetResults_Status
-type SqlContainerGetResults_Status struct {
+// ConvertSpecTo populates the provided destination from our DatabaseAccounts_SqlDatabases_Container_Spec
+func (container *DatabaseAccounts_SqlDatabases_Container_Spec) ConvertSpecTo(destination genruntime.ConvertibleSpec) error {
+	dst, ok := destination.(*v20210515s.DatabaseAccounts_SqlDatabases_Container_Spec)
+	if ok {
+		// Populate destination from our instance
+		return container.AssignProperties_To_DatabaseAccounts_SqlDatabases_Container_Spec(dst)
+	}
+
+	// Convert to an intermediate form
+	dst = &v20210515s.DatabaseAccounts_SqlDatabases_Container_Spec{}
+	err := container.AssignProperties_To_DatabaseAccounts_SqlDatabases_Container_Spec(dst)
+	if err != nil {
+		return errors.Wrap(err, "initial step of conversion in ConvertSpecTo()")
+	}
+
+	// Update dst from our instance
+	err = dst.ConvertSpecTo(destination)
+	if err != nil {
+		return errors.Wrap(err, "final step of conversion in ConvertSpecTo()")
+	}
+
+	return nil
+}
+
+// AssignProperties_From_DatabaseAccounts_SqlDatabases_Container_Spec populates our DatabaseAccounts_SqlDatabases_Container_Spec from the provided source DatabaseAccounts_SqlDatabases_Container_Spec
+func (container *DatabaseAccounts_SqlDatabases_Container_Spec) AssignProperties_From_DatabaseAccounts_SqlDatabases_Container_Spec(source *v20210515s.DatabaseAccounts_SqlDatabases_Container_Spec) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// AzureName
+	container.AzureName = source.AzureName
+
+	// Location
+	container.Location = genruntime.ClonePointerToString(source.Location)
+
+	// Options
+	if source.Options != nil {
+		var option CreateUpdateOptions
+		err := option.AssignProperties_From_CreateUpdateOptions(source.Options)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_From_CreateUpdateOptions() to populate field Options")
+		}
+		container.Options = &option
+	} else {
+		container.Options = nil
+	}
+
+	// OriginalVersion
+	container.OriginalVersion = source.OriginalVersion
+
+	// Owner
+	if source.Owner != nil {
+		owner := source.Owner.Copy()
+		container.Owner = &owner
+	} else {
+		container.Owner = nil
+	}
+
+	// Resource
+	if source.Resource != nil {
+		var resource SqlContainerResource
+		err := resource.AssignProperties_From_SqlContainerResource(source.Resource)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_From_SqlContainerResource() to populate field Resource")
+		}
+		container.Resource = &resource
+	} else {
+		container.Resource = nil
+	}
+
+	// Tags
+	container.Tags = genruntime.CloneMapOfStringToString(source.Tags)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		container.PropertyBag = propertyBag
+	} else {
+		container.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_DatabaseAccounts_SqlDatabases_Container_Spec populates the provided destination DatabaseAccounts_SqlDatabases_Container_Spec from our DatabaseAccounts_SqlDatabases_Container_Spec
+func (container *DatabaseAccounts_SqlDatabases_Container_Spec) AssignProperties_To_DatabaseAccounts_SqlDatabases_Container_Spec(destination *v20210515s.DatabaseAccounts_SqlDatabases_Container_Spec) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(container.PropertyBag)
+
+	// AzureName
+	destination.AzureName = container.AzureName
+
+	// Location
+	destination.Location = genruntime.ClonePointerToString(container.Location)
+
+	// Options
+	if container.Options != nil {
+		var option v20210515s.CreateUpdateOptions
+		err := container.Options.AssignProperties_To_CreateUpdateOptions(&option)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_To_CreateUpdateOptions() to populate field Options")
+		}
+		destination.Options = &option
+	} else {
+		destination.Options = nil
+	}
+
+	// OriginalVersion
+	destination.OriginalVersion = container.OriginalVersion
+
+	// Owner
+	if container.Owner != nil {
+		owner := container.Owner.Copy()
+		destination.Owner = &owner
+	} else {
+		destination.Owner = nil
+	}
+
+	// Resource
+	if container.Resource != nil {
+		var resource v20210515s.SqlContainerResource
+		err := container.Resource.AssignProperties_To_SqlContainerResource(&resource)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_To_SqlContainerResource() to populate field Resource")
+		}
+		destination.Resource = &resource
+	} else {
+		destination.Resource = nil
+	}
+
+	// Tags
+	destination.Tags = genruntime.CloneMapOfStringToString(container.Tags)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.SqlContainerGetResults_STATUS
+// Deprecated version of SqlContainerGetResults_STATUS. Use v1beta20210515.SqlContainerGetResults_STATUS instead
+type SqlContainerGetResults_STATUS struct {
 	Conditions  []conditions.Condition                     `json:"conditions,omitempty"`
 	Id          *string                                    `json:"id,omitempty"`
 	Location    *string                                    `json:"location,omitempty"`
 	Name        *string                                    `json:"name,omitempty"`
-	Options     *OptionsResource_Status                    `json:"options,omitempty"`
+	Options     *OptionsResource_STATUS                    `json:"options,omitempty"`
 	PropertyBag genruntime.PropertyBag                     `json:"$propertyBag,omitempty"`
-	Resource    *SqlContainerGetProperties_Status_Resource `json:"resource,omitempty"`
+	Resource    *SqlContainerGetProperties_Resource_STATUS `json:"resource,omitempty"`
 	Tags        map[string]string                          `json:"tags,omitempty"`
 	Type        *string                                    `json:"type,omitempty"`
 }
 
-var _ genruntime.ConvertibleStatus = &SqlContainerGetResults_Status{}
+var _ genruntime.ConvertibleStatus = &SqlContainerGetResults_STATUS{}
 
-// ConvertStatusFrom populates our SqlContainerGetResults_Status from the provided source
-func (results *SqlContainerGetResults_Status) ConvertStatusFrom(source genruntime.ConvertibleStatus) error {
-	if source == results {
-		return errors.New("attempted conversion between unrelated implementations of github.com/Azure/azure-service-operator/v2/pkg/genruntime/ConvertibleStatus")
+// ConvertStatusFrom populates our SqlContainerGetResults_STATUS from the provided source
+func (results *SqlContainerGetResults_STATUS) ConvertStatusFrom(source genruntime.ConvertibleStatus) error {
+	src, ok := source.(*v20210515s.SqlContainerGetResults_STATUS)
+	if ok {
+		// Populate our instance from source
+		return results.AssignProperties_From_SqlContainerGetResults_STATUS(src)
 	}
 
-	return source.ConvertStatusTo(results)
-}
-
-// ConvertStatusTo populates the provided destination from our SqlContainerGetResults_Status
-func (results *SqlContainerGetResults_Status) ConvertStatusTo(destination genruntime.ConvertibleStatus) error {
-	if destination == results {
-		return errors.New("attempted conversion between unrelated implementations of github.com/Azure/azure-service-operator/v2/pkg/genruntime/ConvertibleStatus")
+	// Convert to an intermediate form
+	src = &v20210515s.SqlContainerGetResults_STATUS{}
+	err := src.ConvertStatusFrom(source)
+	if err != nil {
+		return errors.Wrap(err, "initial step of conversion in ConvertStatusFrom()")
 	}
 
-	return destination.ConvertStatusFrom(results)
+	// Update our instance from src
+	err = results.AssignProperties_From_SqlContainerGetResults_STATUS(src)
+	if err != nil {
+		return errors.Wrap(err, "final step of conversion in ConvertStatusFrom()")
+	}
+
+	return nil
 }
 
-//Storage version of v1alpha1api20210515.SqlContainerGetProperties_Status_Resource
-type SqlContainerGetProperties_Status_Resource struct {
+// ConvertStatusTo populates the provided destination from our SqlContainerGetResults_STATUS
+func (results *SqlContainerGetResults_STATUS) ConvertStatusTo(destination genruntime.ConvertibleStatus) error {
+	dst, ok := destination.(*v20210515s.SqlContainerGetResults_STATUS)
+	if ok {
+		// Populate destination from our instance
+		return results.AssignProperties_To_SqlContainerGetResults_STATUS(dst)
+	}
+
+	// Convert to an intermediate form
+	dst = &v20210515s.SqlContainerGetResults_STATUS{}
+	err := results.AssignProperties_To_SqlContainerGetResults_STATUS(dst)
+	if err != nil {
+		return errors.Wrap(err, "initial step of conversion in ConvertStatusTo()")
+	}
+
+	// Update dst from our instance
+	err = dst.ConvertStatusTo(destination)
+	if err != nil {
+		return errors.Wrap(err, "final step of conversion in ConvertStatusTo()")
+	}
+
+	return nil
+}
+
+// AssignProperties_From_SqlContainerGetResults_STATUS populates our SqlContainerGetResults_STATUS from the provided source SqlContainerGetResults_STATUS
+func (results *SqlContainerGetResults_STATUS) AssignProperties_From_SqlContainerGetResults_STATUS(source *v20210515s.SqlContainerGetResults_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// Conditions
+	results.Conditions = genruntime.CloneSliceOfCondition(source.Conditions)
+
+	// Id
+	results.Id = genruntime.ClonePointerToString(source.Id)
+
+	// Location
+	results.Location = genruntime.ClonePointerToString(source.Location)
+
+	// Name
+	results.Name = genruntime.ClonePointerToString(source.Name)
+
+	// Options
+	if source.Options != nil {
+		var option OptionsResource_STATUS
+		err := option.AssignProperties_From_OptionsResource_STATUS(source.Options)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_From_OptionsResource_STATUS() to populate field Options")
+		}
+		results.Options = &option
+	} else {
+		results.Options = nil
+	}
+
+	// Resource
+	if source.Resource != nil {
+		var resource SqlContainerGetProperties_Resource_STATUS
+		err := resource.AssignProperties_From_SqlContainerGetProperties_Resource_STATUS(source.Resource)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_From_SqlContainerGetProperties_Resource_STATUS() to populate field Resource")
+		}
+		results.Resource = &resource
+	} else {
+		results.Resource = nil
+	}
+
+	// Tags
+	results.Tags = genruntime.CloneMapOfStringToString(source.Tags)
+
+	// Type
+	results.Type = genruntime.ClonePointerToString(source.Type)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		results.PropertyBag = propertyBag
+	} else {
+		results.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_SqlContainerGetResults_STATUS populates the provided destination SqlContainerGetResults_STATUS from our SqlContainerGetResults_STATUS
+func (results *SqlContainerGetResults_STATUS) AssignProperties_To_SqlContainerGetResults_STATUS(destination *v20210515s.SqlContainerGetResults_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(results.PropertyBag)
+
+	// Conditions
+	destination.Conditions = genruntime.CloneSliceOfCondition(results.Conditions)
+
+	// Id
+	destination.Id = genruntime.ClonePointerToString(results.Id)
+
+	// Location
+	destination.Location = genruntime.ClonePointerToString(results.Location)
+
+	// Name
+	destination.Name = genruntime.ClonePointerToString(results.Name)
+
+	// Options
+	if results.Options != nil {
+		var option v20210515s.OptionsResource_STATUS
+		err := results.Options.AssignProperties_To_OptionsResource_STATUS(&option)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_To_OptionsResource_STATUS() to populate field Options")
+		}
+		destination.Options = &option
+	} else {
+		destination.Options = nil
+	}
+
+	// Resource
+	if results.Resource != nil {
+		var resource v20210515s.SqlContainerGetProperties_Resource_STATUS
+		err := results.Resource.AssignProperties_To_SqlContainerGetProperties_Resource_STATUS(&resource)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_To_SqlContainerGetProperties_Resource_STATUS() to populate field Resource")
+		}
+		destination.Resource = &resource
+	} else {
+		destination.Resource = nil
+	}
+
+	// Tags
+	destination.Tags = genruntime.CloneMapOfStringToString(results.Tags)
+
+	// Type
+	destination.Type = genruntime.ClonePointerToString(results.Type)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.SqlContainerGetProperties_Resource_STATUS
+// Deprecated version of SqlContainerGetProperties_Resource_STATUS. Use v1beta20210515.SqlContainerGetProperties_Resource_STATUS instead
+type SqlContainerGetProperties_Resource_STATUS struct {
 	AnalyticalStorageTtl     *int                             `json:"analyticalStorageTtl,omitempty"`
-	ConflictResolutionPolicy *ConflictResolutionPolicy_Status `json:"conflictResolutionPolicy,omitempty"`
+	ConflictResolutionPolicy *ConflictResolutionPolicy_STATUS `json:"conflictResolutionPolicy,omitempty"`
 	DefaultTtl               *int                             `json:"defaultTtl,omitempty"`
 	Etag                     *string                          `json:"_etag,omitempty"`
 	Id                       *string                          `json:"id,omitempty"`
-	IndexingPolicy           *IndexingPolicy_Status           `json:"indexingPolicy,omitempty"`
-	PartitionKey             *ContainerPartitionKey_Status    `json:"partitionKey,omitempty"`
+	IndexingPolicy           *IndexingPolicy_STATUS           `json:"indexingPolicy,omitempty"`
+	PartitionKey             *ContainerPartitionKey_STATUS    `json:"partitionKey,omitempty"`
 	PropertyBag              genruntime.PropertyBag           `json:"$propertyBag,omitempty"`
 	Rid                      *string                          `json:"_rid,omitempty"`
 	Ts                       *float64                         `json:"_ts,omitempty"`
-	UniqueKeyPolicy          *UniqueKeyPolicy_Status          `json:"uniqueKeyPolicy,omitempty"`
+	UniqueKeyPolicy          *UniqueKeyPolicy_STATUS          `json:"uniqueKeyPolicy,omitempty"`
 }
 
-//Storage version of v1alpha1api20210515.SqlContainerResource
-//Generated from: https://schema.management.azure.com/schemas/2021-05-15/Microsoft.DocumentDB.json#/definitions/SqlContainerResource
+// AssignProperties_From_SqlContainerGetProperties_Resource_STATUS populates our SqlContainerGetProperties_Resource_STATUS from the provided source SqlContainerGetProperties_Resource_STATUS
+func (resource *SqlContainerGetProperties_Resource_STATUS) AssignProperties_From_SqlContainerGetProperties_Resource_STATUS(source *v20210515s.SqlContainerGetProperties_Resource_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// AnalyticalStorageTtl
+	resource.AnalyticalStorageTtl = genruntime.ClonePointerToInt(source.AnalyticalStorageTtl)
+
+	// ConflictResolutionPolicy
+	if source.ConflictResolutionPolicy != nil {
+		var conflictResolutionPolicy ConflictResolutionPolicy_STATUS
+		err := conflictResolutionPolicy.AssignProperties_From_ConflictResolutionPolicy_STATUS(source.ConflictResolutionPolicy)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_From_ConflictResolutionPolicy_STATUS() to populate field ConflictResolutionPolicy")
+		}
+		resource.ConflictResolutionPolicy = &conflictResolutionPolicy
+	} else {
+		resource.ConflictResolutionPolicy = nil
+	}
+
+	// DefaultTtl
+	resource.DefaultTtl = genruntime.ClonePointerToInt(source.DefaultTtl)
+
+	// Etag
+	resource.Etag = genruntime.ClonePointerToString(source.Etag)
+
+	// Id
+	resource.Id = genruntime.ClonePointerToString(source.Id)
+
+	// IndexingPolicy
+	if source.IndexingPolicy != nil {
+		var indexingPolicy IndexingPolicy_STATUS
+		err := indexingPolicy.AssignProperties_From_IndexingPolicy_STATUS(source.IndexingPolicy)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_From_IndexingPolicy_STATUS() to populate field IndexingPolicy")
+		}
+		resource.IndexingPolicy = &indexingPolicy
+	} else {
+		resource.IndexingPolicy = nil
+	}
+
+	// PartitionKey
+	if source.PartitionKey != nil {
+		var partitionKey ContainerPartitionKey_STATUS
+		err := partitionKey.AssignProperties_From_ContainerPartitionKey_STATUS(source.PartitionKey)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_From_ContainerPartitionKey_STATUS() to populate field PartitionKey")
+		}
+		resource.PartitionKey = &partitionKey
+	} else {
+		resource.PartitionKey = nil
+	}
+
+	// Rid
+	resource.Rid = genruntime.ClonePointerToString(source.Rid)
+
+	// Ts
+	if source.Ts != nil {
+		t := *source.Ts
+		resource.Ts = &t
+	} else {
+		resource.Ts = nil
+	}
+
+	// UniqueKeyPolicy
+	if source.UniqueKeyPolicy != nil {
+		var uniqueKeyPolicy UniqueKeyPolicy_STATUS
+		err := uniqueKeyPolicy.AssignProperties_From_UniqueKeyPolicy_STATUS(source.UniqueKeyPolicy)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_From_UniqueKeyPolicy_STATUS() to populate field UniqueKeyPolicy")
+		}
+		resource.UniqueKeyPolicy = &uniqueKeyPolicy
+	} else {
+		resource.UniqueKeyPolicy = nil
+	}
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		resource.PropertyBag = propertyBag
+	} else {
+		resource.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_SqlContainerGetProperties_Resource_STATUS populates the provided destination SqlContainerGetProperties_Resource_STATUS from our SqlContainerGetProperties_Resource_STATUS
+func (resource *SqlContainerGetProperties_Resource_STATUS) AssignProperties_To_SqlContainerGetProperties_Resource_STATUS(destination *v20210515s.SqlContainerGetProperties_Resource_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(resource.PropertyBag)
+
+	// AnalyticalStorageTtl
+	destination.AnalyticalStorageTtl = genruntime.ClonePointerToInt(resource.AnalyticalStorageTtl)
+
+	// ConflictResolutionPolicy
+	if resource.ConflictResolutionPolicy != nil {
+		var conflictResolutionPolicy v20210515s.ConflictResolutionPolicy_STATUS
+		err := resource.ConflictResolutionPolicy.AssignProperties_To_ConflictResolutionPolicy_STATUS(&conflictResolutionPolicy)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_To_ConflictResolutionPolicy_STATUS() to populate field ConflictResolutionPolicy")
+		}
+		destination.ConflictResolutionPolicy = &conflictResolutionPolicy
+	} else {
+		destination.ConflictResolutionPolicy = nil
+	}
+
+	// DefaultTtl
+	destination.DefaultTtl = genruntime.ClonePointerToInt(resource.DefaultTtl)
+
+	// Etag
+	destination.Etag = genruntime.ClonePointerToString(resource.Etag)
+
+	// Id
+	destination.Id = genruntime.ClonePointerToString(resource.Id)
+
+	// IndexingPolicy
+	if resource.IndexingPolicy != nil {
+		var indexingPolicy v20210515s.IndexingPolicy_STATUS
+		err := resource.IndexingPolicy.AssignProperties_To_IndexingPolicy_STATUS(&indexingPolicy)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_To_IndexingPolicy_STATUS() to populate field IndexingPolicy")
+		}
+		destination.IndexingPolicy = &indexingPolicy
+	} else {
+		destination.IndexingPolicy = nil
+	}
+
+	// PartitionKey
+	if resource.PartitionKey != nil {
+		var partitionKey v20210515s.ContainerPartitionKey_STATUS
+		err := resource.PartitionKey.AssignProperties_To_ContainerPartitionKey_STATUS(&partitionKey)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_To_ContainerPartitionKey_STATUS() to populate field PartitionKey")
+		}
+		destination.PartitionKey = &partitionKey
+	} else {
+		destination.PartitionKey = nil
+	}
+
+	// Rid
+	destination.Rid = genruntime.ClonePointerToString(resource.Rid)
+
+	// Ts
+	if resource.Ts != nil {
+		t := *resource.Ts
+		destination.Ts = &t
+	} else {
+		destination.Ts = nil
+	}
+
+	// UniqueKeyPolicy
+	if resource.UniqueKeyPolicy != nil {
+		var uniqueKeyPolicy v20210515s.UniqueKeyPolicy_STATUS
+		err := resource.UniqueKeyPolicy.AssignProperties_To_UniqueKeyPolicy_STATUS(&uniqueKeyPolicy)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_To_UniqueKeyPolicy_STATUS() to populate field UniqueKeyPolicy")
+		}
+		destination.UniqueKeyPolicy = &uniqueKeyPolicy
+	} else {
+		destination.UniqueKeyPolicy = nil
+	}
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.SqlContainerResource
+// Deprecated version of SqlContainerResource. Use v1beta20210515.SqlContainerResource instead
 type SqlContainerResource struct {
 	AnalyticalStorageTtl     *int                      `json:"analyticalStorageTtl,omitempty"`
 	ConflictResolutionPolicy *ConflictResolutionPolicy `json:"conflictResolutionPolicy,omitempty"`
@@ -226,8 +771,154 @@ type SqlContainerResource struct {
 	UniqueKeyPolicy          *UniqueKeyPolicy          `json:"uniqueKeyPolicy,omitempty"`
 }
 
-//Storage version of v1alpha1api20210515.ConflictResolutionPolicy
-//Generated from: https://schema.management.azure.com/schemas/2021-05-15/Microsoft.DocumentDB.json#/definitions/ConflictResolutionPolicy
+// AssignProperties_From_SqlContainerResource populates our SqlContainerResource from the provided source SqlContainerResource
+func (resource *SqlContainerResource) AssignProperties_From_SqlContainerResource(source *v20210515s.SqlContainerResource) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// AnalyticalStorageTtl
+	resource.AnalyticalStorageTtl = genruntime.ClonePointerToInt(source.AnalyticalStorageTtl)
+
+	// ConflictResolutionPolicy
+	if source.ConflictResolutionPolicy != nil {
+		var conflictResolutionPolicy ConflictResolutionPolicy
+		err := conflictResolutionPolicy.AssignProperties_From_ConflictResolutionPolicy(source.ConflictResolutionPolicy)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_From_ConflictResolutionPolicy() to populate field ConflictResolutionPolicy")
+		}
+		resource.ConflictResolutionPolicy = &conflictResolutionPolicy
+	} else {
+		resource.ConflictResolutionPolicy = nil
+	}
+
+	// DefaultTtl
+	resource.DefaultTtl = genruntime.ClonePointerToInt(source.DefaultTtl)
+
+	// Id
+	resource.Id = genruntime.ClonePointerToString(source.Id)
+
+	// IndexingPolicy
+	if source.IndexingPolicy != nil {
+		var indexingPolicy IndexingPolicy
+		err := indexingPolicy.AssignProperties_From_IndexingPolicy(source.IndexingPolicy)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_From_IndexingPolicy() to populate field IndexingPolicy")
+		}
+		resource.IndexingPolicy = &indexingPolicy
+	} else {
+		resource.IndexingPolicy = nil
+	}
+
+	// PartitionKey
+	if source.PartitionKey != nil {
+		var partitionKey ContainerPartitionKey
+		err := partitionKey.AssignProperties_From_ContainerPartitionKey(source.PartitionKey)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_From_ContainerPartitionKey() to populate field PartitionKey")
+		}
+		resource.PartitionKey = &partitionKey
+	} else {
+		resource.PartitionKey = nil
+	}
+
+	// UniqueKeyPolicy
+	if source.UniqueKeyPolicy != nil {
+		var uniqueKeyPolicy UniqueKeyPolicy
+		err := uniqueKeyPolicy.AssignProperties_From_UniqueKeyPolicy(source.UniqueKeyPolicy)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_From_UniqueKeyPolicy() to populate field UniqueKeyPolicy")
+		}
+		resource.UniqueKeyPolicy = &uniqueKeyPolicy
+	} else {
+		resource.UniqueKeyPolicy = nil
+	}
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		resource.PropertyBag = propertyBag
+	} else {
+		resource.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_SqlContainerResource populates the provided destination SqlContainerResource from our SqlContainerResource
+func (resource *SqlContainerResource) AssignProperties_To_SqlContainerResource(destination *v20210515s.SqlContainerResource) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(resource.PropertyBag)
+
+	// AnalyticalStorageTtl
+	destination.AnalyticalStorageTtl = genruntime.ClonePointerToInt(resource.AnalyticalStorageTtl)
+
+	// ConflictResolutionPolicy
+	if resource.ConflictResolutionPolicy != nil {
+		var conflictResolutionPolicy v20210515s.ConflictResolutionPolicy
+		err := resource.ConflictResolutionPolicy.AssignProperties_To_ConflictResolutionPolicy(&conflictResolutionPolicy)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_To_ConflictResolutionPolicy() to populate field ConflictResolutionPolicy")
+		}
+		destination.ConflictResolutionPolicy = &conflictResolutionPolicy
+	} else {
+		destination.ConflictResolutionPolicy = nil
+	}
+
+	// DefaultTtl
+	destination.DefaultTtl = genruntime.ClonePointerToInt(resource.DefaultTtl)
+
+	// Id
+	destination.Id = genruntime.ClonePointerToString(resource.Id)
+
+	// IndexingPolicy
+	if resource.IndexingPolicy != nil {
+		var indexingPolicy v20210515s.IndexingPolicy
+		err := resource.IndexingPolicy.AssignProperties_To_IndexingPolicy(&indexingPolicy)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_To_IndexingPolicy() to populate field IndexingPolicy")
+		}
+		destination.IndexingPolicy = &indexingPolicy
+	} else {
+		destination.IndexingPolicy = nil
+	}
+
+	// PartitionKey
+	if resource.PartitionKey != nil {
+		var partitionKey v20210515s.ContainerPartitionKey
+		err := resource.PartitionKey.AssignProperties_To_ContainerPartitionKey(&partitionKey)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_To_ContainerPartitionKey() to populate field PartitionKey")
+		}
+		destination.PartitionKey = &partitionKey
+	} else {
+		destination.PartitionKey = nil
+	}
+
+	// UniqueKeyPolicy
+	if resource.UniqueKeyPolicy != nil {
+		var uniqueKeyPolicy v20210515s.UniqueKeyPolicy
+		err := resource.UniqueKeyPolicy.AssignProperties_To_UniqueKeyPolicy(&uniqueKeyPolicy)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_To_UniqueKeyPolicy() to populate field UniqueKeyPolicy")
+		}
+		destination.UniqueKeyPolicy = &uniqueKeyPolicy
+	} else {
+		destination.UniqueKeyPolicy = nil
+	}
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.ConflictResolutionPolicy
+// Deprecated version of ConflictResolutionPolicy. Use v1beta20210515.ConflictResolutionPolicy instead
 type ConflictResolutionPolicy struct {
 	ConflictResolutionPath      *string                `json:"conflictResolutionPath,omitempty"`
 	ConflictResolutionProcedure *string                `json:"conflictResolutionProcedure,omitempty"`
@@ -235,16 +926,117 @@ type ConflictResolutionPolicy struct {
 	PropertyBag                 genruntime.PropertyBag `json:"$propertyBag,omitempty"`
 }
 
-//Storage version of v1alpha1api20210515.ConflictResolutionPolicy_Status
-type ConflictResolutionPolicy_Status struct {
+// AssignProperties_From_ConflictResolutionPolicy populates our ConflictResolutionPolicy from the provided source ConflictResolutionPolicy
+func (policy *ConflictResolutionPolicy) AssignProperties_From_ConflictResolutionPolicy(source *v20210515s.ConflictResolutionPolicy) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// ConflictResolutionPath
+	policy.ConflictResolutionPath = genruntime.ClonePointerToString(source.ConflictResolutionPath)
+
+	// ConflictResolutionProcedure
+	policy.ConflictResolutionProcedure = genruntime.ClonePointerToString(source.ConflictResolutionProcedure)
+
+	// Mode
+	policy.Mode = genruntime.ClonePointerToString(source.Mode)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		policy.PropertyBag = propertyBag
+	} else {
+		policy.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_ConflictResolutionPolicy populates the provided destination ConflictResolutionPolicy from our ConflictResolutionPolicy
+func (policy *ConflictResolutionPolicy) AssignProperties_To_ConflictResolutionPolicy(destination *v20210515s.ConflictResolutionPolicy) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(policy.PropertyBag)
+
+	// ConflictResolutionPath
+	destination.ConflictResolutionPath = genruntime.ClonePointerToString(policy.ConflictResolutionPath)
+
+	// ConflictResolutionProcedure
+	destination.ConflictResolutionProcedure = genruntime.ClonePointerToString(policy.ConflictResolutionProcedure)
+
+	// Mode
+	destination.Mode = genruntime.ClonePointerToString(policy.Mode)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.ConflictResolutionPolicy_STATUS
+// Deprecated version of ConflictResolutionPolicy_STATUS. Use v1beta20210515.ConflictResolutionPolicy_STATUS instead
+type ConflictResolutionPolicy_STATUS struct {
 	ConflictResolutionPath      *string                `json:"conflictResolutionPath,omitempty"`
 	ConflictResolutionProcedure *string                `json:"conflictResolutionProcedure,omitempty"`
 	Mode                        *string                `json:"mode,omitempty"`
 	PropertyBag                 genruntime.PropertyBag `json:"$propertyBag,omitempty"`
 }
 
-//Storage version of v1alpha1api20210515.ContainerPartitionKey
-//Generated from: https://schema.management.azure.com/schemas/2021-05-15/Microsoft.DocumentDB.json#/definitions/ContainerPartitionKey
+// AssignProperties_From_ConflictResolutionPolicy_STATUS populates our ConflictResolutionPolicy_STATUS from the provided source ConflictResolutionPolicy_STATUS
+func (policy *ConflictResolutionPolicy_STATUS) AssignProperties_From_ConflictResolutionPolicy_STATUS(source *v20210515s.ConflictResolutionPolicy_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// ConflictResolutionPath
+	policy.ConflictResolutionPath = genruntime.ClonePointerToString(source.ConflictResolutionPath)
+
+	// ConflictResolutionProcedure
+	policy.ConflictResolutionProcedure = genruntime.ClonePointerToString(source.ConflictResolutionProcedure)
+
+	// Mode
+	policy.Mode = genruntime.ClonePointerToString(source.Mode)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		policy.PropertyBag = propertyBag
+	} else {
+		policy.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_ConflictResolutionPolicy_STATUS populates the provided destination ConflictResolutionPolicy_STATUS from our ConflictResolutionPolicy_STATUS
+func (policy *ConflictResolutionPolicy_STATUS) AssignProperties_To_ConflictResolutionPolicy_STATUS(destination *v20210515s.ConflictResolutionPolicy_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(policy.PropertyBag)
+
+	// ConflictResolutionPath
+	destination.ConflictResolutionPath = genruntime.ClonePointerToString(policy.ConflictResolutionPath)
+
+	// ConflictResolutionProcedure
+	destination.ConflictResolutionProcedure = genruntime.ClonePointerToString(policy.ConflictResolutionProcedure)
+
+	// Mode
+	destination.Mode = genruntime.ClonePointerToString(policy.Mode)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.ContainerPartitionKey
+// Deprecated version of ContainerPartitionKey. Use v1beta20210515.ContainerPartitionKey instead
 type ContainerPartitionKey struct {
 	Kind        *string                `json:"kind,omitempty"`
 	Paths       []string               `json:"paths,omitempty"`
@@ -252,8 +1044,59 @@ type ContainerPartitionKey struct {
 	Version     *int                   `json:"version,omitempty"`
 }
 
-//Storage version of v1alpha1api20210515.ContainerPartitionKey_Status
-type ContainerPartitionKey_Status struct {
+// AssignProperties_From_ContainerPartitionKey populates our ContainerPartitionKey from the provided source ContainerPartitionKey
+func (partitionKey *ContainerPartitionKey) AssignProperties_From_ContainerPartitionKey(source *v20210515s.ContainerPartitionKey) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// Kind
+	partitionKey.Kind = genruntime.ClonePointerToString(source.Kind)
+
+	// Paths
+	partitionKey.Paths = genruntime.CloneSliceOfString(source.Paths)
+
+	// Version
+	partitionKey.Version = genruntime.ClonePointerToInt(source.Version)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		partitionKey.PropertyBag = propertyBag
+	} else {
+		partitionKey.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_ContainerPartitionKey populates the provided destination ContainerPartitionKey from our ContainerPartitionKey
+func (partitionKey *ContainerPartitionKey) AssignProperties_To_ContainerPartitionKey(destination *v20210515s.ContainerPartitionKey) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(partitionKey.PropertyBag)
+
+	// Kind
+	destination.Kind = genruntime.ClonePointerToString(partitionKey.Kind)
+
+	// Paths
+	destination.Paths = genruntime.CloneSliceOfString(partitionKey.Paths)
+
+	// Version
+	destination.Version = genruntime.ClonePointerToInt(partitionKey.Version)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.ContainerPartitionKey_STATUS
+// Deprecated version of ContainerPartitionKey_STATUS. Use v1beta20210515.ContainerPartitionKey_STATUS instead
+type ContainerPartitionKey_STATUS struct {
 	Kind        *string                `json:"kind,omitempty"`
 	Paths       []string               `json:"paths,omitempty"`
 	PropertyBag genruntime.PropertyBag `json:"$propertyBag,omitempty"`
@@ -261,8 +1104,74 @@ type ContainerPartitionKey_Status struct {
 	Version     *int                   `json:"version,omitempty"`
 }
 
-//Storage version of v1alpha1api20210515.IndexingPolicy
-//Generated from: https://schema.management.azure.com/schemas/2021-05-15/Microsoft.DocumentDB.json#/definitions/IndexingPolicy
+// AssignProperties_From_ContainerPartitionKey_STATUS populates our ContainerPartitionKey_STATUS from the provided source ContainerPartitionKey_STATUS
+func (partitionKey *ContainerPartitionKey_STATUS) AssignProperties_From_ContainerPartitionKey_STATUS(source *v20210515s.ContainerPartitionKey_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// Kind
+	partitionKey.Kind = genruntime.ClonePointerToString(source.Kind)
+
+	// Paths
+	partitionKey.Paths = genruntime.CloneSliceOfString(source.Paths)
+
+	// SystemKey
+	if source.SystemKey != nil {
+		systemKey := *source.SystemKey
+		partitionKey.SystemKey = &systemKey
+	} else {
+		partitionKey.SystemKey = nil
+	}
+
+	// Version
+	partitionKey.Version = genruntime.ClonePointerToInt(source.Version)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		partitionKey.PropertyBag = propertyBag
+	} else {
+		partitionKey.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_ContainerPartitionKey_STATUS populates the provided destination ContainerPartitionKey_STATUS from our ContainerPartitionKey_STATUS
+func (partitionKey *ContainerPartitionKey_STATUS) AssignProperties_To_ContainerPartitionKey_STATUS(destination *v20210515s.ContainerPartitionKey_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(partitionKey.PropertyBag)
+
+	// Kind
+	destination.Kind = genruntime.ClonePointerToString(partitionKey.Kind)
+
+	// Paths
+	destination.Paths = genruntime.CloneSliceOfString(partitionKey.Paths)
+
+	// SystemKey
+	if partitionKey.SystemKey != nil {
+		systemKey := *partitionKey.SystemKey
+		destination.SystemKey = &systemKey
+	} else {
+		destination.SystemKey = nil
+	}
+
+	// Version
+	destination.Version = genruntime.ClonePointerToInt(partitionKey.Version)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.IndexingPolicy
+// Deprecated version of IndexingPolicy. Use v1beta20210515.IndexingPolicy instead
 type IndexingPolicy struct {
 	Automatic        *bool                  `json:"automatic,omitempty"`
 	CompositeIndexes [][]CompositePath      `json:"compositeIndexes,omitempty"`
@@ -273,103 +1182,1158 @@ type IndexingPolicy struct {
 	SpatialIndexes   []SpatialSpec          `json:"spatialIndexes,omitempty"`
 }
 
-//Storage version of v1alpha1api20210515.IndexingPolicy_Status
-type IndexingPolicy_Status struct {
-	Automatic        *bool                    `json:"automatic,omitempty"`
-	CompositeIndexes [][]CompositePath_Status `json:"compositeIndexes,omitempty"`
-	ExcludedPaths    []ExcludedPath_Status    `json:"excludedPaths,omitempty"`
-	IncludedPaths    []IncludedPath_Status    `json:"includedPaths,omitempty"`
-	IndexingMode     *string                  `json:"indexingMode,omitempty"`
-	PropertyBag      genruntime.PropertyBag   `json:"$propertyBag,omitempty"`
-	SpatialIndexes   []SpatialSpec_Status     `json:"spatialIndexes,omitempty"`
+// AssignProperties_From_IndexingPolicy populates our IndexingPolicy from the provided source IndexingPolicy
+func (policy *IndexingPolicy) AssignProperties_From_IndexingPolicy(source *v20210515s.IndexingPolicy) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// Automatic
+	if source.Automatic != nil {
+		automatic := *source.Automatic
+		policy.Automatic = &automatic
+	} else {
+		policy.Automatic = nil
+	}
+
+	// CompositeIndexes
+	if source.CompositeIndexes != nil {
+		compositeIndexList := make([][]CompositePath, len(source.CompositeIndexes))
+		for compositeIndex, compositeIndexItem := range source.CompositeIndexes {
+			// Shadow the loop variable to avoid aliasing
+			compositeIndexItem := compositeIndexItem
+			if compositeIndexItem != nil {
+				compositeIndexList1 := make([]CompositePath, len(compositeIndexItem))
+				for compositeIndex1, compositeIndexItem1 := range compositeIndexItem {
+					// Shadow the loop variable to avoid aliasing
+					compositeIndexItem1 := compositeIndexItem1
+					var compositeIndexLocal CompositePath
+					err := compositeIndexLocal.AssignProperties_From_CompositePath(&compositeIndexItem1)
+					if err != nil {
+						return errors.Wrap(err, "calling AssignProperties_From_CompositePath() to populate field CompositeIndexes")
+					}
+					compositeIndexList1[compositeIndex1] = compositeIndexLocal
+				}
+				compositeIndexList[compositeIndex] = compositeIndexList1
+			} else {
+				compositeIndexList[compositeIndex] = nil
+			}
+		}
+		policy.CompositeIndexes = compositeIndexList
+	} else {
+		policy.CompositeIndexes = nil
+	}
+
+	// ExcludedPaths
+	if source.ExcludedPaths != nil {
+		excludedPathList := make([]ExcludedPath, len(source.ExcludedPaths))
+		for excludedPathIndex, excludedPathItem := range source.ExcludedPaths {
+			// Shadow the loop variable to avoid aliasing
+			excludedPathItem := excludedPathItem
+			var excludedPath ExcludedPath
+			err := excludedPath.AssignProperties_From_ExcludedPath(&excludedPathItem)
+			if err != nil {
+				return errors.Wrap(err, "calling AssignProperties_From_ExcludedPath() to populate field ExcludedPaths")
+			}
+			excludedPathList[excludedPathIndex] = excludedPath
+		}
+		policy.ExcludedPaths = excludedPathList
+	} else {
+		policy.ExcludedPaths = nil
+	}
+
+	// IncludedPaths
+	if source.IncludedPaths != nil {
+		includedPathList := make([]IncludedPath, len(source.IncludedPaths))
+		for includedPathIndex, includedPathItem := range source.IncludedPaths {
+			// Shadow the loop variable to avoid aliasing
+			includedPathItem := includedPathItem
+			var includedPath IncludedPath
+			err := includedPath.AssignProperties_From_IncludedPath(&includedPathItem)
+			if err != nil {
+				return errors.Wrap(err, "calling AssignProperties_From_IncludedPath() to populate field IncludedPaths")
+			}
+			includedPathList[includedPathIndex] = includedPath
+		}
+		policy.IncludedPaths = includedPathList
+	} else {
+		policy.IncludedPaths = nil
+	}
+
+	// IndexingMode
+	policy.IndexingMode = genruntime.ClonePointerToString(source.IndexingMode)
+
+	// SpatialIndexes
+	if source.SpatialIndexes != nil {
+		spatialIndexList := make([]SpatialSpec, len(source.SpatialIndexes))
+		for spatialIndex, spatialIndexItem := range source.SpatialIndexes {
+			// Shadow the loop variable to avoid aliasing
+			spatialIndexItem := spatialIndexItem
+			var spatialIndexLocal SpatialSpec
+			err := spatialIndexLocal.AssignProperties_From_SpatialSpec(&spatialIndexItem)
+			if err != nil {
+				return errors.Wrap(err, "calling AssignProperties_From_SpatialSpec() to populate field SpatialIndexes")
+			}
+			spatialIndexList[spatialIndex] = spatialIndexLocal
+		}
+		policy.SpatialIndexes = spatialIndexList
+	} else {
+		policy.SpatialIndexes = nil
+	}
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		policy.PropertyBag = propertyBag
+	} else {
+		policy.PropertyBag = nil
+	}
+
+	// No error
+	return nil
 }
 
-//Storage version of v1alpha1api20210515.UniqueKeyPolicy
-//Generated from: https://schema.management.azure.com/schemas/2021-05-15/Microsoft.DocumentDB.json#/definitions/UniqueKeyPolicy
+// AssignProperties_To_IndexingPolicy populates the provided destination IndexingPolicy from our IndexingPolicy
+func (policy *IndexingPolicy) AssignProperties_To_IndexingPolicy(destination *v20210515s.IndexingPolicy) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(policy.PropertyBag)
+
+	// Automatic
+	if policy.Automatic != nil {
+		automatic := *policy.Automatic
+		destination.Automatic = &automatic
+	} else {
+		destination.Automatic = nil
+	}
+
+	// CompositeIndexes
+	if policy.CompositeIndexes != nil {
+		compositeIndexList := make([][]v20210515s.CompositePath, len(policy.CompositeIndexes))
+		for compositeIndex, compositeIndexItem := range policy.CompositeIndexes {
+			// Shadow the loop variable to avoid aliasing
+			compositeIndexItem := compositeIndexItem
+			if compositeIndexItem != nil {
+				compositeIndexList1 := make([]v20210515s.CompositePath, len(compositeIndexItem))
+				for compositeIndex1, compositeIndexItem1 := range compositeIndexItem {
+					// Shadow the loop variable to avoid aliasing
+					compositeIndexItem1 := compositeIndexItem1
+					var compositeIndexLocal v20210515s.CompositePath
+					err := compositeIndexItem1.AssignProperties_To_CompositePath(&compositeIndexLocal)
+					if err != nil {
+						return errors.Wrap(err, "calling AssignProperties_To_CompositePath() to populate field CompositeIndexes")
+					}
+					compositeIndexList1[compositeIndex1] = compositeIndexLocal
+				}
+				compositeIndexList[compositeIndex] = compositeIndexList1
+			} else {
+				compositeIndexList[compositeIndex] = nil
+			}
+		}
+		destination.CompositeIndexes = compositeIndexList
+	} else {
+		destination.CompositeIndexes = nil
+	}
+
+	// ExcludedPaths
+	if policy.ExcludedPaths != nil {
+		excludedPathList := make([]v20210515s.ExcludedPath, len(policy.ExcludedPaths))
+		for excludedPathIndex, excludedPathItem := range policy.ExcludedPaths {
+			// Shadow the loop variable to avoid aliasing
+			excludedPathItem := excludedPathItem
+			var excludedPath v20210515s.ExcludedPath
+			err := excludedPathItem.AssignProperties_To_ExcludedPath(&excludedPath)
+			if err != nil {
+				return errors.Wrap(err, "calling AssignProperties_To_ExcludedPath() to populate field ExcludedPaths")
+			}
+			excludedPathList[excludedPathIndex] = excludedPath
+		}
+		destination.ExcludedPaths = excludedPathList
+	} else {
+		destination.ExcludedPaths = nil
+	}
+
+	// IncludedPaths
+	if policy.IncludedPaths != nil {
+		includedPathList := make([]v20210515s.IncludedPath, len(policy.IncludedPaths))
+		for includedPathIndex, includedPathItem := range policy.IncludedPaths {
+			// Shadow the loop variable to avoid aliasing
+			includedPathItem := includedPathItem
+			var includedPath v20210515s.IncludedPath
+			err := includedPathItem.AssignProperties_To_IncludedPath(&includedPath)
+			if err != nil {
+				return errors.Wrap(err, "calling AssignProperties_To_IncludedPath() to populate field IncludedPaths")
+			}
+			includedPathList[includedPathIndex] = includedPath
+		}
+		destination.IncludedPaths = includedPathList
+	} else {
+		destination.IncludedPaths = nil
+	}
+
+	// IndexingMode
+	destination.IndexingMode = genruntime.ClonePointerToString(policy.IndexingMode)
+
+	// SpatialIndexes
+	if policy.SpatialIndexes != nil {
+		spatialIndexList := make([]v20210515s.SpatialSpec, len(policy.SpatialIndexes))
+		for spatialIndex, spatialIndexItem := range policy.SpatialIndexes {
+			// Shadow the loop variable to avoid aliasing
+			spatialIndexItem := spatialIndexItem
+			var spatialIndexLocal v20210515s.SpatialSpec
+			err := spatialIndexItem.AssignProperties_To_SpatialSpec(&spatialIndexLocal)
+			if err != nil {
+				return errors.Wrap(err, "calling AssignProperties_To_SpatialSpec() to populate field SpatialIndexes")
+			}
+			spatialIndexList[spatialIndex] = spatialIndexLocal
+		}
+		destination.SpatialIndexes = spatialIndexList
+	} else {
+		destination.SpatialIndexes = nil
+	}
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.IndexingPolicy_STATUS
+// Deprecated version of IndexingPolicy_STATUS. Use v1beta20210515.IndexingPolicy_STATUS instead
+type IndexingPolicy_STATUS struct {
+	Automatic        *bool                    `json:"automatic,omitempty"`
+	CompositeIndexes [][]CompositePath_STATUS `json:"compositeIndexes,omitempty"`
+	ExcludedPaths    []ExcludedPath_STATUS    `json:"excludedPaths,omitempty"`
+	IncludedPaths    []IncludedPath_STATUS    `json:"includedPaths,omitempty"`
+	IndexingMode     *string                  `json:"indexingMode,omitempty"`
+	PropertyBag      genruntime.PropertyBag   `json:"$propertyBag,omitempty"`
+	SpatialIndexes   []SpatialSpec_STATUS     `json:"spatialIndexes,omitempty"`
+}
+
+// AssignProperties_From_IndexingPolicy_STATUS populates our IndexingPolicy_STATUS from the provided source IndexingPolicy_STATUS
+func (policy *IndexingPolicy_STATUS) AssignProperties_From_IndexingPolicy_STATUS(source *v20210515s.IndexingPolicy_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// Automatic
+	if source.Automatic != nil {
+		automatic := *source.Automatic
+		policy.Automatic = &automatic
+	} else {
+		policy.Automatic = nil
+	}
+
+	// CompositeIndexes
+	if source.CompositeIndexes != nil {
+		compositeIndexList := make([][]CompositePath_STATUS, len(source.CompositeIndexes))
+		for compositeIndex, compositeIndexItem := range source.CompositeIndexes {
+			// Shadow the loop variable to avoid aliasing
+			compositeIndexItem := compositeIndexItem
+			if compositeIndexItem != nil {
+				compositeIndexList1 := make([]CompositePath_STATUS, len(compositeIndexItem))
+				for compositeIndex1, compositeIndexItem1 := range compositeIndexItem {
+					// Shadow the loop variable to avoid aliasing
+					compositeIndexItem1 := compositeIndexItem1
+					var compositeIndexLocal CompositePath_STATUS
+					err := compositeIndexLocal.AssignProperties_From_CompositePath_STATUS(&compositeIndexItem1)
+					if err != nil {
+						return errors.Wrap(err, "calling AssignProperties_From_CompositePath_STATUS() to populate field CompositeIndexes")
+					}
+					compositeIndexList1[compositeIndex1] = compositeIndexLocal
+				}
+				compositeIndexList[compositeIndex] = compositeIndexList1
+			} else {
+				compositeIndexList[compositeIndex] = nil
+			}
+		}
+		policy.CompositeIndexes = compositeIndexList
+	} else {
+		policy.CompositeIndexes = nil
+	}
+
+	// ExcludedPaths
+	if source.ExcludedPaths != nil {
+		excludedPathList := make([]ExcludedPath_STATUS, len(source.ExcludedPaths))
+		for excludedPathIndex, excludedPathItem := range source.ExcludedPaths {
+			// Shadow the loop variable to avoid aliasing
+			excludedPathItem := excludedPathItem
+			var excludedPath ExcludedPath_STATUS
+			err := excludedPath.AssignProperties_From_ExcludedPath_STATUS(&excludedPathItem)
+			if err != nil {
+				return errors.Wrap(err, "calling AssignProperties_From_ExcludedPath_STATUS() to populate field ExcludedPaths")
+			}
+			excludedPathList[excludedPathIndex] = excludedPath
+		}
+		policy.ExcludedPaths = excludedPathList
+	} else {
+		policy.ExcludedPaths = nil
+	}
+
+	// IncludedPaths
+	if source.IncludedPaths != nil {
+		includedPathList := make([]IncludedPath_STATUS, len(source.IncludedPaths))
+		for includedPathIndex, includedPathItem := range source.IncludedPaths {
+			// Shadow the loop variable to avoid aliasing
+			includedPathItem := includedPathItem
+			var includedPath IncludedPath_STATUS
+			err := includedPath.AssignProperties_From_IncludedPath_STATUS(&includedPathItem)
+			if err != nil {
+				return errors.Wrap(err, "calling AssignProperties_From_IncludedPath_STATUS() to populate field IncludedPaths")
+			}
+			includedPathList[includedPathIndex] = includedPath
+		}
+		policy.IncludedPaths = includedPathList
+	} else {
+		policy.IncludedPaths = nil
+	}
+
+	// IndexingMode
+	policy.IndexingMode = genruntime.ClonePointerToString(source.IndexingMode)
+
+	// SpatialIndexes
+	if source.SpatialIndexes != nil {
+		spatialIndexList := make([]SpatialSpec_STATUS, len(source.SpatialIndexes))
+		for spatialIndex, spatialIndexItem := range source.SpatialIndexes {
+			// Shadow the loop variable to avoid aliasing
+			spatialIndexItem := spatialIndexItem
+			var spatialIndexLocal SpatialSpec_STATUS
+			err := spatialIndexLocal.AssignProperties_From_SpatialSpec_STATUS(&spatialIndexItem)
+			if err != nil {
+				return errors.Wrap(err, "calling AssignProperties_From_SpatialSpec_STATUS() to populate field SpatialIndexes")
+			}
+			spatialIndexList[spatialIndex] = spatialIndexLocal
+		}
+		policy.SpatialIndexes = spatialIndexList
+	} else {
+		policy.SpatialIndexes = nil
+	}
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		policy.PropertyBag = propertyBag
+	} else {
+		policy.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_IndexingPolicy_STATUS populates the provided destination IndexingPolicy_STATUS from our IndexingPolicy_STATUS
+func (policy *IndexingPolicy_STATUS) AssignProperties_To_IndexingPolicy_STATUS(destination *v20210515s.IndexingPolicy_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(policy.PropertyBag)
+
+	// Automatic
+	if policy.Automatic != nil {
+		automatic := *policy.Automatic
+		destination.Automatic = &automatic
+	} else {
+		destination.Automatic = nil
+	}
+
+	// CompositeIndexes
+	if policy.CompositeIndexes != nil {
+		compositeIndexList := make([][]v20210515s.CompositePath_STATUS, len(policy.CompositeIndexes))
+		for compositeIndex, compositeIndexItem := range policy.CompositeIndexes {
+			// Shadow the loop variable to avoid aliasing
+			compositeIndexItem := compositeIndexItem
+			if compositeIndexItem != nil {
+				compositeIndexList1 := make([]v20210515s.CompositePath_STATUS, len(compositeIndexItem))
+				for compositeIndex1, compositeIndexItem1 := range compositeIndexItem {
+					// Shadow the loop variable to avoid aliasing
+					compositeIndexItem1 := compositeIndexItem1
+					var compositeIndexLocal v20210515s.CompositePath_STATUS
+					err := compositeIndexItem1.AssignProperties_To_CompositePath_STATUS(&compositeIndexLocal)
+					if err != nil {
+						return errors.Wrap(err, "calling AssignProperties_To_CompositePath_STATUS() to populate field CompositeIndexes")
+					}
+					compositeIndexList1[compositeIndex1] = compositeIndexLocal
+				}
+				compositeIndexList[compositeIndex] = compositeIndexList1
+			} else {
+				compositeIndexList[compositeIndex] = nil
+			}
+		}
+		destination.CompositeIndexes = compositeIndexList
+	} else {
+		destination.CompositeIndexes = nil
+	}
+
+	// ExcludedPaths
+	if policy.ExcludedPaths != nil {
+		excludedPathList := make([]v20210515s.ExcludedPath_STATUS, len(policy.ExcludedPaths))
+		for excludedPathIndex, excludedPathItem := range policy.ExcludedPaths {
+			// Shadow the loop variable to avoid aliasing
+			excludedPathItem := excludedPathItem
+			var excludedPath v20210515s.ExcludedPath_STATUS
+			err := excludedPathItem.AssignProperties_To_ExcludedPath_STATUS(&excludedPath)
+			if err != nil {
+				return errors.Wrap(err, "calling AssignProperties_To_ExcludedPath_STATUS() to populate field ExcludedPaths")
+			}
+			excludedPathList[excludedPathIndex] = excludedPath
+		}
+		destination.ExcludedPaths = excludedPathList
+	} else {
+		destination.ExcludedPaths = nil
+	}
+
+	// IncludedPaths
+	if policy.IncludedPaths != nil {
+		includedPathList := make([]v20210515s.IncludedPath_STATUS, len(policy.IncludedPaths))
+		for includedPathIndex, includedPathItem := range policy.IncludedPaths {
+			// Shadow the loop variable to avoid aliasing
+			includedPathItem := includedPathItem
+			var includedPath v20210515s.IncludedPath_STATUS
+			err := includedPathItem.AssignProperties_To_IncludedPath_STATUS(&includedPath)
+			if err != nil {
+				return errors.Wrap(err, "calling AssignProperties_To_IncludedPath_STATUS() to populate field IncludedPaths")
+			}
+			includedPathList[includedPathIndex] = includedPath
+		}
+		destination.IncludedPaths = includedPathList
+	} else {
+		destination.IncludedPaths = nil
+	}
+
+	// IndexingMode
+	destination.IndexingMode = genruntime.ClonePointerToString(policy.IndexingMode)
+
+	// SpatialIndexes
+	if policy.SpatialIndexes != nil {
+		spatialIndexList := make([]v20210515s.SpatialSpec_STATUS, len(policy.SpatialIndexes))
+		for spatialIndex, spatialIndexItem := range policy.SpatialIndexes {
+			// Shadow the loop variable to avoid aliasing
+			spatialIndexItem := spatialIndexItem
+			var spatialIndexLocal v20210515s.SpatialSpec_STATUS
+			err := spatialIndexItem.AssignProperties_To_SpatialSpec_STATUS(&spatialIndexLocal)
+			if err != nil {
+				return errors.Wrap(err, "calling AssignProperties_To_SpatialSpec_STATUS() to populate field SpatialIndexes")
+			}
+			spatialIndexList[spatialIndex] = spatialIndexLocal
+		}
+		destination.SpatialIndexes = spatialIndexList
+	} else {
+		destination.SpatialIndexes = nil
+	}
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.UniqueKeyPolicy
+// Deprecated version of UniqueKeyPolicy. Use v1beta20210515.UniqueKeyPolicy instead
 type UniqueKeyPolicy struct {
 	PropertyBag genruntime.PropertyBag `json:"$propertyBag,omitempty"`
 	UniqueKeys  []UniqueKey            `json:"uniqueKeys,omitempty"`
 }
 
-//Storage version of v1alpha1api20210515.UniqueKeyPolicy_Status
-type UniqueKeyPolicy_Status struct {
-	PropertyBag genruntime.PropertyBag `json:"$propertyBag,omitempty"`
-	UniqueKeys  []UniqueKey_Status     `json:"uniqueKeys,omitempty"`
+// AssignProperties_From_UniqueKeyPolicy populates our UniqueKeyPolicy from the provided source UniqueKeyPolicy
+func (policy *UniqueKeyPolicy) AssignProperties_From_UniqueKeyPolicy(source *v20210515s.UniqueKeyPolicy) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// UniqueKeys
+	if source.UniqueKeys != nil {
+		uniqueKeyList := make([]UniqueKey, len(source.UniqueKeys))
+		for uniqueKeyIndex, uniqueKeyItem := range source.UniqueKeys {
+			// Shadow the loop variable to avoid aliasing
+			uniqueKeyItem := uniqueKeyItem
+			var uniqueKey UniqueKey
+			err := uniqueKey.AssignProperties_From_UniqueKey(&uniqueKeyItem)
+			if err != nil {
+				return errors.Wrap(err, "calling AssignProperties_From_UniqueKey() to populate field UniqueKeys")
+			}
+			uniqueKeyList[uniqueKeyIndex] = uniqueKey
+		}
+		policy.UniqueKeys = uniqueKeyList
+	} else {
+		policy.UniqueKeys = nil
+	}
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		policy.PropertyBag = propertyBag
+	} else {
+		policy.PropertyBag = nil
+	}
+
+	// No error
+	return nil
 }
 
-//Storage version of v1alpha1api20210515.CompositePath
-//Generated from: https://schema.management.azure.com/schemas/2021-05-15/Microsoft.DocumentDB.json#/definitions/CompositePath
+// AssignProperties_To_UniqueKeyPolicy populates the provided destination UniqueKeyPolicy from our UniqueKeyPolicy
+func (policy *UniqueKeyPolicy) AssignProperties_To_UniqueKeyPolicy(destination *v20210515s.UniqueKeyPolicy) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(policy.PropertyBag)
+
+	// UniqueKeys
+	if policy.UniqueKeys != nil {
+		uniqueKeyList := make([]v20210515s.UniqueKey, len(policy.UniqueKeys))
+		for uniqueKeyIndex, uniqueKeyItem := range policy.UniqueKeys {
+			// Shadow the loop variable to avoid aliasing
+			uniqueKeyItem := uniqueKeyItem
+			var uniqueKey v20210515s.UniqueKey
+			err := uniqueKeyItem.AssignProperties_To_UniqueKey(&uniqueKey)
+			if err != nil {
+				return errors.Wrap(err, "calling AssignProperties_To_UniqueKey() to populate field UniqueKeys")
+			}
+			uniqueKeyList[uniqueKeyIndex] = uniqueKey
+		}
+		destination.UniqueKeys = uniqueKeyList
+	} else {
+		destination.UniqueKeys = nil
+	}
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.UniqueKeyPolicy_STATUS
+// Deprecated version of UniqueKeyPolicy_STATUS. Use v1beta20210515.UniqueKeyPolicy_STATUS instead
+type UniqueKeyPolicy_STATUS struct {
+	PropertyBag genruntime.PropertyBag `json:"$propertyBag,omitempty"`
+	UniqueKeys  []UniqueKey_STATUS     `json:"uniqueKeys,omitempty"`
+}
+
+// AssignProperties_From_UniqueKeyPolicy_STATUS populates our UniqueKeyPolicy_STATUS from the provided source UniqueKeyPolicy_STATUS
+func (policy *UniqueKeyPolicy_STATUS) AssignProperties_From_UniqueKeyPolicy_STATUS(source *v20210515s.UniqueKeyPolicy_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// UniqueKeys
+	if source.UniqueKeys != nil {
+		uniqueKeyList := make([]UniqueKey_STATUS, len(source.UniqueKeys))
+		for uniqueKeyIndex, uniqueKeyItem := range source.UniqueKeys {
+			// Shadow the loop variable to avoid aliasing
+			uniqueKeyItem := uniqueKeyItem
+			var uniqueKey UniqueKey_STATUS
+			err := uniqueKey.AssignProperties_From_UniqueKey_STATUS(&uniqueKeyItem)
+			if err != nil {
+				return errors.Wrap(err, "calling AssignProperties_From_UniqueKey_STATUS() to populate field UniqueKeys")
+			}
+			uniqueKeyList[uniqueKeyIndex] = uniqueKey
+		}
+		policy.UniqueKeys = uniqueKeyList
+	} else {
+		policy.UniqueKeys = nil
+	}
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		policy.PropertyBag = propertyBag
+	} else {
+		policy.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_UniqueKeyPolicy_STATUS populates the provided destination UniqueKeyPolicy_STATUS from our UniqueKeyPolicy_STATUS
+func (policy *UniqueKeyPolicy_STATUS) AssignProperties_To_UniqueKeyPolicy_STATUS(destination *v20210515s.UniqueKeyPolicy_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(policy.PropertyBag)
+
+	// UniqueKeys
+	if policy.UniqueKeys != nil {
+		uniqueKeyList := make([]v20210515s.UniqueKey_STATUS, len(policy.UniqueKeys))
+		for uniqueKeyIndex, uniqueKeyItem := range policy.UniqueKeys {
+			// Shadow the loop variable to avoid aliasing
+			uniqueKeyItem := uniqueKeyItem
+			var uniqueKey v20210515s.UniqueKey_STATUS
+			err := uniqueKeyItem.AssignProperties_To_UniqueKey_STATUS(&uniqueKey)
+			if err != nil {
+				return errors.Wrap(err, "calling AssignProperties_To_UniqueKey_STATUS() to populate field UniqueKeys")
+			}
+			uniqueKeyList[uniqueKeyIndex] = uniqueKey
+		}
+		destination.UniqueKeys = uniqueKeyList
+	} else {
+		destination.UniqueKeys = nil
+	}
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.CompositePath
+// Deprecated version of CompositePath. Use v1beta20210515.CompositePath instead
 type CompositePath struct {
 	Order       *string                `json:"order,omitempty"`
 	Path        *string                `json:"path,omitempty"`
 	PropertyBag genruntime.PropertyBag `json:"$propertyBag,omitempty"`
 }
 
-//Storage version of v1alpha1api20210515.CompositePath_Status
-type CompositePath_Status struct {
+// AssignProperties_From_CompositePath populates our CompositePath from the provided source CompositePath
+func (path *CompositePath) AssignProperties_From_CompositePath(source *v20210515s.CompositePath) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// Order
+	path.Order = genruntime.ClonePointerToString(source.Order)
+
+	// Path
+	path.Path = genruntime.ClonePointerToString(source.Path)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		path.PropertyBag = propertyBag
+	} else {
+		path.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_CompositePath populates the provided destination CompositePath from our CompositePath
+func (path *CompositePath) AssignProperties_To_CompositePath(destination *v20210515s.CompositePath) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(path.PropertyBag)
+
+	// Order
+	destination.Order = genruntime.ClonePointerToString(path.Order)
+
+	// Path
+	destination.Path = genruntime.ClonePointerToString(path.Path)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.CompositePath_STATUS
+// Deprecated version of CompositePath_STATUS. Use v1beta20210515.CompositePath_STATUS instead
+type CompositePath_STATUS struct {
 	Order       *string                `json:"order,omitempty"`
 	Path        *string                `json:"path,omitempty"`
 	PropertyBag genruntime.PropertyBag `json:"$propertyBag,omitempty"`
 }
 
-//Storage version of v1alpha1api20210515.ExcludedPath
-//Generated from: https://schema.management.azure.com/schemas/2021-05-15/Microsoft.DocumentDB.json#/definitions/ExcludedPath
+// AssignProperties_From_CompositePath_STATUS populates our CompositePath_STATUS from the provided source CompositePath_STATUS
+func (path *CompositePath_STATUS) AssignProperties_From_CompositePath_STATUS(source *v20210515s.CompositePath_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// Order
+	path.Order = genruntime.ClonePointerToString(source.Order)
+
+	// Path
+	path.Path = genruntime.ClonePointerToString(source.Path)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		path.PropertyBag = propertyBag
+	} else {
+		path.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_CompositePath_STATUS populates the provided destination CompositePath_STATUS from our CompositePath_STATUS
+func (path *CompositePath_STATUS) AssignProperties_To_CompositePath_STATUS(destination *v20210515s.CompositePath_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(path.PropertyBag)
+
+	// Order
+	destination.Order = genruntime.ClonePointerToString(path.Order)
+
+	// Path
+	destination.Path = genruntime.ClonePointerToString(path.Path)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.ExcludedPath
+// Deprecated version of ExcludedPath. Use v1beta20210515.ExcludedPath instead
 type ExcludedPath struct {
 	Path        *string                `json:"path,omitempty"`
 	PropertyBag genruntime.PropertyBag `json:"$propertyBag,omitempty"`
 }
 
-//Storage version of v1alpha1api20210515.ExcludedPath_Status
-type ExcludedPath_Status struct {
+// AssignProperties_From_ExcludedPath populates our ExcludedPath from the provided source ExcludedPath
+func (path *ExcludedPath) AssignProperties_From_ExcludedPath(source *v20210515s.ExcludedPath) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// Path
+	path.Path = genruntime.ClonePointerToString(source.Path)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		path.PropertyBag = propertyBag
+	} else {
+		path.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_ExcludedPath populates the provided destination ExcludedPath from our ExcludedPath
+func (path *ExcludedPath) AssignProperties_To_ExcludedPath(destination *v20210515s.ExcludedPath) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(path.PropertyBag)
+
+	// Path
+	destination.Path = genruntime.ClonePointerToString(path.Path)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.ExcludedPath_STATUS
+// Deprecated version of ExcludedPath_STATUS. Use v1beta20210515.ExcludedPath_STATUS instead
+type ExcludedPath_STATUS struct {
 	Path        *string                `json:"path,omitempty"`
 	PropertyBag genruntime.PropertyBag `json:"$propertyBag,omitempty"`
 }
 
-//Storage version of v1alpha1api20210515.IncludedPath
-//Generated from: https://schema.management.azure.com/schemas/2021-05-15/Microsoft.DocumentDB.json#/definitions/IncludedPath
+// AssignProperties_From_ExcludedPath_STATUS populates our ExcludedPath_STATUS from the provided source ExcludedPath_STATUS
+func (path *ExcludedPath_STATUS) AssignProperties_From_ExcludedPath_STATUS(source *v20210515s.ExcludedPath_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// Path
+	path.Path = genruntime.ClonePointerToString(source.Path)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		path.PropertyBag = propertyBag
+	} else {
+		path.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_ExcludedPath_STATUS populates the provided destination ExcludedPath_STATUS from our ExcludedPath_STATUS
+func (path *ExcludedPath_STATUS) AssignProperties_To_ExcludedPath_STATUS(destination *v20210515s.ExcludedPath_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(path.PropertyBag)
+
+	// Path
+	destination.Path = genruntime.ClonePointerToString(path.Path)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.IncludedPath
+// Deprecated version of IncludedPath. Use v1beta20210515.IncludedPath instead
 type IncludedPath struct {
 	Indexes     []Indexes              `json:"indexes,omitempty"`
 	Path        *string                `json:"path,omitempty"`
 	PropertyBag genruntime.PropertyBag `json:"$propertyBag,omitempty"`
 }
 
-//Storage version of v1alpha1api20210515.IncludedPath_Status
-type IncludedPath_Status struct {
-	Indexes     []Indexes_Status       `json:"indexes,omitempty"`
+// AssignProperties_From_IncludedPath populates our IncludedPath from the provided source IncludedPath
+func (path *IncludedPath) AssignProperties_From_IncludedPath(source *v20210515s.IncludedPath) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// Indexes
+	if source.Indexes != nil {
+		indexList := make([]Indexes, len(source.Indexes))
+		for index, indexItem := range source.Indexes {
+			// Shadow the loop variable to avoid aliasing
+			indexItem := indexItem
+			var indexLocal Indexes
+			err := indexLocal.AssignProperties_From_Indexes(&indexItem)
+			if err != nil {
+				return errors.Wrap(err, "calling AssignProperties_From_Indexes() to populate field Indexes")
+			}
+			indexList[index] = indexLocal
+		}
+		path.Indexes = indexList
+	} else {
+		path.Indexes = nil
+	}
+
+	// Path
+	path.Path = genruntime.ClonePointerToString(source.Path)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		path.PropertyBag = propertyBag
+	} else {
+		path.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_IncludedPath populates the provided destination IncludedPath from our IncludedPath
+func (path *IncludedPath) AssignProperties_To_IncludedPath(destination *v20210515s.IncludedPath) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(path.PropertyBag)
+
+	// Indexes
+	if path.Indexes != nil {
+		indexList := make([]v20210515s.Indexes, len(path.Indexes))
+		for index, indexItem := range path.Indexes {
+			// Shadow the loop variable to avoid aliasing
+			indexItem := indexItem
+			var indexLocal v20210515s.Indexes
+			err := indexItem.AssignProperties_To_Indexes(&indexLocal)
+			if err != nil {
+				return errors.Wrap(err, "calling AssignProperties_To_Indexes() to populate field Indexes")
+			}
+			indexList[index] = indexLocal
+		}
+		destination.Indexes = indexList
+	} else {
+		destination.Indexes = nil
+	}
+
+	// Path
+	destination.Path = genruntime.ClonePointerToString(path.Path)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.IncludedPath_STATUS
+// Deprecated version of IncludedPath_STATUS. Use v1beta20210515.IncludedPath_STATUS instead
+type IncludedPath_STATUS struct {
+	Indexes     []Indexes_STATUS       `json:"indexes,omitempty"`
 	Path        *string                `json:"path,omitempty"`
 	PropertyBag genruntime.PropertyBag `json:"$propertyBag,omitempty"`
 }
 
-//Storage version of v1alpha1api20210515.SpatialSpec
-//Generated from: https://schema.management.azure.com/schemas/2021-05-15/Microsoft.DocumentDB.json#/definitions/SpatialSpec
+// AssignProperties_From_IncludedPath_STATUS populates our IncludedPath_STATUS from the provided source IncludedPath_STATUS
+func (path *IncludedPath_STATUS) AssignProperties_From_IncludedPath_STATUS(source *v20210515s.IncludedPath_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// Indexes
+	if source.Indexes != nil {
+		indexList := make([]Indexes_STATUS, len(source.Indexes))
+		for index, indexItem := range source.Indexes {
+			// Shadow the loop variable to avoid aliasing
+			indexItem := indexItem
+			var indexLocal Indexes_STATUS
+			err := indexLocal.AssignProperties_From_Indexes_STATUS(&indexItem)
+			if err != nil {
+				return errors.Wrap(err, "calling AssignProperties_From_Indexes_STATUS() to populate field Indexes")
+			}
+			indexList[index] = indexLocal
+		}
+		path.Indexes = indexList
+	} else {
+		path.Indexes = nil
+	}
+
+	// Path
+	path.Path = genruntime.ClonePointerToString(source.Path)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		path.PropertyBag = propertyBag
+	} else {
+		path.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_IncludedPath_STATUS populates the provided destination IncludedPath_STATUS from our IncludedPath_STATUS
+func (path *IncludedPath_STATUS) AssignProperties_To_IncludedPath_STATUS(destination *v20210515s.IncludedPath_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(path.PropertyBag)
+
+	// Indexes
+	if path.Indexes != nil {
+		indexList := make([]v20210515s.Indexes_STATUS, len(path.Indexes))
+		for index, indexItem := range path.Indexes {
+			// Shadow the loop variable to avoid aliasing
+			indexItem := indexItem
+			var indexLocal v20210515s.Indexes_STATUS
+			err := indexItem.AssignProperties_To_Indexes_STATUS(&indexLocal)
+			if err != nil {
+				return errors.Wrap(err, "calling AssignProperties_To_Indexes_STATUS() to populate field Indexes")
+			}
+			indexList[index] = indexLocal
+		}
+		destination.Indexes = indexList
+	} else {
+		destination.Indexes = nil
+	}
+
+	// Path
+	destination.Path = genruntime.ClonePointerToString(path.Path)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.SpatialSpec
+// Deprecated version of SpatialSpec. Use v1beta20210515.SpatialSpec instead
 type SpatialSpec struct {
 	Path        *string                `json:"path,omitempty"`
 	PropertyBag genruntime.PropertyBag `json:"$propertyBag,omitempty"`
 	Types       []string               `json:"types,omitempty"`
 }
 
-//Storage version of v1alpha1api20210515.SpatialSpec_Status
-type SpatialSpec_Status struct {
+// AssignProperties_From_SpatialSpec populates our SpatialSpec from the provided source SpatialSpec
+func (spatial *SpatialSpec) AssignProperties_From_SpatialSpec(source *v20210515s.SpatialSpec) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// Path
+	spatial.Path = genruntime.ClonePointerToString(source.Path)
+
+	// Types
+	spatial.Types = genruntime.CloneSliceOfString(source.Types)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		spatial.PropertyBag = propertyBag
+	} else {
+		spatial.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_SpatialSpec populates the provided destination SpatialSpec from our SpatialSpec
+func (spatial *SpatialSpec) AssignProperties_To_SpatialSpec(destination *v20210515s.SpatialSpec) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(spatial.PropertyBag)
+
+	// Path
+	destination.Path = genruntime.ClonePointerToString(spatial.Path)
+
+	// Types
+	destination.Types = genruntime.CloneSliceOfString(spatial.Types)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.SpatialSpec_STATUS
+// Deprecated version of SpatialSpec_STATUS. Use v1beta20210515.SpatialSpec_STATUS instead
+type SpatialSpec_STATUS struct {
 	Path        *string                `json:"path,omitempty"`
 	PropertyBag genruntime.PropertyBag `json:"$propertyBag,omitempty"`
 	Types       []string               `json:"types,omitempty"`
 }
 
-//Storage version of v1alpha1api20210515.UniqueKey
-//Generated from: https://schema.management.azure.com/schemas/2021-05-15/Microsoft.DocumentDB.json#/definitions/UniqueKey
+// AssignProperties_From_SpatialSpec_STATUS populates our SpatialSpec_STATUS from the provided source SpatialSpec_STATUS
+func (spatial *SpatialSpec_STATUS) AssignProperties_From_SpatialSpec_STATUS(source *v20210515s.SpatialSpec_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// Path
+	spatial.Path = genruntime.ClonePointerToString(source.Path)
+
+	// Types
+	spatial.Types = genruntime.CloneSliceOfString(source.Types)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		spatial.PropertyBag = propertyBag
+	} else {
+		spatial.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_SpatialSpec_STATUS populates the provided destination SpatialSpec_STATUS from our SpatialSpec_STATUS
+func (spatial *SpatialSpec_STATUS) AssignProperties_To_SpatialSpec_STATUS(destination *v20210515s.SpatialSpec_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(spatial.PropertyBag)
+
+	// Path
+	destination.Path = genruntime.ClonePointerToString(spatial.Path)
+
+	// Types
+	destination.Types = genruntime.CloneSliceOfString(spatial.Types)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.UniqueKey
+// Deprecated version of UniqueKey. Use v1beta20210515.UniqueKey instead
 type UniqueKey struct {
 	Paths       []string               `json:"paths,omitempty"`
 	PropertyBag genruntime.PropertyBag `json:"$propertyBag,omitempty"`
 }
 
-//Storage version of v1alpha1api20210515.UniqueKey_Status
-type UniqueKey_Status struct {
+// AssignProperties_From_UniqueKey populates our UniqueKey from the provided source UniqueKey
+func (uniqueKey *UniqueKey) AssignProperties_From_UniqueKey(source *v20210515s.UniqueKey) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// Paths
+	uniqueKey.Paths = genruntime.CloneSliceOfString(source.Paths)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		uniqueKey.PropertyBag = propertyBag
+	} else {
+		uniqueKey.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_UniqueKey populates the provided destination UniqueKey from our UniqueKey
+func (uniqueKey *UniqueKey) AssignProperties_To_UniqueKey(destination *v20210515s.UniqueKey) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(uniqueKey.PropertyBag)
+
+	// Paths
+	destination.Paths = genruntime.CloneSliceOfString(uniqueKey.Paths)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.UniqueKey_STATUS
+// Deprecated version of UniqueKey_STATUS. Use v1beta20210515.UniqueKey_STATUS instead
+type UniqueKey_STATUS struct {
 	Paths       []string               `json:"paths,omitempty"`
 	PropertyBag genruntime.PropertyBag `json:"$propertyBag,omitempty"`
 }
 
-//Storage version of v1alpha1api20210515.Indexes
-//Generated from: https://schema.management.azure.com/schemas/2021-05-15/Microsoft.DocumentDB.json#/definitions/Indexes
+// AssignProperties_From_UniqueKey_STATUS populates our UniqueKey_STATUS from the provided source UniqueKey_STATUS
+func (uniqueKey *UniqueKey_STATUS) AssignProperties_From_UniqueKey_STATUS(source *v20210515s.UniqueKey_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// Paths
+	uniqueKey.Paths = genruntime.CloneSliceOfString(source.Paths)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		uniqueKey.PropertyBag = propertyBag
+	} else {
+		uniqueKey.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_UniqueKey_STATUS populates the provided destination UniqueKey_STATUS from our UniqueKey_STATUS
+func (uniqueKey *UniqueKey_STATUS) AssignProperties_To_UniqueKey_STATUS(destination *v20210515s.UniqueKey_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(uniqueKey.PropertyBag)
+
+	// Paths
+	destination.Paths = genruntime.CloneSliceOfString(uniqueKey.Paths)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.Indexes
+// Deprecated version of Indexes. Use v1beta20210515.Indexes instead
 type Indexes struct {
 	DataType    *string                `json:"dataType,omitempty"`
 	Kind        *string                `json:"kind,omitempty"`
@@ -377,12 +2341,113 @@ type Indexes struct {
 	PropertyBag genruntime.PropertyBag `json:"$propertyBag,omitempty"`
 }
 
-//Storage version of v1alpha1api20210515.Indexes_Status
-type Indexes_Status struct {
+// AssignProperties_From_Indexes populates our Indexes from the provided source Indexes
+func (indexes *Indexes) AssignProperties_From_Indexes(source *v20210515s.Indexes) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// DataType
+	indexes.DataType = genruntime.ClonePointerToString(source.DataType)
+
+	// Kind
+	indexes.Kind = genruntime.ClonePointerToString(source.Kind)
+
+	// Precision
+	indexes.Precision = genruntime.ClonePointerToInt(source.Precision)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		indexes.PropertyBag = propertyBag
+	} else {
+		indexes.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_Indexes populates the provided destination Indexes from our Indexes
+func (indexes *Indexes) AssignProperties_To_Indexes(destination *v20210515s.Indexes) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(indexes.PropertyBag)
+
+	// DataType
+	destination.DataType = genruntime.ClonePointerToString(indexes.DataType)
+
+	// Kind
+	destination.Kind = genruntime.ClonePointerToString(indexes.Kind)
+
+	// Precision
+	destination.Precision = genruntime.ClonePointerToInt(indexes.Precision)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210515.Indexes_STATUS
+// Deprecated version of Indexes_STATUS. Use v1beta20210515.Indexes_STATUS instead
+type Indexes_STATUS struct {
 	DataType    *string                `json:"dataType,omitempty"`
 	Kind        *string                `json:"kind,omitempty"`
 	Precision   *int                   `json:"precision,omitempty"`
 	PropertyBag genruntime.PropertyBag `json:"$propertyBag,omitempty"`
+}
+
+// AssignProperties_From_Indexes_STATUS populates our Indexes_STATUS from the provided source Indexes_STATUS
+func (indexes *Indexes_STATUS) AssignProperties_From_Indexes_STATUS(source *v20210515s.Indexes_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// DataType
+	indexes.DataType = genruntime.ClonePointerToString(source.DataType)
+
+	// Kind
+	indexes.Kind = genruntime.ClonePointerToString(source.Kind)
+
+	// Precision
+	indexes.Precision = genruntime.ClonePointerToInt(source.Precision)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		indexes.PropertyBag = propertyBag
+	} else {
+		indexes.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_Indexes_STATUS populates the provided destination Indexes_STATUS from our Indexes_STATUS
+func (indexes *Indexes_STATUS) AssignProperties_To_Indexes_STATUS(destination *v20210515s.Indexes_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(indexes.PropertyBag)
+
+	// DataType
+	destination.DataType = genruntime.ClonePointerToString(indexes.DataType)
+
+	// Kind
+	destination.Kind = genruntime.ClonePointerToString(indexes.Kind)
+
+	// Precision
+	destination.Precision = genruntime.ClonePointerToInt(indexes.Precision)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
 }
 
 func init() {

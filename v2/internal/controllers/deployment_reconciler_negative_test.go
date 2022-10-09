@@ -14,9 +14,9 @@ import (
 
 	"github.com/Azure/go-autorest/autorest/to"
 
-	compute "github.com/Azure/azure-service-operator/v2/api/compute/v1alpha1api20201201"
-	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1alpha1api20200601"
-	storage "github.com/Azure/azure-service-operator/v2/api/storage/v1alpha1api20210401"
+	compute "github.com/Azure/azure-service-operator/v2/api/compute/v1beta20201201"
+	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
+	storage "github.com/Azure/azure-service-operator/v2/api/storage/v1beta20210401"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
 )
@@ -25,30 +25,32 @@ func newStorageAccountWithInvalidKeyExpiration(tc *testcommon.KubePerTestContext
 	// Custom namer because storage accounts have strict names
 
 	// Create a storage account with an invalid key expiration period
-	accessTier := storage.StorageAccountPropertiesCreateParametersAccessTierHot
+	accessTier := storage.StorageAccountPropertiesCreateParameters_AccessTier_Hot
+	kind := storage.StorageAccount_Kind_Spec_BlobStorage
+	sku := storage.Sku_Name_Standard_LRS
 	return &storage.StorageAccount{
 		ObjectMeta: tc.MakeObjectMetaWithName(tc.NoSpaceNamer.GenerateName("stor")),
-		Spec: storage.StorageAccounts_Spec{
+		Spec: storage.StorageAccount_Spec{
 			Location: tc.AzureRegion,
 			Owner:    testcommon.AsOwner(rg),
-			Kind:     storage.StorageAccountsSpecKindBlobStorage,
-			Sku: storage.Sku{
-				Name: storage.SkuNameStandardLRS,
+			Kind:     &kind,
+			Sku: &storage.Sku{
+				Name: &sku,
 			},
 			AccessTier: &accessTier,
 			KeyPolicy: &storage.KeyPolicy{
-				KeyExpirationPeriodInDays: -260,
+				KeyExpirationPeriodInDays: to.IntPtr(-260),
 			},
 		},
 	}
 }
 
 func newVMSSWithInvalidPublisher(tc *testcommon.KubePerTestContext, rg *resources.ResourceGroup) *compute.VirtualMachineScaleSet {
-	upgradePolicyMode := compute.UpgradePolicyModeAutomatic
+	upgradePolicyMode := compute.UpgradePolicy_Mode_Automatic
 	adminUsername := "adminUser"
 	return &compute.VirtualMachineScaleSet{
 		ObjectMeta: tc.MakeObjectMetaWithName(tc.Namer.GenerateName("vmss")),
-		Spec: compute.VirtualMachineScaleSets_Spec{
+		Spec: compute.VirtualMachineScaleSet_Spec{
 			Location: tc.AzureRegion,
 			Owner:    testcommon.AsOwner(rg),
 			Sku: &compute.Sku{
@@ -60,7 +62,7 @@ func newVMSSWithInvalidPublisher(tc *testcommon.KubePerTestContext, rg *resource
 			UpgradePolicy: &compute.UpgradePolicy{
 				Mode: &upgradePolicyMode,
 			},
-			VirtualMachineProfile: &compute.VirtualMachineScaleSets_Spec_Properties_VirtualMachineProfile{
+			VirtualMachineProfile: &compute.VirtualMachineScaleSet_Properties_VirtualMachineProfile_Spec{
 				StorageProfile: &compute.VirtualMachineScaleSetStorageProfile{
 					ImageReference: &compute.ImageReference{
 						Publisher: to.StringPtr("this publisher"),
@@ -69,14 +71,19 @@ func newVMSSWithInvalidPublisher(tc *testcommon.KubePerTestContext, rg *resource
 						Version:   to.StringPtr("latest"),
 					},
 				},
-				OsProfile: &compute.VirtualMachineScaleSetOSProfile{
+				OsProfile: &compute.VirtualMachineScaleSet_Properties_VirtualMachineProfile_OsProfile_Spec{
 					ComputerNamePrefix: to.StringPtr("computer"),
 					AdminUsername:      &adminUsername,
 				},
-				NetworkProfile: &compute.VirtualMachineScaleSets_Spec_Properties_VirtualMachineProfile_NetworkProfile{
-					NetworkInterfaceConfigurations: []compute.VirtualMachineScaleSets_Spec_Properties_VirtualMachineProfile_NetworkProfile_NetworkInterfaceConfigurations{
+				NetworkProfile: &compute.VirtualMachineScaleSet_Properties_VirtualMachineProfile_NetworkProfile_Spec{
+					NetworkInterfaceConfigurations: []compute.VirtualMachineScaleSet_Properties_VirtualMachineProfile_NetworkProfile_NetworkInterfaceConfigurations_Spec{
 						{
-							Name: "mynicconfig",
+							Name: to.StringPtr("mynicconfig"),
+							IpConfigurations: []compute.VirtualMachineScaleSet_Properties_VirtualMachineProfile_NetworkProfile_NetworkInterfaceConfigurations_Properties_IpConfigurations_Spec{
+								{
+									Name: to.StringPtr("test"),
+								},
+							},
 						},
 					},
 				},
@@ -87,7 +94,7 @@ func newVMSSWithInvalidPublisher(tc *testcommon.KubePerTestContext, rg *resource
 
 // There are two ways that a long-running operation can fail. It can be rejected when initially
 // submitted to the Azure API, or it can be accepted and then report a failure during
-// long running operation polling. This ensures that the second case is handled correctly.
+// long-running operation polling. This ensures that the second case is handled correctly.
 func Test_OperationAccepted_LongRunningOperationFails(t *testing.T) {
 	t.Parallel()
 
@@ -170,8 +177,11 @@ func Test_OperationRejected_SucceedsAfterUpdate(t *testing.T) {
 	subnet := newVMSubnet(tc, testcommon.AsOwner(vnet))
 	publicIPAddress := newPublicIPAddressForVMSS(tc, testcommon.AsOwner(rg))
 	loadBalancer := newLoadBalancerForVMSS(tc, rg, publicIPAddress)
-	tc.CreateResourcesAndWait(vnet, subnet, loadBalancer, publicIPAddress)
-	vmss := newVMSS(tc, rg, loadBalancer, subnet)
+	// Have to create the vnet first there's a race between it and subnet creation that
+	// can change the body of the VNET PUT (because VNET PUT contains subnets)
+	tc.CreateResourceAndWait(vnet)
+	tc.CreateResourcesAndWait(subnet, loadBalancer, publicIPAddress)
+	vmss := newVMSS20201201(tc, rg, loadBalancer, subnet)
 	imgRef := vmss.Spec.VirtualMachineProfile.StorageProfile.ImageReference
 	originalImgRef := imgRef.DeepCopy()
 

@@ -12,7 +12,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	documentdb "github.com/Azure/azure-service-operator/v2/api/documentdb/v1alpha1api20210515"
+	documentdb "github.com/Azure/azure-service-operator/v2/api/documentdb/v1beta20210515"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
@@ -25,17 +25,18 @@ func Test_CosmosDB_DatabaseAccount_SecretsFromAzure(t *testing.T) {
 	// Custom namer because cosmosdb accounts have stricter name
 	// requirements - no hyphens allowed.
 	// Create a Cosmos DB account
-	kind := documentdb.DatabaseAccountsSpecKindGlobalDocumentDB
+	offerType := documentdb.DatabaseAccountCreateUpdateProperties_DatabaseAccountOfferType_Standard
+	kind := documentdb.DatabaseAccount_Kind_Spec_GlobalDocumentDB
 	acct := &documentdb.DatabaseAccount{
 		ObjectMeta: tc.MakeObjectMetaWithName(tc.NoSpaceNamer.GenerateName("sqlacct")),
-		Spec: documentdb.DatabaseAccounts_Spec{
-			Location:                 &tc.AzureRegion,
+		Spec: documentdb.DatabaseAccount_Spec{
+			Location:                 tc.AzureRegion,
 			Owner:                    testcommon.AsOwner(rg),
 			Kind:                     &kind,
-			DatabaseAccountOfferType: documentdb.DatabaseAccountCreateUpdatePropertiesDatabaseAccountOfferTypeStandard,
+			DatabaseAccountOfferType: &offerType,
 			Locations: []documentdb.Location{
 				{
-					LocationName: &tc.AzureRegion,
+					LocationName: tc.AzureRegion,
 				},
 			},
 		},
@@ -48,7 +49,7 @@ func Test_CosmosDB_DatabaseAccount_SecretsFromAzure(t *testing.T) {
 	tc.ListResources(list, client.InNamespace(tc.Namespace))
 	tc.Expect(list.Items).To(HaveLen(0))
 
-	// Run sub-tests on the redis
+	// Run sub-tests on the cosmosdb
 	tc.RunSubtests(
 		testcommon.Subtest{
 			Name: "SecretsWrittenToSameKubeSecret",

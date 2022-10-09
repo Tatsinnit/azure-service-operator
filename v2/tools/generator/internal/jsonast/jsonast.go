@@ -213,7 +213,7 @@ func (scanner *SchemaScanner) GenerateDefinitionsFromDeploymentTemplate(ctx cont
 		specType := astmodel.BuildAllOfType(objectBase, resourceType.SpecType())
 		// now replace it
 		scanner.removeTypeDefinition(resourceRef)
-		scanner.addTypeDefinition(resourceDef.WithType(astmodel.NewAzureResourceType(specType, nil, resourceDef.Name(), resourceType.Kind())))
+		scanner.addTypeDefinition(resourceDef.WithType(astmodel.NewAzureResourceType(specType, nil, resourceDef.Name(), resourceType.Scope())))
 		return nil
 	})
 
@@ -241,7 +241,7 @@ func (scanner *SchemaScanner) GenerateAllDefinitions(ctx context.Context, schema
 
 	rootPackage := scanner.configuration.MakeLocalPackageReference(
 		scanner.idFactory.CreateGroupName(rootGroup),
-		astmodel.CreateLocalPackageNameFromVersion(rootVersion))
+		rootVersion)
 	rootTypeName := astmodel.MakeTypeName(rootPackage, rootName)
 
 	_, err = generateDefinitionsFor(ctx, scanner, rootTypeName, schema)
@@ -310,6 +310,10 @@ func stringHandler(ctx context.Context, scanner *SchemaScanner, schema Schema) (
 			}
 		}
 
+		if format == "arm-id" {
+			t = astmodel.ARMIDType
+		}
+
 		validations := astmodel.StringValidations{
 			MaxLength: maxLength,
 			MinLength: minLength,
@@ -329,11 +333,12 @@ func formatToPattern(format string) *regexp.Regexp {
 	switch format {
 	case "uuid":
 		return uuidRegex
-	case "date-time", "date", "duration", "date-time-rfc1123":
+	case "date-time", "date", "duration", "date-time-rfc1123", "arm-id":
 		// TODO: don’t bother validating for now
 		return nil
 	case "password":
-		// TODO: we should do something about hiding this
+		// This is handled later in the status_augment phase of processing, so just
+		// ignore it for now
 		return nil
 	default:
 		klog.Warningf("unknown format %q", format)
@@ -367,13 +372,13 @@ func numberHandler(ctx context.Context, scanner *SchemaScanner, schema Schema) (
 			}
 		}
 
+		result := astmodel.NewValidatedType(t, *v)
 		if len(errs) > 0 {
-			result := astmodel.NewValidatedType(t, *v)
 			return astmodel.NewErroredType(result, errs, nil), nil
 		}
 
 		// we have checked they are all integers:
-		return astmodel.NewValidatedType(astmodel.IntType, *v), nil
+		return result, nil
 	}
 
 	return t, nil
@@ -445,8 +450,9 @@ func enumHandler(ctx context.Context, scanner *SchemaScanner, schema Schema) (as
 		}
 	}
 
-	var values []astmodel.EnumValue
-	for _, v := range schema.enumValues() {
+	enumValues := schema.enumValues()
+	values := make([]astmodel.EnumValue, 0, len(enumValues))
+	for _, v := range enumValues {
 
 		vTrimmed := strings.Trim(v, "\"")
 
@@ -480,7 +486,7 @@ func objectHandler(ctx context.Context, scanner *SchemaScanner, schema Schema) (
 	// if we _only_ have an 'additionalProperties' property, then we are making
 	// a dictionary-like type, and we won't generate an object type; instead, we
 	// will just use the 'additionalProperties' type directly
-	if len(properties) == 1 && properties[0].PropertyName() == "additionalProperties" {
+	if len(properties) == 1 && properties[0].PropertyName() == astmodel.AdditionalPropertiesPropertyName {
 		return properties[0].PropertyType(), nil
 	}
 
@@ -527,14 +533,14 @@ func generatePropertyDefinition(ctx context.Context, scanner *SchemaScanner, raw
 func getProperties(
 	ctx context.Context,
 	scanner *SchemaScanner,
-	schema Schema) ([]*astmodel.PropertyDefinition, error) {
-
+	schema Schema,
+) ([]*astmodel.PropertyDefinition, error) {
 	ctx, span := tab.StartSpan(ctx, "getProperties")
-
 	defer span.End()
 
-	var properties []*astmodel.PropertyDefinition
-	for propName, propSchema := range schema.properties() {
+	props := schema.properties()
+	properties := make([]*astmodel.PropertyDefinition, 0, len(props))
+	for propName, propSchema := range props {
 
 		property, err := generatePropertyDefinition(ctx, scanner, propName, propSchema)
 		if err != nil {
@@ -576,6 +582,14 @@ func getProperties(
 			}
 		}
 
+		// All types are optional (regardless of if the property is required or not) because of
+		// non-optional types (int, string, MyType, etc) interaction with omitempty.
+		// If a field is json:omitempty but its type is not optional (not a ptr) then the default value
+		// for that type will be omitted from the JSON payload. For example 0 would be omitted for ints.
+		// On the other hand if a field is NOT json:omitempty then the type is always serialized in the payload
+		// which causes issues for kubebuilder:validation:Required (how can we tell the user didn't specify that value?)
+		// See https://github.com/Azure/azure-service-operator/issues/1999 for more details.
+		property = property.MakeTypeOptional()
 		if isRequired {
 			property = property.MakeRequired()
 		} else {
@@ -596,8 +610,8 @@ func getProperties(
 			if len(properties) == 0 {
 				// TODO: for JSON serialization this needs to be unpacked into "parent"
 				additionalProperties := astmodel.NewPropertyDefinition(
-					"additionalProperties",
-					"additionalProperties",
+					astmodel.AdditionalPropertiesPropertyName,
+					astmodel.AdditionalPropertiesJsonName,
 					astmodel.NewStringMapType(astmodel.AnyType))
 
 				properties = append(properties, additionalProperties)
@@ -620,8 +634,8 @@ func getProperties(
 			}
 
 			additionalProperties := astmodel.NewPropertyDefinition(
-				astmodel.PropertyName("additionalProperties"),
-				"additionalProperties",
+				astmodel.AdditionalPropertiesPropertyName,
+				astmodel.AdditionalPropertiesJsonName,
 				astmodel.NewStringMapType(additionalPropsType))
 
 			properties = append(properties, additionalProperties)
@@ -669,8 +683,8 @@ func generateDefinitionsFor(
 	ctx context.Context,
 	scanner *SchemaScanner,
 	typeName astmodel.TypeName,
-	schema Schema) (astmodel.Type, error) {
-
+	schema Schema,
+) (astmodel.Type, error) {
 	schemaType, err := getSubSchemaType(schema)
 	if err != nil {
 		return nil, err
@@ -913,11 +927,12 @@ func GetPrimitiveType(name SchemaType) (*astmodel.PrimitiveType, error) {
 // categorizeResourceType determines if this URL represents an ARM resource or not.
 // If the URL represents a resource, a non-nil value is returned. If the URL does not represent
 // a resource, nil is returned.
-func categorizeResourceType(url *url.URL) *astmodel.ResourceKind {
+func categorizeResourceType(url *url.URL) *astmodel.ResourceScope {
 	fragmentParts := strings.FieldsFunc(url.Fragment, isURLPathSeparator)
 
-	normal := astmodel.ResourceKindNormal
-	extension := astmodel.ResourceKindExtension
+	resourceGroup := astmodel.ResourceScopeResourceGroup
+	extension := astmodel.ResourceScopeExtension
+	tenant := astmodel.ResourceScopeTenant
 
 	for _, fragmentPart := range fragmentParts {
 		// resourceDefinitions are "normal" resources
@@ -925,7 +940,11 @@ func categorizeResourceType(url *url.URL) *astmodel.ResourceKind {
 			// Treat all resourceBase things as resources so that "resourceness"
 			// is inherited:
 			strings.Contains(strings.ToLower(fragmentPart), "resourcebase") {
-			return &normal
+			return &resourceGroup
+		}
+
+		if fragmentPart == "tenant_resourceDefinitions" {
+			return &tenant
 		}
 
 		// unknown_ResourceDefinitions or extension_resourceDefinitions are extension resources, see

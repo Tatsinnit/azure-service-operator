@@ -19,7 +19,7 @@
  	metav1.TypeMeta   `json:",inline"`
  	metav1.ObjectMeta `json:"metadata,omitempty"`
  	Spec              Person_Spec   `json:"spec,omitempty"`
- 	Status            Person_Status `json:"status,omitempty"`
+ 	Status            Person_STATUS `json:"status,omitempty"`
  }
  
 +var _ conditions.Conditioner = &Person{}
@@ -42,15 +42,16 @@
  }
  
  type Person_Spec struct {
- 	//FullName: As would be used to address mail
- 	FullName string `json:"fullName"`
+ 	// FullName: As would be used to address mail
+ 	FullName string `json:"fullName,omitempty"`
  }
  
- type Person_Status struct {
--	Status string `json:"status"`
-+	//Conditions: The observed state of the resource
+ type Person_STATUS struct {
++	// Conditions: The observed state of the resource
 +	Conditions []conditions.Condition `json:"conditions,omitempty"`
-+	Status     string                 `json:"status"`
++
+ 	// Status: Current status
+ 	Status string `json:"status,omitempty"`
  }
  
  func init() {

@@ -13,6 +13,8 @@ import (
 	"gopkg.in/yaml.v3"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 
+	"github.com/Azure/azure-service-operator/v2/internal/set"
+
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
 
@@ -28,6 +30,7 @@ import (
 type GroupConfiguration struct {
 	name     string
 	versions map[string]*VersionConfiguration
+	advisor  *TypoAdvisor
 }
 
 // NewGroupConfiguration returns a new (empty) GroupConfiguration
@@ -35,6 +38,7 @@ func NewGroupConfiguration(name string) *GroupConfiguration {
 	return &GroupConfiguration{
 		name:     name,
 		versions: make(map[string]*VersionConfiguration),
+		advisor:  NewTypoAdvisor(),
 	}
 }
 
@@ -42,44 +46,50 @@ func NewGroupConfiguration(name string) *GroupConfiguration {
 // In addition to indexing by the name of the version, we also index by the local-package-name and storage-package-name
 // of the version, so we can do lookups via TypeName. All indexing is lower-case to allow case-insensitive lookups (this
 // makes our configuration more forgiving).
-func (gc *GroupConfiguration) add(version *VersionConfiguration) {
-	pkg := astmodel.CreateLocalPackageNameFromVersion(version.name)
+func (gc *GroupConfiguration) addVersion(name string, version *VersionConfiguration) {
+	// Convert version.name into a package version
+	// We do this by constructing a local package reference because this avoids replicating the logic here and risking
+	// inconsistency if things are changed in the future.
+	local := astmodel.MakeLocalPackageReference("prefix", "group", astmodel.GeneratorVersion, name)
 
-	gc.versions[strings.ToLower(version.name)] = version
-	gc.versions[strings.ToLower(pkg)] = version
-
-	if !strings.HasSuffix(version.name, astmodel.StoragePackageSuffix) {
-		str := pkg + astmodel.StoragePackageSuffix
-		gc.versions[strings.ToLower(str)] = version
-	}
+	gc.versions[strings.ToLower(name)] = version
+	gc.versions[strings.ToLower(local.Version())] = version
 }
 
 // visitVersion invokes the provided visitor on the specified version if present.
 // Returns a NotConfiguredError if the version is not found; otherwise whatever error is returned by the visitor.
 func (gc *GroupConfiguration) visitVersion(
-	name astmodel.TypeName,
-	visitor *configurationVisitor) error {
-
-	vc, err := gc.findVersion(name)
+	ref astmodel.PackageReference,
+	visitor *configurationVisitor,
+) error {
+	vc, err := gc.findVersion(ref)
 	if err != nil {
 		return err
 	}
 
-	return visitor.visitVersion(vc)
+	err = visitor.visitVersion(vc)
+	if err != nil {
+		return errors.Wrapf(err, "configuration of group %s", gc.name)
+	}
+
+	return nil
 }
 
 // visitVersions invokes the provided visitor on all versions.
 func (gc *GroupConfiguration) visitVersions(visitor *configurationVisitor) error {
-	var errs []error
-
 	// All our versions are listed under multiple keys, so we hedge against processing them multiple times
-	versionsSeen := astmodel.MakeStringSet()
+	versionsSeen := set.Make[string]()
+
+	errs := make([]error, 0)
 	for _, v := range gc.versions {
 		if versionsSeen.Contains(v.name) {
 			continue
 		}
 
-		errs = append(errs, visitor.visitVersion(v))
+		err := visitor.visitVersion(v)
+		err = gc.advisor.Wrapf(err, v.name, "version %s not seen", v.name)
+		errs = append(errs, err)
+
 		versionsSeen.Add(v.name)
 	}
 
@@ -90,17 +100,36 @@ func (gc *GroupConfiguration) visitVersions(visitor *configurationVisitor) error
 		gc.name)
 }
 
-// findVersion uses the provided TypeName to work out which nested VersionConfiguration should be used
-func (gc *GroupConfiguration) findVersion(name astmodel.TypeName) (*VersionConfiguration, error) {
-	ref := name.PackageReference
-	if s, ok := ref.(astmodel.StoragePackageReference); ok {
-		// If we have a storage package reference, need to unwrap the actual local package reference
-		// as all our configuration is based on API versions, not storage versions
-		ref = s.Local()
+// findVersion uses the provided PackageReference to work out which nested VersionConfiguration should be used
+func (gc *GroupConfiguration) findVersion(ref astmodel.PackageReference) (*VersionConfiguration, error) {
+	switch r := ref.(type) {
+	case astmodel.StoragePackageReference:
+		return gc.findVersion(r.Local())
+	case astmodel.LocalPackageReference:
+		return gc.findVersionForLocalPackageReference(r)
 	}
 
-	v := strings.ToLower(ref.PackageName())
-	if version, ok := gc.versions[v]; ok {
+	panic(fmt.Sprintf("didn't expect PackageReference of type %T", ref))
+}
+
+// findVersion uses the provided LocalPackageReference to work out which nested VersionConfiguration should be used
+func (gc *GroupConfiguration) findVersionForLocalPackageReference(ref astmodel.LocalPackageReference) (*VersionConfiguration, error) {
+	gc.advisor.AddTerm(ref.ApiVersion())
+	gc.advisor.AddTerm(ref.PackageName())
+
+	// Check based on the ApiVersion alone
+	apiKey := strings.ToLower(ref.ApiVersion())
+	if version, ok := gc.versions[apiKey]; ok {
+		// make sure there's an exact match on the actual version name, so we don't generate a recommendation
+		gc.advisor.AddTerm(version.name)
+		return version, nil
+	}
+
+	// Also check the entire package name (allows config to specify just a particular generator version if needed)
+	pkgKey := strings.ToLower(ref.PackageName())
+	if version, ok := gc.versions[pkgKey]; ok {
+		// make sure there's an exact match on the actual version name, so we don't generate a recommendation
+		gc.advisor.AddTerm(version.name)
 		return version, nil
 	}
 
@@ -136,7 +165,7 @@ func (gc *GroupConfiguration) UnmarshalYAML(value *yaml.Node) error {
 				return errors.Wrapf(err, "decoding yaml for %q", lastId)
 			}
 
-			gc.add(v)
+			gc.addVersion(lastId, v)
 			continue
 		}
 
@@ -150,10 +179,9 @@ func (gc *GroupConfiguration) UnmarshalYAML(value *yaml.Node) error {
 
 // configuredVersions returns a sorted slice containing all the versions configured in this group
 func (gc *GroupConfiguration) configuredVersions() []string {
-	var result []string
-
 	// All our versions are listed twice, under two different keys, so we hedge against processing them multiple times
-	versionsSeen := astmodel.MakeStringSet()
+	versionsSeen := set.Make[string]()
+	result := make([]string, 0, len(gc.versions))
 	for _, v := range gc.versions {
 		if versionsSeen.Contains(v.name) {
 			continue

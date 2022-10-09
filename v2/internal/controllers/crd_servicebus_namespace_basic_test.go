@@ -8,10 +8,11 @@ package controllers_test
 import (
 	"testing"
 
+	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 	. "github.com/onsi/gomega"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	servicebus "github.com/Azure/azure-service-operator/v2/api/servicebus/v1alpha1api20210101preview"
+	servicebus "github.com/Azure/azure-service-operator/v2/api/servicebus/v1beta20210101preview"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 )
 
@@ -22,18 +23,8 @@ func Test_ServiceBus_Namespace_Basic_CRUD(t *testing.T) {
 
 	rg := tc.CreateTestResourceGroupAndWait()
 
-	zoneRedundant := false
-	namespace := &servicebus.Namespace{
-		ObjectMeta: tc.MakeObjectMetaWithName(tc.Namer.GenerateName("sbnamespace")),
-		Spec: servicebus.Namespaces_Spec{
-			Location: tc.AzureRegion,
-			Owner:    testcommon.AsOwner(rg),
-			Sku: &servicebus.SBSku{
-				Name: servicebus.SBSkuNameBasic,
-			},
-			ZoneRedundant: &zoneRedundant,
-		},
-	}
+	sku := servicebus.SBSku_Name_Basic
+	namespace := NewServiceBusNamespace(tc, rg, sku)
 
 	tc.CreateResourceAndWait(namespace)
 
@@ -43,26 +34,27 @@ func Test_ServiceBus_Namespace_Basic_CRUD(t *testing.T) {
 	tc.RunParallelSubtests(
 		testcommon.Subtest{
 			Name: "Queue CRUD",
-			Test: func(testContext *testcommon.KubePerTestContext) {
-				ServiceBus_Queue_CRUD(testContext, namespace)
+			Test: func(tc *testcommon.KubePerTestContext) {
+				ServiceBus_Queue_CRUD(tc, namespace)
 			},
+		},
+		testcommon.Subtest{
+			Name: "Namespace secrets",
+			Test: func(tc *testcommon.KubePerTestContext) { ServiceBus_Namespace_Secrets(tc, namespace) },
 		},
 	)
 
 	tc.DeleteResourceAndWait(namespace)
 
 	// Ensure that the resource was really deleted in Azure
-	exists, retryAfter, err := tc.AzureClient.HeadByID(tc.Ctx, armId, string(servicebus.NamespacesSpecAPIVersion20210101Preview))
-	tc.Expect(err).ToNot(HaveOccurred())
-	tc.Expect(retryAfter).To(BeZero())
-	tc.Expect(exists).To(BeFalse())
+	tc.ExpectResourceIsDeletedInAzure(armId, string(servicebus.APIVersion_Value))
 }
 
 func ServiceBus_Queue_CRUD(tc *testcommon.KubePerTestContext, sbNamespace client.Object) {
 	queue := &servicebus.NamespacesQueue{
 		ObjectMeta: tc.MakeObjectMeta("queue"),
-		Spec: servicebus.NamespacesQueues_Spec{
-			Location: &tc.AzureRegion,
+		Spec: servicebus.Namespaces_Queue_Spec{
+			Location: tc.AzureRegion,
 			Owner:    testcommon.AsOwner(sbNamespace),
 		},
 	}
@@ -75,4 +67,20 @@ func ServiceBus_Queue_CRUD(tc *testcommon.KubePerTestContext, sbNamespace client
 	// a basic assertion on a property
 	tc.Expect(queue.Status.SizeInBytes).ToNot(BeNil())
 	tc.Expect(*queue.Status.SizeInBytes).To(Equal(0))
+}
+
+func ServiceBus_Namespace_Secrets(tc *testcommon.KubePerTestContext, namespace *servicebus.Namespace) {
+	old := namespace.DeepCopy()
+	secret := "s1"
+	namespace.Spec.OperatorSpec = &servicebus.NamespaceOperatorSpec{
+		Secrets: &servicebus.NamespaceOperatorSecrets{
+			Endpoint: &genruntime.SecretDestination{
+				Name: secret,
+				Key:  "endpoint",
+			},
+		},
+	}
+	tc.PatchResourceAndWait(old, namespace)
+
+	tc.ExpectSecretHasKeys(secret, "endpoint")
 }

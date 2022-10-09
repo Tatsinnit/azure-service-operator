@@ -63,7 +63,7 @@ func (enum *EnumType) WithValidation() *EnumType {
 func (enum *EnumType) AsDeclarations(codeGenerationContext *CodeGenerationContext, declContext DeclarationContext) []dst.Decl {
 	result := []dst.Decl{enum.createBaseDeclaration(codeGenerationContext, declContext.Name, declContext.Description, declContext.Validations)}
 
-	var specs []dst.Spec
+	specs := make([]dst.Spec, 0, len(enum.options))
 	for _, v := range enum.options {
 		s := enum.createValueDeclaration(declContext.Name, v)
 		specs = append(specs, s)
@@ -190,8 +190,8 @@ func (enum *EnumType) Options() []EnumValue {
 
 // CreateValidation creates the validation annotation for this Enum
 func (enum *EnumType) CreateValidation() KubeBuilderValidation {
-	var values []interface{}
-	for _, opt := range enum.Options() {
+	values := make([]interface{}, 0, len(enum.options))
+	for _, opt := range enum.options {
 		values = append(values, opt.Value)
 	}
 
@@ -213,7 +213,7 @@ func (enum *EnumType) clone() *EnumType {
 }
 
 func GetEnumValueId(name string, value EnumValue) string {
-	return name + value.Identifier
+	return name + "_" + value.Identifier
 }
 
 // String implements fmt.Stringer
@@ -225,22 +225,22 @@ func (enum *EnumType) String() string {
 // passed builder
 // builder receives the full description
 // definitions is for resolving named types
-func (enum *EnumType) WriteDebugDescription(builder *strings.Builder, definitions TypeDefinitionSet) {
+func (enum *EnumType) WriteDebugDescription(builder *strings.Builder, currentPackage PackageReference) {
 	if enum == nil {
 		builder.WriteString("<nilEnum>")
 		return
 	}
 
-	builder.WriteString("Enum[")
-	enum.baseType.WriteDebugDescription(builder, definitions)
+	builder.WriteString("enum:")
+	enum.baseType.WriteDebugDescription(builder, currentPackage)
 	if len(enum.options) > 0 {
-		builder.WriteString(":")
+		builder.WriteString("[")
 		for i, v := range enum.options {
 			if i > 0 {
 				builder.WriteString("|")
 			}
 			builder.WriteString(v.Identifier)
 		}
+		builder.WriteString("]")
 	}
-	builder.WriteString("]")
 }

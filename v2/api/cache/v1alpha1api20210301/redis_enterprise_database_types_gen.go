@@ -5,7 +5,7 @@ package v1alpha1api20210301
 
 import (
 	"fmt"
-	"github.com/Azure/azure-service-operator/v2/api/cache/v1alpha1api20210301storage"
+	alpha20210301s "github.com/Azure/azure-service-operator/v2/api/cache/v1alpha1api20210301storage"
 	"github.com/Azure/azure-service-operator/v2/internal/reflecthelpers"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
@@ -24,12 +24,12 @@ import (
 // +kubebuilder:printcolumn:name="Severity",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].severity"
 // +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].reason"
 // +kubebuilder:printcolumn:name="Message",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].message"
-//Generated from: https://schema.management.azure.com/schemas/2021-03-01/Microsoft.Cache.Enterprise.json#/resourceDefinitions/redisEnterprise_databases
+// Deprecated version of RedisEnterpriseDatabase. Use v1beta20210301.RedisEnterpriseDatabase instead
 type RedisEnterpriseDatabase struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec              RedisEnterpriseDatabases_Spec `json:"spec,omitempty"`
-	Status            Database_Status               `json:"status,omitempty"`
+	Spec              RedisEnterprise_Database_Spec `json:"spec,omitempty"`
+	Status            Database_STATUS               `json:"status,omitempty"`
 }
 
 var _ conditions.Conditioner = &RedisEnterpriseDatabase{}
@@ -48,25 +48,39 @@ var _ conversion.Convertible = &RedisEnterpriseDatabase{}
 
 // ConvertFrom populates our RedisEnterpriseDatabase from the provided hub RedisEnterpriseDatabase
 func (database *RedisEnterpriseDatabase) ConvertFrom(hub conversion.Hub) error {
-	source, ok := hub.(*v1alpha1api20210301storage.RedisEnterpriseDatabase)
-	if !ok {
-		return fmt.Errorf("expected storage:cache/v1alpha1api20210301storage/RedisEnterpriseDatabase but received %T instead", hub)
+	// intermediate variable for conversion
+	var source alpha20210301s.RedisEnterpriseDatabase
+
+	err := source.ConvertFrom(hub)
+	if err != nil {
+		return errors.Wrap(err, "converting from hub to source")
 	}
 
-	return database.AssignPropertiesFromRedisEnterpriseDatabase(source)
+	err = database.AssignProperties_From_RedisEnterpriseDatabase(&source)
+	if err != nil {
+		return errors.Wrap(err, "converting from source to database")
+	}
+
+	return nil
 }
 
 // ConvertTo populates the provided hub RedisEnterpriseDatabase from our RedisEnterpriseDatabase
 func (database *RedisEnterpriseDatabase) ConvertTo(hub conversion.Hub) error {
-	destination, ok := hub.(*v1alpha1api20210301storage.RedisEnterpriseDatabase)
-	if !ok {
-		return fmt.Errorf("expected storage:cache/v1alpha1api20210301storage/RedisEnterpriseDatabase but received %T instead", hub)
+	// intermediate variable for conversion
+	var destination alpha20210301s.RedisEnterpriseDatabase
+	err := database.AssignProperties_To_RedisEnterpriseDatabase(&destination)
+	if err != nil {
+		return errors.Wrap(err, "converting to destination from database")
+	}
+	err = destination.ConvertTo(hub)
+	if err != nil {
+		return errors.Wrap(err, "converting from destination to hub")
 	}
 
-	return database.AssignPropertiesToRedisEnterpriseDatabase(destination)
+	return nil
 }
 
-// +kubebuilder:webhook:path=/mutate-cache-azure-com-v1alpha1api20210301-redisenterprisedatabase,mutating=true,sideEffects=None,matchPolicy=Exact,failurePolicy=fail,groups=cache.azure.com,resources=redisenterprisedatabases,verbs=create;update,versions=v1alpha1api20210301,name=default.v1alpha1api20210301.redisenterprisedatabases.cache.azure.com,admissionReviewVersions=v1beta1
+// +kubebuilder:webhook:path=/mutate-cache-azure-com-v1alpha1api20210301-redisenterprisedatabase,mutating=true,sideEffects=None,matchPolicy=Exact,failurePolicy=fail,groups=cache.azure.com,resources=redisenterprisedatabases,verbs=create;update,versions=v1alpha1api20210301,name=default.v1alpha1api20210301.redisenterprisedatabases.cache.azure.com,admissionReviewVersions=v1
 
 var _ admission.Defaulter = &RedisEnterpriseDatabase{}
 
@@ -98,12 +112,12 @@ func (database *RedisEnterpriseDatabase) AzureName() string {
 
 // GetAPIVersion returns the ARM API version of the resource. This is always "2021-03-01"
 func (database RedisEnterpriseDatabase) GetAPIVersion() string {
-	return "2021-03-01"
+	return string(APIVersion_Value)
 }
 
-// GetResourceKind returns the kind of the resource
-func (database *RedisEnterpriseDatabase) GetResourceKind() genruntime.ResourceKind {
-	return genruntime.ResourceKindNormal
+// GetResourceScope returns the scope of the resource
+func (database *RedisEnterpriseDatabase) GetResourceScope() genruntime.ResourceScope {
+	return genruntime.ResourceScopeResourceGroup
 }
 
 // GetSpec returns the specification of this resource
@@ -123,7 +137,7 @@ func (database *RedisEnterpriseDatabase) GetType() string {
 
 // NewEmptyStatus returns a new empty (blank) status
 func (database *RedisEnterpriseDatabase) NewEmptyStatus() genruntime.ConvertibleStatus {
-	return &Database_Status{}
+	return &Database_STATUS{}
 }
 
 // Owner returns the ResourceReference of the owner, or nil if there is no owner
@@ -139,13 +153,13 @@ func (database *RedisEnterpriseDatabase) Owner() *genruntime.ResourceReference {
 // SetStatus sets the status of this resource
 func (database *RedisEnterpriseDatabase) SetStatus(status genruntime.ConvertibleStatus) error {
 	// If we have exactly the right type of status, assign it
-	if st, ok := status.(*Database_Status); ok {
+	if st, ok := status.(*Database_STATUS); ok {
 		database.Status = *st
 		return nil
 	}
 
 	// Convert status to required version
-	var st Database_Status
+	var st Database_STATUS
 	err := status.ConvertStatusTo(&st)
 	if err != nil {
 		return errors.Wrap(err, "failed to convert status")
@@ -155,7 +169,7 @@ func (database *RedisEnterpriseDatabase) SetStatus(status genruntime.Convertible
 	return nil
 }
 
-// +kubebuilder:webhook:path=/validate-cache-azure-com-v1alpha1api20210301-redisenterprisedatabase,mutating=false,sideEffects=None,matchPolicy=Exact,failurePolicy=fail,groups=cache.azure.com,resources=redisenterprisedatabases,verbs=create;update,versions=v1alpha1api20210301,name=validate.v1alpha1api20210301.redisenterprisedatabases.cache.azure.com,admissionReviewVersions=v1beta1
+// +kubebuilder:webhook:path=/validate-cache-azure-com-v1alpha1api20210301-redisenterprisedatabase,mutating=false,sideEffects=None,matchPolicy=Exact,failurePolicy=fail,groups=cache.azure.com,resources=redisenterprisedatabases,verbs=create;update,versions=v1alpha1api20210301,name=validate.v1alpha1api20210301.redisenterprisedatabases.cache.azure.com,admissionReviewVersions=v1
 
 var _ admission.Validator = &RedisEnterpriseDatabase{}
 
@@ -226,7 +240,7 @@ func (database *RedisEnterpriseDatabase) updateValidations() []func(old runtime.
 		func(old runtime.Object) error {
 			return database.validateResourceReferences()
 		},
-	}
+		database.validateWriteOnceProperties}
 }
 
 // validateResourceReferences validates all resource references
@@ -238,25 +252,35 @@ func (database *RedisEnterpriseDatabase) validateResourceReferences() error {
 	return genruntime.ValidateResourceReferences(refs)
 }
 
-// AssignPropertiesFromRedisEnterpriseDatabase populates our RedisEnterpriseDatabase from the provided source RedisEnterpriseDatabase
-func (database *RedisEnterpriseDatabase) AssignPropertiesFromRedisEnterpriseDatabase(source *v1alpha1api20210301storage.RedisEnterpriseDatabase) error {
+// validateWriteOnceProperties validates all WriteOnce properties
+func (database *RedisEnterpriseDatabase) validateWriteOnceProperties(old runtime.Object) error {
+	oldObj, ok := old.(*RedisEnterpriseDatabase)
+	if !ok {
+		return nil
+	}
+
+	return genruntime.ValidateWriteOnceProperties(oldObj, database)
+}
+
+// AssignProperties_From_RedisEnterpriseDatabase populates our RedisEnterpriseDatabase from the provided source RedisEnterpriseDatabase
+func (database *RedisEnterpriseDatabase) AssignProperties_From_RedisEnterpriseDatabase(source *alpha20210301s.RedisEnterpriseDatabase) error {
 
 	// ObjectMeta
 	database.ObjectMeta = *source.ObjectMeta.DeepCopy()
 
 	// Spec
-	var spec RedisEnterpriseDatabases_Spec
-	err := spec.AssignPropertiesFromRedisEnterpriseDatabasesSpec(&source.Spec)
+	var spec RedisEnterprise_Database_Spec
+	err := spec.AssignProperties_From_RedisEnterprise_Database_Spec(&source.Spec)
 	if err != nil {
-		return errors.Wrap(err, "calling AssignPropertiesFromRedisEnterpriseDatabasesSpec() to populate field Spec")
+		return errors.Wrap(err, "calling AssignProperties_From_RedisEnterprise_Database_Spec() to populate field Spec")
 	}
 	database.Spec = spec
 
 	// Status
-	var status Database_Status
-	err = status.AssignPropertiesFromDatabaseStatus(&source.Status)
+	var status Database_STATUS
+	err = status.AssignProperties_From_Database_STATUS(&source.Status)
 	if err != nil {
-		return errors.Wrap(err, "calling AssignPropertiesFromDatabaseStatus() to populate field Status")
+		return errors.Wrap(err, "calling AssignProperties_From_Database_STATUS() to populate field Status")
 	}
 	database.Status = status
 
@@ -264,25 +288,25 @@ func (database *RedisEnterpriseDatabase) AssignPropertiesFromRedisEnterpriseData
 	return nil
 }
 
-// AssignPropertiesToRedisEnterpriseDatabase populates the provided destination RedisEnterpriseDatabase from our RedisEnterpriseDatabase
-func (database *RedisEnterpriseDatabase) AssignPropertiesToRedisEnterpriseDatabase(destination *v1alpha1api20210301storage.RedisEnterpriseDatabase) error {
+// AssignProperties_To_RedisEnterpriseDatabase populates the provided destination RedisEnterpriseDatabase from our RedisEnterpriseDatabase
+func (database *RedisEnterpriseDatabase) AssignProperties_To_RedisEnterpriseDatabase(destination *alpha20210301s.RedisEnterpriseDatabase) error {
 
 	// ObjectMeta
 	destination.ObjectMeta = *database.ObjectMeta.DeepCopy()
 
 	// Spec
-	var spec v1alpha1api20210301storage.RedisEnterpriseDatabases_Spec
-	err := database.Spec.AssignPropertiesToRedisEnterpriseDatabasesSpec(&spec)
+	var spec alpha20210301s.RedisEnterprise_Database_Spec
+	err := database.Spec.AssignProperties_To_RedisEnterprise_Database_Spec(&spec)
 	if err != nil {
-		return errors.Wrap(err, "calling AssignPropertiesToRedisEnterpriseDatabasesSpec() to populate field Spec")
+		return errors.Wrap(err, "calling AssignProperties_To_RedisEnterprise_Database_Spec() to populate field Spec")
 	}
 	destination.Spec = spec
 
 	// Status
-	var status v1alpha1api20210301storage.Database_Status
-	err = database.Status.AssignPropertiesToDatabaseStatus(&status)
+	var status alpha20210301s.Database_STATUS
+	err = database.Status.AssignProperties_To_Database_STATUS(&status)
 	if err != nil {
-		return errors.Wrap(err, "calling AssignPropertiesToDatabaseStatus() to populate field Status")
+		return errors.Wrap(err, "calling AssignProperties_To_Database_STATUS() to populate field Status")
 	}
 	destination.Status = status
 
@@ -300,72 +324,50 @@ func (database *RedisEnterpriseDatabase) OriginalGVK() *schema.GroupVersionKind 
 }
 
 // +kubebuilder:object:root=true
-//Generated from: https://schema.management.azure.com/schemas/2021-03-01/Microsoft.Cache.Enterprise.json#/resourceDefinitions/redisEnterprise_databases
+// Deprecated version of RedisEnterpriseDatabase. Use v1beta20210301.RedisEnterpriseDatabase instead
 type RedisEnterpriseDatabaseList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []RedisEnterpriseDatabase `json:"items"`
 }
 
-type Database_Status struct {
-	//ClientProtocol: Specifies whether redis clients can connect using TLS-encrypted or plaintext redis protocols. Default is
-	//TLS-encrypted.
-	ClientProtocol *DatabasePropertiesStatusClientProtocol `json:"clientProtocol,omitempty"`
+// Deprecated version of Database_STATUS. Use v1beta20210301.Database_STATUS instead
+type Database_STATUS struct {
+	ClientProtocol   *DatabaseProperties_ClientProtocol_STATUS   `json:"clientProtocol,omitempty"`
+	ClusteringPolicy *DatabaseProperties_ClusteringPolicy_STATUS `json:"clusteringPolicy,omitempty"`
 
-	//ClusteringPolicy: Clustering policy - default is OSSCluster. Specified at create time.
-	ClusteringPolicy *DatabasePropertiesStatusClusteringPolicy `json:"clusteringPolicy,omitempty"`
-
-	//Conditions: The observed state of the resource
-	Conditions []conditions.Condition `json:"conditions,omitempty"`
-
-	//EvictionPolicy: Redis eviction policy - default is VolatileLRU
-	EvictionPolicy *DatabasePropertiesStatusEvictionPolicy `json:"evictionPolicy,omitempty"`
-
-	//Id: Fully qualified resource ID for the resource. Ex -
-	///subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/{resourceProviderNamespace}/{resourceType}/{resourceName}
-	Id *string `json:"id,omitempty"`
-
-	//Modules: Optional set of redis modules to enable in this database - modules can only be added at creation time.
-	Modules []Module_Status `json:"modules,omitempty"`
-
-	//Name: The name of the resource
-	Name *string `json:"name,omitempty"`
-
-	//Persistence: Persistence settings
-	Persistence *Persistence_Status `json:"persistence,omitempty"`
-
-	//Port: TCP port of the database endpoint. Specified at create time. Defaults to an available port.
-	Port *int `json:"port,omitempty"`
-
-	//ProvisioningState: Current provisioning status of the database
-	ProvisioningState *ProvisioningState_Status `json:"provisioningState,omitempty"`
-
-	//ResourceState: Current resource status of the database
-	ResourceState *ResourceState_Status `json:"resourceState,omitempty"`
-
-	//Type: The type of the resource. E.g. "Microsoft.Compute/virtualMachines" or "Microsoft.Storage/storageAccounts"
-	Type *string `json:"type,omitempty"`
+	// Conditions: The observed state of the resource
+	Conditions        []conditions.Condition                    `json:"conditions,omitempty"`
+	EvictionPolicy    *DatabaseProperties_EvictionPolicy_STATUS `json:"evictionPolicy,omitempty"`
+	Id                *string                                   `json:"id,omitempty"`
+	Modules           []Module_STATUS                           `json:"modules,omitempty"`
+	Name              *string                                   `json:"name,omitempty"`
+	Persistence       *Persistence_STATUS                       `json:"persistence,omitempty"`
+	Port              *int                                      `json:"port,omitempty"`
+	ProvisioningState *ProvisioningState_STATUS                 `json:"provisioningState,omitempty"`
+	ResourceState     *ResourceState_STATUS                     `json:"resourceState,omitempty"`
+	Type              *string                                   `json:"type,omitempty"`
 }
 
-var _ genruntime.ConvertibleStatus = &Database_Status{}
+var _ genruntime.ConvertibleStatus = &Database_STATUS{}
 
-// ConvertStatusFrom populates our Database_Status from the provided source
-func (database *Database_Status) ConvertStatusFrom(source genruntime.ConvertibleStatus) error {
-	src, ok := source.(*v1alpha1api20210301storage.Database_Status)
+// ConvertStatusFrom populates our Database_STATUS from the provided source
+func (database *Database_STATUS) ConvertStatusFrom(source genruntime.ConvertibleStatus) error {
+	src, ok := source.(*alpha20210301s.Database_STATUS)
 	if ok {
 		// Populate our instance from source
-		return database.AssignPropertiesFromDatabaseStatus(src)
+		return database.AssignProperties_From_Database_STATUS(src)
 	}
 
 	// Convert to an intermediate form
-	src = &v1alpha1api20210301storage.Database_Status{}
+	src = &alpha20210301s.Database_STATUS{}
 	err := src.ConvertStatusFrom(source)
 	if err != nil {
 		return errors.Wrap(err, "initial step of conversion in ConvertStatusFrom()")
 	}
 
 	// Update our instance from src
-	err = database.AssignPropertiesFromDatabaseStatus(src)
+	err = database.AssignProperties_From_Database_STATUS(src)
 	if err != nil {
 		return errors.Wrap(err, "final step of conversion in ConvertStatusFrom()")
 	}
@@ -373,17 +375,17 @@ func (database *Database_Status) ConvertStatusFrom(source genruntime.Convertible
 	return nil
 }
 
-// ConvertStatusTo populates the provided destination from our Database_Status
-func (database *Database_Status) ConvertStatusTo(destination genruntime.ConvertibleStatus) error {
-	dst, ok := destination.(*v1alpha1api20210301storage.Database_Status)
+// ConvertStatusTo populates the provided destination from our Database_STATUS
+func (database *Database_STATUS) ConvertStatusTo(destination genruntime.ConvertibleStatus) error {
+	dst, ok := destination.(*alpha20210301s.Database_STATUS)
 	if ok {
 		// Populate destination from our instance
-		return database.AssignPropertiesToDatabaseStatus(dst)
+		return database.AssignProperties_To_Database_STATUS(dst)
 	}
 
 	// Convert to an intermediate form
-	dst = &v1alpha1api20210301storage.Database_Status{}
-	err := database.AssignPropertiesToDatabaseStatus(dst)
+	dst = &alpha20210301s.Database_STATUS{}
+	err := database.AssignProperties_To_Database_STATUS(dst)
 	if err != nil {
 		return errors.Wrap(err, "initial step of conversion in ConvertStatusTo()")
 	}
@@ -397,18 +399,18 @@ func (database *Database_Status) ConvertStatusTo(destination genruntime.Converti
 	return nil
 }
 
-var _ genruntime.FromARMConverter = &Database_Status{}
+var _ genruntime.FromARMConverter = &Database_STATUS{}
 
 // NewEmptyARMValue returns an empty ARM value suitable for deserializing into
-func (database *Database_Status) NewEmptyARMValue() genruntime.ARMResourceStatus {
-	return &Database_StatusARM{}
+func (database *Database_STATUS) NewEmptyARMValue() genruntime.ARMResourceStatus {
+	return &Database_STATUS_ARM{}
 }
 
 // PopulateFromARM populates a Kubernetes CRD object from an Azure ARM object
-func (database *Database_Status) PopulateFromARM(owner genruntime.ArbitraryOwnerReference, armInput interface{}) error {
-	typedInput, ok := armInput.(Database_StatusARM)
+func (database *Database_STATUS) PopulateFromARM(owner genruntime.ArbitraryOwnerReference, armInput interface{}) error {
+	typedInput, ok := armInput.(Database_STATUS_ARM)
 	if !ok {
-		return fmt.Errorf("unexpected type supplied for PopulateFromARM() function. Expected Database_StatusARM, got %T", armInput)
+		return fmt.Errorf("unexpected type supplied for PopulateFromARM() function. Expected Database_STATUS_ARM, got %T", armInput)
 	}
 
 	// Set property ‘ClientProtocol’:
@@ -450,7 +452,7 @@ func (database *Database_Status) PopulateFromARM(owner genruntime.ArbitraryOwner
 	// copying flattened property:
 	if typedInput.Properties != nil {
 		for _, item := range typedInput.Properties.Modules {
-			var item1 Module_Status
+			var item1 Module_STATUS
 			err := item1.PopulateFromARM(owner, item)
 			if err != nil {
 				return err
@@ -469,7 +471,7 @@ func (database *Database_Status) PopulateFromARM(owner genruntime.ArbitraryOwner
 	// copying flattened property:
 	if typedInput.Properties != nil {
 		if typedInput.Properties.Persistence != nil {
-			var persistence1 Persistence_Status
+			var persistence1 Persistence_STATUS
 			err := persistence1.PopulateFromARM(owner, *typedInput.Properties.Persistence)
 			if err != nil {
 				return err
@@ -516,12 +518,12 @@ func (database *Database_Status) PopulateFromARM(owner genruntime.ArbitraryOwner
 	return nil
 }
 
-// AssignPropertiesFromDatabaseStatus populates our Database_Status from the provided source Database_Status
-func (database *Database_Status) AssignPropertiesFromDatabaseStatus(source *v1alpha1api20210301storage.Database_Status) error {
+// AssignProperties_From_Database_STATUS populates our Database_STATUS from the provided source Database_STATUS
+func (database *Database_STATUS) AssignProperties_From_Database_STATUS(source *alpha20210301s.Database_STATUS) error {
 
 	// ClientProtocol
 	if source.ClientProtocol != nil {
-		clientProtocol := DatabasePropertiesStatusClientProtocol(*source.ClientProtocol)
+		clientProtocol := DatabaseProperties_ClientProtocol_STATUS(*source.ClientProtocol)
 		database.ClientProtocol = &clientProtocol
 	} else {
 		database.ClientProtocol = nil
@@ -529,7 +531,7 @@ func (database *Database_Status) AssignPropertiesFromDatabaseStatus(source *v1al
 
 	// ClusteringPolicy
 	if source.ClusteringPolicy != nil {
-		clusteringPolicy := DatabasePropertiesStatusClusteringPolicy(*source.ClusteringPolicy)
+		clusteringPolicy := DatabaseProperties_ClusteringPolicy_STATUS(*source.ClusteringPolicy)
 		database.ClusteringPolicy = &clusteringPolicy
 	} else {
 		database.ClusteringPolicy = nil
@@ -540,7 +542,7 @@ func (database *Database_Status) AssignPropertiesFromDatabaseStatus(source *v1al
 
 	// EvictionPolicy
 	if source.EvictionPolicy != nil {
-		evictionPolicy := DatabasePropertiesStatusEvictionPolicy(*source.EvictionPolicy)
+		evictionPolicy := DatabaseProperties_EvictionPolicy_STATUS(*source.EvictionPolicy)
 		database.EvictionPolicy = &evictionPolicy
 	} else {
 		database.EvictionPolicy = nil
@@ -551,14 +553,14 @@ func (database *Database_Status) AssignPropertiesFromDatabaseStatus(source *v1al
 
 	// Modules
 	if source.Modules != nil {
-		moduleList := make([]Module_Status, len(source.Modules))
+		moduleList := make([]Module_STATUS, len(source.Modules))
 		for moduleIndex, moduleItem := range source.Modules {
 			// Shadow the loop variable to avoid aliasing
 			moduleItem := moduleItem
-			var module Module_Status
-			err := module.AssignPropertiesFromModuleStatus(&moduleItem)
+			var module Module_STATUS
+			err := module.AssignProperties_From_Module_STATUS(&moduleItem)
 			if err != nil {
-				return errors.Wrap(err, "calling AssignPropertiesFromModuleStatus() to populate field Modules")
+				return errors.Wrap(err, "calling AssignProperties_From_Module_STATUS() to populate field Modules")
 			}
 			moduleList[moduleIndex] = module
 		}
@@ -572,10 +574,10 @@ func (database *Database_Status) AssignPropertiesFromDatabaseStatus(source *v1al
 
 	// Persistence
 	if source.Persistence != nil {
-		var persistence Persistence_Status
-		err := persistence.AssignPropertiesFromPersistenceStatus(source.Persistence)
+		var persistence Persistence_STATUS
+		err := persistence.AssignProperties_From_Persistence_STATUS(source.Persistence)
 		if err != nil {
-			return errors.Wrap(err, "calling AssignPropertiesFromPersistenceStatus() to populate field Persistence")
+			return errors.Wrap(err, "calling AssignProperties_From_Persistence_STATUS() to populate field Persistence")
 		}
 		database.Persistence = &persistence
 	} else {
@@ -587,7 +589,7 @@ func (database *Database_Status) AssignPropertiesFromDatabaseStatus(source *v1al
 
 	// ProvisioningState
 	if source.ProvisioningState != nil {
-		provisioningState := ProvisioningState_Status(*source.ProvisioningState)
+		provisioningState := ProvisioningState_STATUS(*source.ProvisioningState)
 		database.ProvisioningState = &provisioningState
 	} else {
 		database.ProvisioningState = nil
@@ -595,7 +597,7 @@ func (database *Database_Status) AssignPropertiesFromDatabaseStatus(source *v1al
 
 	// ResourceState
 	if source.ResourceState != nil {
-		resourceState := ResourceState_Status(*source.ResourceState)
+		resourceState := ResourceState_STATUS(*source.ResourceState)
 		database.ResourceState = &resourceState
 	} else {
 		database.ResourceState = nil
@@ -608,8 +610,8 @@ func (database *Database_Status) AssignPropertiesFromDatabaseStatus(source *v1al
 	return nil
 }
 
-// AssignPropertiesToDatabaseStatus populates the provided destination Database_Status from our Database_Status
-func (database *Database_Status) AssignPropertiesToDatabaseStatus(destination *v1alpha1api20210301storage.Database_Status) error {
+// AssignProperties_To_Database_STATUS populates the provided destination Database_STATUS from our Database_STATUS
+func (database *Database_STATUS) AssignProperties_To_Database_STATUS(destination *alpha20210301s.Database_STATUS) error {
 	// Create a new property bag
 	propertyBag := genruntime.NewPropertyBag()
 
@@ -645,14 +647,14 @@ func (database *Database_Status) AssignPropertiesToDatabaseStatus(destination *v
 
 	// Modules
 	if database.Modules != nil {
-		moduleList := make([]v1alpha1api20210301storage.Module_Status, len(database.Modules))
+		moduleList := make([]alpha20210301s.Module_STATUS, len(database.Modules))
 		for moduleIndex, moduleItem := range database.Modules {
 			// Shadow the loop variable to avoid aliasing
 			moduleItem := moduleItem
-			var module v1alpha1api20210301storage.Module_Status
-			err := moduleItem.AssignPropertiesToModuleStatus(&module)
+			var module alpha20210301s.Module_STATUS
+			err := moduleItem.AssignProperties_To_Module_STATUS(&module)
 			if err != nil {
-				return errors.Wrap(err, "calling AssignPropertiesToModuleStatus() to populate field Modules")
+				return errors.Wrap(err, "calling AssignProperties_To_Module_STATUS() to populate field Modules")
 			}
 			moduleList[moduleIndex] = module
 		}
@@ -666,10 +668,10 @@ func (database *Database_Status) AssignPropertiesToDatabaseStatus(destination *v
 
 	// Persistence
 	if database.Persistence != nil {
-		var persistence v1alpha1api20210301storage.Persistence_Status
-		err := database.Persistence.AssignPropertiesToPersistenceStatus(&persistence)
+		var persistence alpha20210301s.Persistence_STATUS
+		err := database.Persistence.AssignProperties_To_Persistence_STATUS(&persistence)
 		if err != nil {
-			return errors.Wrap(err, "calling AssignPropertiesToPersistenceStatus() to populate field Persistence")
+			return errors.Wrap(err, "calling AssignProperties_To_Persistence_STATUS() to populate field Persistence")
 		}
 		destination.Persistence = &persistence
 	} else {
@@ -709,57 +711,38 @@ func (database *Database_Status) AssignPropertiesToDatabaseStatus(destination *v
 	return nil
 }
 
-// +kubebuilder:validation:Enum={"2021-03-01"}
-type RedisEnterpriseDatabasesSpecAPIVersion string
-
-const RedisEnterpriseDatabasesSpecAPIVersion20210301 = RedisEnterpriseDatabasesSpecAPIVersion("2021-03-01")
-
-type RedisEnterpriseDatabases_Spec struct {
-	//AzureName: The name of the resource in Azure. This is often the same as the name of the resource in Kubernetes but it
-	//doesn't have to be.
-	AzureName string `json:"azureName"`
-
-	//ClientProtocol: Specifies whether redis clients can connect using TLS-encrypted or plaintext redis protocols. Default is
-	//TLS-encrypted.
-	ClientProtocol *DatabasePropertiesClientProtocol `json:"clientProtocol,omitempty"`
-
-	//ClusteringPolicy: Clustering policy - default is OSSCluster. Specified at create time.
-	ClusteringPolicy *DatabasePropertiesClusteringPolicy `json:"clusteringPolicy,omitempty"`
-
-	//EvictionPolicy: Redis eviction policy - default is VolatileLRU.
-	EvictionPolicy *DatabasePropertiesEvictionPolicy `json:"evictionPolicy,omitempty"`
-
-	//Location: Location to deploy resource to
-	Location *string `json:"location,omitempty"`
-
-	//Modules: Optional set of redis modules to enable in this database - modules can only be added at creation time.
-	Modules []Module `json:"modules,omitempty"`
+type RedisEnterprise_Database_Spec struct {
+	// AzureName: The name of the resource in Azure. This is often the same as the name of the resource in Kubernetes but it
+	// doesn't have to be.
+	AzureName        string                               `json:"azureName,omitempty"`
+	ClientProtocol   *DatabaseProperties_ClientProtocol   `json:"clientProtocol,omitempty"`
+	ClusteringPolicy *DatabaseProperties_ClusteringPolicy `json:"clusteringPolicy,omitempty"`
+	EvictionPolicy   *DatabaseProperties_EvictionPolicy   `json:"evictionPolicy,omitempty"`
+	Location         *string                              `json:"location,omitempty"`
+	Modules          []Module                             `json:"modules,omitempty"`
 
 	// +kubebuilder:validation:Required
-	Owner genruntime.KnownResourceReference `group:"cache.azure.com" json:"owner" kind:"RedisEnterprise"`
-
-	//Persistence: Persistence-related configuration for the RedisEnterprise database
-	Persistence *Persistence `json:"persistence,omitempty"`
-
-	//Port: TCP port of the database endpoint. Specified at create time. Defaults to an available port.
-	Port *int `json:"port,omitempty"`
-
-	//Tags: Name-value pairs to add to the resource
-	Tags map[string]string `json:"tags,omitempty"`
+	// Owner: The owner of the resource. The owner controls where the resource goes when it is deployed. The owner also
+	// controls the resources lifecycle. When the owner is deleted the resource will also be deleted. Owner is expected to be a
+	// reference to a cache.azure.com/RedisEnterprise resource
+	Owner       *genruntime.KnownResourceReference `group:"cache.azure.com" json:"owner,omitempty" kind:"RedisEnterprise"`
+	Persistence *Persistence                       `json:"persistence,omitempty"`
+	Port        *int                               `json:"port,omitempty"`
+	Tags        map[string]string                  `json:"tags,omitempty"`
 }
 
-var _ genruntime.ARMTransformer = &RedisEnterpriseDatabases_Spec{}
+var _ genruntime.ARMTransformer = &RedisEnterprise_Database_Spec{}
 
 // ConvertToARM converts from a Kubernetes CRD object to an ARM object
-func (databases *RedisEnterpriseDatabases_Spec) ConvertToARM(resolved genruntime.ConvertToARMResolvedDetails) (interface{}, error) {
-	if databases == nil {
+func (database *RedisEnterprise_Database_Spec) ConvertToARM(resolved genruntime.ConvertToARMResolvedDetails) (interface{}, error) {
+	if database == nil {
 		return nil, nil
 	}
-	var result RedisEnterpriseDatabases_SpecARM
+	result := &RedisEnterprise_Database_Spec_ARM{}
 
 	// Set property ‘Location’:
-	if databases.Location != nil {
-		location := *databases.Location
+	if database.Location != nil {
+		location := *database.Location
 		result.Location = &location
 	}
 
@@ -767,42 +750,50 @@ func (databases *RedisEnterpriseDatabases_Spec) ConvertToARM(resolved genruntime
 	result.Name = resolved.Name
 
 	// Set property ‘Properties’:
-	if databases.ClientProtocol != nil {
-		clientProtocol := *databases.ClientProtocol
+	if database.ClientProtocol != nil ||
+		database.ClusteringPolicy != nil ||
+		database.EvictionPolicy != nil ||
+		database.Modules != nil ||
+		database.Persistence != nil ||
+		database.Port != nil {
+		result.Properties = &DatabaseProperties_ARM{}
+	}
+	if database.ClientProtocol != nil {
+		clientProtocol := *database.ClientProtocol
 		result.Properties.ClientProtocol = &clientProtocol
 	}
-	if databases.ClusteringPolicy != nil {
-		clusteringPolicy := *databases.ClusteringPolicy
+	if database.ClusteringPolicy != nil {
+		clusteringPolicy := *database.ClusteringPolicy
 		result.Properties.ClusteringPolicy = &clusteringPolicy
 	}
-	if databases.EvictionPolicy != nil {
-		evictionPolicy := *databases.EvictionPolicy
+	if database.EvictionPolicy != nil {
+		evictionPolicy := *database.EvictionPolicy
 		result.Properties.EvictionPolicy = &evictionPolicy
 	}
-	for _, item := range databases.Modules {
-		itemARM, err := item.ConvertToARM(resolved)
+	for _, item := range database.Modules {
+		item_ARM, err := item.ConvertToARM(resolved)
 		if err != nil {
 			return nil, err
 		}
-		result.Properties.Modules = append(result.Properties.Modules, itemARM.(ModuleARM))
+		result.Properties.Modules = append(result.Properties.Modules, *item_ARM.(*Module_ARM))
 	}
-	if databases.Persistence != nil {
-		persistenceARM, err := (*databases.Persistence).ConvertToARM(resolved)
+	if database.Persistence != nil {
+		persistence_ARM, err := (*database.Persistence).ConvertToARM(resolved)
 		if err != nil {
 			return nil, err
 		}
-		persistence := persistenceARM.(PersistenceARM)
+		persistence := *persistence_ARM.(*Persistence_ARM)
 		result.Properties.Persistence = &persistence
 	}
-	if databases.Port != nil {
-		port := *databases.Port
+	if database.Port != nil {
+		port := *database.Port
 		result.Properties.Port = &port
 	}
 
 	// Set property ‘Tags’:
-	if databases.Tags != nil {
-		result.Tags = make(map[string]string)
-		for key, value := range databases.Tags {
+	if database.Tags != nil {
+		result.Tags = make(map[string]string, len(database.Tags))
+		for key, value := range database.Tags {
 			result.Tags[key] = value
 		}
 	}
@@ -810,87 +801,99 @@ func (databases *RedisEnterpriseDatabases_Spec) ConvertToARM(resolved genruntime
 }
 
 // NewEmptyARMValue returns an empty ARM value suitable for deserializing into
-func (databases *RedisEnterpriseDatabases_Spec) NewEmptyARMValue() genruntime.ARMResourceStatus {
-	return &RedisEnterpriseDatabases_SpecARM{}
+func (database *RedisEnterprise_Database_Spec) NewEmptyARMValue() genruntime.ARMResourceStatus {
+	return &RedisEnterprise_Database_Spec_ARM{}
 }
 
 // PopulateFromARM populates a Kubernetes CRD object from an Azure ARM object
-func (databases *RedisEnterpriseDatabases_Spec) PopulateFromARM(owner genruntime.ArbitraryOwnerReference, armInput interface{}) error {
-	typedInput, ok := armInput.(RedisEnterpriseDatabases_SpecARM)
+func (database *RedisEnterprise_Database_Spec) PopulateFromARM(owner genruntime.ArbitraryOwnerReference, armInput interface{}) error {
+	typedInput, ok := armInput.(RedisEnterprise_Database_Spec_ARM)
 	if !ok {
-		return fmt.Errorf("unexpected type supplied for PopulateFromARM() function. Expected RedisEnterpriseDatabases_SpecARM, got %T", armInput)
+		return fmt.Errorf("unexpected type supplied for PopulateFromARM() function. Expected RedisEnterprise_Database_Spec_ARM, got %T", armInput)
 	}
 
 	// Set property ‘AzureName’:
-	databases.SetAzureName(genruntime.ExtractKubernetesResourceNameFromARMName(typedInput.Name))
+	database.SetAzureName(genruntime.ExtractKubernetesResourceNameFromARMName(typedInput.Name))
 
 	// Set property ‘ClientProtocol’:
 	// copying flattened property:
-	if typedInput.Properties.ClientProtocol != nil {
-		clientProtocol := *typedInput.Properties.ClientProtocol
-		databases.ClientProtocol = &clientProtocol
+	if typedInput.Properties != nil {
+		if typedInput.Properties.ClientProtocol != nil {
+			clientProtocol := *typedInput.Properties.ClientProtocol
+			database.ClientProtocol = &clientProtocol
+		}
 	}
 
 	// Set property ‘ClusteringPolicy’:
 	// copying flattened property:
-	if typedInput.Properties.ClusteringPolicy != nil {
-		clusteringPolicy := *typedInput.Properties.ClusteringPolicy
-		databases.ClusteringPolicy = &clusteringPolicy
+	if typedInput.Properties != nil {
+		if typedInput.Properties.ClusteringPolicy != nil {
+			clusteringPolicy := *typedInput.Properties.ClusteringPolicy
+			database.ClusteringPolicy = &clusteringPolicy
+		}
 	}
 
 	// Set property ‘EvictionPolicy’:
 	// copying flattened property:
-	if typedInput.Properties.EvictionPolicy != nil {
-		evictionPolicy := *typedInput.Properties.EvictionPolicy
-		databases.EvictionPolicy = &evictionPolicy
+	if typedInput.Properties != nil {
+		if typedInput.Properties.EvictionPolicy != nil {
+			evictionPolicy := *typedInput.Properties.EvictionPolicy
+			database.EvictionPolicy = &evictionPolicy
+		}
 	}
 
 	// Set property ‘Location’:
 	if typedInput.Location != nil {
 		location := *typedInput.Location
-		databases.Location = &location
+		database.Location = &location
 	}
 
 	// Set property ‘Modules’:
 	// copying flattened property:
-	for _, item := range typedInput.Properties.Modules {
-		var item1 Module
-		err := item1.PopulateFromARM(owner, item)
-		if err != nil {
-			return err
+	if typedInput.Properties != nil {
+		for _, item := range typedInput.Properties.Modules {
+			var item1 Module
+			err := item1.PopulateFromARM(owner, item)
+			if err != nil {
+				return err
+			}
+			database.Modules = append(database.Modules, item1)
 		}
-		databases.Modules = append(databases.Modules, item1)
 	}
 
 	// Set property ‘Owner’:
-	databases.Owner = genruntime.KnownResourceReference{
+	database.Owner = &genruntime.KnownResourceReference{
 		Name: owner.Name,
 	}
 
 	// Set property ‘Persistence’:
 	// copying flattened property:
-	if typedInput.Properties.Persistence != nil {
-		var persistence1 Persistence
-		err := persistence1.PopulateFromARM(owner, *typedInput.Properties.Persistence)
-		if err != nil {
-			return err
+	if typedInput.Properties != nil {
+		if typedInput.Properties.Persistence != nil {
+			var persistence1 Persistence
+			err := persistence1.PopulateFromARM(owner, *typedInput.Properties.Persistence)
+			if err != nil {
+				return err
+			}
+			persistence := persistence1
+			database.Persistence = &persistence
 		}
-		persistence := persistence1
-		databases.Persistence = &persistence
 	}
 
 	// Set property ‘Port’:
 	// copying flattened property:
-	if typedInput.Properties.Port != nil {
-		port := *typedInput.Properties.Port
-		databases.Port = &port
+	if typedInput.Properties != nil {
+		if typedInput.Properties.Port != nil {
+			port := *typedInput.Properties.Port
+			database.Port = &port
+		}
 	}
 
 	// Set property ‘Tags’:
 	if typedInput.Tags != nil {
-		databases.Tags = make(map[string]string)
+		database.Tags = make(map[string]string, len(typedInput.Tags))
 		for key, value := range typedInput.Tags {
-			databases.Tags[key] = value
+			database.Tags[key] = value
 		}
 	}
 
@@ -898,25 +901,25 @@ func (databases *RedisEnterpriseDatabases_Spec) PopulateFromARM(owner genruntime
 	return nil
 }
 
-var _ genruntime.ConvertibleSpec = &RedisEnterpriseDatabases_Spec{}
+var _ genruntime.ConvertibleSpec = &RedisEnterprise_Database_Spec{}
 
-// ConvertSpecFrom populates our RedisEnterpriseDatabases_Spec from the provided source
-func (databases *RedisEnterpriseDatabases_Spec) ConvertSpecFrom(source genruntime.ConvertibleSpec) error {
-	src, ok := source.(*v1alpha1api20210301storage.RedisEnterpriseDatabases_Spec)
+// ConvertSpecFrom populates our RedisEnterprise_Database_Spec from the provided source
+func (database *RedisEnterprise_Database_Spec) ConvertSpecFrom(source genruntime.ConvertibleSpec) error {
+	src, ok := source.(*alpha20210301s.RedisEnterprise_Database_Spec)
 	if ok {
 		// Populate our instance from source
-		return databases.AssignPropertiesFromRedisEnterpriseDatabasesSpec(src)
+		return database.AssignProperties_From_RedisEnterprise_Database_Spec(src)
 	}
 
 	// Convert to an intermediate form
-	src = &v1alpha1api20210301storage.RedisEnterpriseDatabases_Spec{}
+	src = &alpha20210301s.RedisEnterprise_Database_Spec{}
 	err := src.ConvertSpecFrom(source)
 	if err != nil {
 		return errors.Wrap(err, "initial step of conversion in ConvertSpecFrom()")
 	}
 
 	// Update our instance from src
-	err = databases.AssignPropertiesFromRedisEnterpriseDatabasesSpec(src)
+	err = database.AssignProperties_From_RedisEnterprise_Database_Spec(src)
 	if err != nil {
 		return errors.Wrap(err, "final step of conversion in ConvertSpecFrom()")
 	}
@@ -924,17 +927,17 @@ func (databases *RedisEnterpriseDatabases_Spec) ConvertSpecFrom(source genruntim
 	return nil
 }
 
-// ConvertSpecTo populates the provided destination from our RedisEnterpriseDatabases_Spec
-func (databases *RedisEnterpriseDatabases_Spec) ConvertSpecTo(destination genruntime.ConvertibleSpec) error {
-	dst, ok := destination.(*v1alpha1api20210301storage.RedisEnterpriseDatabases_Spec)
+// ConvertSpecTo populates the provided destination from our RedisEnterprise_Database_Spec
+func (database *RedisEnterprise_Database_Spec) ConvertSpecTo(destination genruntime.ConvertibleSpec) error {
+	dst, ok := destination.(*alpha20210301s.RedisEnterprise_Database_Spec)
 	if ok {
 		// Populate destination from our instance
-		return databases.AssignPropertiesToRedisEnterpriseDatabasesSpec(dst)
+		return database.AssignProperties_To_RedisEnterprise_Database_Spec(dst)
 	}
 
 	// Convert to an intermediate form
-	dst = &v1alpha1api20210301storage.RedisEnterpriseDatabases_Spec{}
-	err := databases.AssignPropertiesToRedisEnterpriseDatabasesSpec(dst)
+	dst = &alpha20210301s.RedisEnterprise_Database_Spec{}
+	err := database.AssignProperties_To_RedisEnterprise_Database_Spec(dst)
 	if err != nil {
 		return errors.Wrap(err, "initial step of conversion in ConvertSpecTo()")
 	}
@@ -948,38 +951,38 @@ func (databases *RedisEnterpriseDatabases_Spec) ConvertSpecTo(destination genrun
 	return nil
 }
 
-// AssignPropertiesFromRedisEnterpriseDatabasesSpec populates our RedisEnterpriseDatabases_Spec from the provided source RedisEnterpriseDatabases_Spec
-func (databases *RedisEnterpriseDatabases_Spec) AssignPropertiesFromRedisEnterpriseDatabasesSpec(source *v1alpha1api20210301storage.RedisEnterpriseDatabases_Spec) error {
+// AssignProperties_From_RedisEnterprise_Database_Spec populates our RedisEnterprise_Database_Spec from the provided source RedisEnterprise_Database_Spec
+func (database *RedisEnterprise_Database_Spec) AssignProperties_From_RedisEnterprise_Database_Spec(source *alpha20210301s.RedisEnterprise_Database_Spec) error {
 
 	// AzureName
-	databases.AzureName = source.AzureName
+	database.AzureName = source.AzureName
 
 	// ClientProtocol
 	if source.ClientProtocol != nil {
-		clientProtocol := DatabasePropertiesClientProtocol(*source.ClientProtocol)
-		databases.ClientProtocol = &clientProtocol
+		clientProtocol := DatabaseProperties_ClientProtocol(*source.ClientProtocol)
+		database.ClientProtocol = &clientProtocol
 	} else {
-		databases.ClientProtocol = nil
+		database.ClientProtocol = nil
 	}
 
 	// ClusteringPolicy
 	if source.ClusteringPolicy != nil {
-		clusteringPolicy := DatabasePropertiesClusteringPolicy(*source.ClusteringPolicy)
-		databases.ClusteringPolicy = &clusteringPolicy
+		clusteringPolicy := DatabaseProperties_ClusteringPolicy(*source.ClusteringPolicy)
+		database.ClusteringPolicy = &clusteringPolicy
 	} else {
-		databases.ClusteringPolicy = nil
+		database.ClusteringPolicy = nil
 	}
 
 	// EvictionPolicy
 	if source.EvictionPolicy != nil {
-		evictionPolicy := DatabasePropertiesEvictionPolicy(*source.EvictionPolicy)
-		databases.EvictionPolicy = &evictionPolicy
+		evictionPolicy := DatabaseProperties_EvictionPolicy(*source.EvictionPolicy)
+		database.EvictionPolicy = &evictionPolicy
 	} else {
-		databases.EvictionPolicy = nil
+		database.EvictionPolicy = nil
 	}
 
 	// Location
-	databases.Location = genruntime.ClonePointerToString(source.Location)
+	database.Location = genruntime.ClonePointerToString(source.Location)
 
 	// Modules
 	if source.Modules != nil {
@@ -988,87 +991,92 @@ func (databases *RedisEnterpriseDatabases_Spec) AssignPropertiesFromRedisEnterpr
 			// Shadow the loop variable to avoid aliasing
 			moduleItem := moduleItem
 			var module Module
-			err := module.AssignPropertiesFromModule(&moduleItem)
+			err := module.AssignProperties_From_Module(&moduleItem)
 			if err != nil {
-				return errors.Wrap(err, "calling AssignPropertiesFromModule() to populate field Modules")
+				return errors.Wrap(err, "calling AssignProperties_From_Module() to populate field Modules")
 			}
 			moduleList[moduleIndex] = module
 		}
-		databases.Modules = moduleList
+		database.Modules = moduleList
 	} else {
-		databases.Modules = nil
+		database.Modules = nil
 	}
 
 	// Owner
-	databases.Owner = source.Owner.Copy()
+	if source.Owner != nil {
+		owner := source.Owner.Copy()
+		database.Owner = &owner
+	} else {
+		database.Owner = nil
+	}
 
 	// Persistence
 	if source.Persistence != nil {
 		var persistence Persistence
-		err := persistence.AssignPropertiesFromPersistence(source.Persistence)
+		err := persistence.AssignProperties_From_Persistence(source.Persistence)
 		if err != nil {
-			return errors.Wrap(err, "calling AssignPropertiesFromPersistence() to populate field Persistence")
+			return errors.Wrap(err, "calling AssignProperties_From_Persistence() to populate field Persistence")
 		}
-		databases.Persistence = &persistence
+		database.Persistence = &persistence
 	} else {
-		databases.Persistence = nil
+		database.Persistence = nil
 	}
 
 	// Port
-	databases.Port = genruntime.ClonePointerToInt(source.Port)
+	database.Port = genruntime.ClonePointerToInt(source.Port)
 
 	// Tags
-	databases.Tags = genruntime.CloneMapOfStringToString(source.Tags)
+	database.Tags = genruntime.CloneMapOfStringToString(source.Tags)
 
 	// No error
 	return nil
 }
 
-// AssignPropertiesToRedisEnterpriseDatabasesSpec populates the provided destination RedisEnterpriseDatabases_Spec from our RedisEnterpriseDatabases_Spec
-func (databases *RedisEnterpriseDatabases_Spec) AssignPropertiesToRedisEnterpriseDatabasesSpec(destination *v1alpha1api20210301storage.RedisEnterpriseDatabases_Spec) error {
+// AssignProperties_To_RedisEnterprise_Database_Spec populates the provided destination RedisEnterprise_Database_Spec from our RedisEnterprise_Database_Spec
+func (database *RedisEnterprise_Database_Spec) AssignProperties_To_RedisEnterprise_Database_Spec(destination *alpha20210301s.RedisEnterprise_Database_Spec) error {
 	// Create a new property bag
 	propertyBag := genruntime.NewPropertyBag()
 
 	// AzureName
-	destination.AzureName = databases.AzureName
+	destination.AzureName = database.AzureName
 
 	// ClientProtocol
-	if databases.ClientProtocol != nil {
-		clientProtocol := string(*databases.ClientProtocol)
+	if database.ClientProtocol != nil {
+		clientProtocol := string(*database.ClientProtocol)
 		destination.ClientProtocol = &clientProtocol
 	} else {
 		destination.ClientProtocol = nil
 	}
 
 	// ClusteringPolicy
-	if databases.ClusteringPolicy != nil {
-		clusteringPolicy := string(*databases.ClusteringPolicy)
+	if database.ClusteringPolicy != nil {
+		clusteringPolicy := string(*database.ClusteringPolicy)
 		destination.ClusteringPolicy = &clusteringPolicy
 	} else {
 		destination.ClusteringPolicy = nil
 	}
 
 	// EvictionPolicy
-	if databases.EvictionPolicy != nil {
-		evictionPolicy := string(*databases.EvictionPolicy)
+	if database.EvictionPolicy != nil {
+		evictionPolicy := string(*database.EvictionPolicy)
 		destination.EvictionPolicy = &evictionPolicy
 	} else {
 		destination.EvictionPolicy = nil
 	}
 
 	// Location
-	destination.Location = genruntime.ClonePointerToString(databases.Location)
+	destination.Location = genruntime.ClonePointerToString(database.Location)
 
 	// Modules
-	if databases.Modules != nil {
-		moduleList := make([]v1alpha1api20210301storage.Module, len(databases.Modules))
-		for moduleIndex, moduleItem := range databases.Modules {
+	if database.Modules != nil {
+		moduleList := make([]alpha20210301s.Module, len(database.Modules))
+		for moduleIndex, moduleItem := range database.Modules {
 			// Shadow the loop variable to avoid aliasing
 			moduleItem := moduleItem
-			var module v1alpha1api20210301storage.Module
-			err := moduleItem.AssignPropertiesToModule(&module)
+			var module alpha20210301s.Module
+			err := moduleItem.AssignProperties_To_Module(&module)
 			if err != nil {
-				return errors.Wrap(err, "calling AssignPropertiesToModule() to populate field Modules")
+				return errors.Wrap(err, "calling AssignProperties_To_Module() to populate field Modules")
 			}
 			moduleList[moduleIndex] = module
 		}
@@ -1078,17 +1086,22 @@ func (databases *RedisEnterpriseDatabases_Spec) AssignPropertiesToRedisEnterpris
 	}
 
 	// OriginalVersion
-	destination.OriginalVersion = databases.OriginalVersion()
+	destination.OriginalVersion = database.OriginalVersion()
 
 	// Owner
-	destination.Owner = databases.Owner.Copy()
+	if database.Owner != nil {
+		owner := database.Owner.Copy()
+		destination.Owner = &owner
+	} else {
+		destination.Owner = nil
+	}
 
 	// Persistence
-	if databases.Persistence != nil {
-		var persistence v1alpha1api20210301storage.Persistence
-		err := databases.Persistence.AssignPropertiesToPersistence(&persistence)
+	if database.Persistence != nil {
+		var persistence alpha20210301s.Persistence
+		err := database.Persistence.AssignProperties_To_Persistence(&persistence)
 		if err != nil {
-			return errors.Wrap(err, "calling AssignPropertiesToPersistence() to populate field Persistence")
+			return errors.Wrap(err, "calling AssignProperties_To_Persistence() to populate field Persistence")
 		}
 		destination.Persistence = &persistence
 	} else {
@@ -1096,10 +1109,10 @@ func (databases *RedisEnterpriseDatabases_Spec) AssignPropertiesToRedisEnterpris
 	}
 
 	// Port
-	destination.Port = genruntime.ClonePointerToInt(databases.Port)
+	destination.Port = genruntime.ClonePointerToInt(database.Port)
 
 	// Tags
-	destination.Tags = genruntime.CloneMapOfStringToString(databases.Tags)
+	destination.Tags = genruntime.CloneMapOfStringToString(database.Tags)
 
 	// Update the property bag
 	if len(propertyBag) > 0 {
@@ -1113,53 +1126,54 @@ func (databases *RedisEnterpriseDatabases_Spec) AssignPropertiesToRedisEnterpris
 }
 
 // OriginalVersion returns the original API version used to create the resource.
-func (databases *RedisEnterpriseDatabases_Spec) OriginalVersion() string {
+func (database *RedisEnterprise_Database_Spec) OriginalVersion() string {
 	return GroupVersion.Version
 }
 
 // SetAzureName sets the Azure name of the resource
-func (databases *RedisEnterpriseDatabases_Spec) SetAzureName(azureName string) {
-	databases.AzureName = azureName
+func (database *RedisEnterprise_Database_Spec) SetAzureName(azureName string) {
+	database.AzureName = azureName
 }
 
+// Deprecated version of DatabaseProperties_ClientProtocol. Use v1beta20210301.DatabaseProperties_ClientProtocol instead
 // +kubebuilder:validation:Enum={"Encrypted","Plaintext"}
-type DatabasePropertiesClientProtocol string
+type DatabaseProperties_ClientProtocol string
 
 const (
-	DatabasePropertiesClientProtocolEncrypted = DatabasePropertiesClientProtocol("Encrypted")
-	DatabasePropertiesClientProtocolPlaintext = DatabasePropertiesClientProtocol("Plaintext")
+	DatabaseProperties_ClientProtocol_Encrypted = DatabaseProperties_ClientProtocol("Encrypted")
+	DatabaseProperties_ClientProtocol_Plaintext = DatabaseProperties_ClientProtocol("Plaintext")
 )
 
+// Deprecated version of DatabaseProperties_ClusteringPolicy. Use v1beta20210301.DatabaseProperties_ClusteringPolicy instead
 // +kubebuilder:validation:Enum={"EnterpriseCluster","OSSCluster"}
-type DatabasePropertiesClusteringPolicy string
+type DatabaseProperties_ClusteringPolicy string
 
 const (
-	DatabasePropertiesClusteringPolicyEnterpriseCluster = DatabasePropertiesClusteringPolicy("EnterpriseCluster")
-	DatabasePropertiesClusteringPolicyOSSCluster        = DatabasePropertiesClusteringPolicy("OSSCluster")
+	DatabaseProperties_ClusteringPolicy_EnterpriseCluster = DatabaseProperties_ClusteringPolicy("EnterpriseCluster")
+	DatabaseProperties_ClusteringPolicy_OSSCluster        = DatabaseProperties_ClusteringPolicy("OSSCluster")
 )
 
+// Deprecated version of DatabaseProperties_EvictionPolicy. Use v1beta20210301.DatabaseProperties_EvictionPolicy instead
 // +kubebuilder:validation:Enum={"AllKeysLFU","AllKeysLRU","AllKeysRandom","NoEviction","VolatileLFU","VolatileLRU","VolatileRandom","VolatileTTL"}
-type DatabasePropertiesEvictionPolicy string
+type DatabaseProperties_EvictionPolicy string
 
 const (
-	DatabasePropertiesEvictionPolicyAllKeysLFU     = DatabasePropertiesEvictionPolicy("AllKeysLFU")
-	DatabasePropertiesEvictionPolicyAllKeysLRU     = DatabasePropertiesEvictionPolicy("AllKeysLRU")
-	DatabasePropertiesEvictionPolicyAllKeysRandom  = DatabasePropertiesEvictionPolicy("AllKeysRandom")
-	DatabasePropertiesEvictionPolicyNoEviction     = DatabasePropertiesEvictionPolicy("NoEviction")
-	DatabasePropertiesEvictionPolicyVolatileLFU    = DatabasePropertiesEvictionPolicy("VolatileLFU")
-	DatabasePropertiesEvictionPolicyVolatileLRU    = DatabasePropertiesEvictionPolicy("VolatileLRU")
-	DatabasePropertiesEvictionPolicyVolatileRandom = DatabasePropertiesEvictionPolicy("VolatileRandom")
-	DatabasePropertiesEvictionPolicyVolatileTTL    = DatabasePropertiesEvictionPolicy("VolatileTTL")
+	DatabaseProperties_EvictionPolicy_AllKeysLFU     = DatabaseProperties_EvictionPolicy("AllKeysLFU")
+	DatabaseProperties_EvictionPolicy_AllKeysLRU     = DatabaseProperties_EvictionPolicy("AllKeysLRU")
+	DatabaseProperties_EvictionPolicy_AllKeysRandom  = DatabaseProperties_EvictionPolicy("AllKeysRandom")
+	DatabaseProperties_EvictionPolicy_NoEviction     = DatabaseProperties_EvictionPolicy("NoEviction")
+	DatabaseProperties_EvictionPolicy_VolatileLFU    = DatabaseProperties_EvictionPolicy("VolatileLFU")
+	DatabaseProperties_EvictionPolicy_VolatileLRU    = DatabaseProperties_EvictionPolicy("VolatileLRU")
+	DatabaseProperties_EvictionPolicy_VolatileRandom = DatabaseProperties_EvictionPolicy("VolatileRandom")
+	DatabaseProperties_EvictionPolicy_VolatileTTL    = DatabaseProperties_EvictionPolicy("VolatileTTL")
 )
 
-//Generated from: https://schema.management.azure.com/schemas/2021-03-01/Microsoft.Cache.Enterprise.json#/definitions/Module
+// Deprecated version of Module. Use v1beta20210301.Module instead
 type Module struct {
-	//Args: Configuration options for the module, e.g. 'ERROR_RATE 0.00 INITIAL_SIZE 400'.
 	Args *string `json:"args,omitempty"`
 
 	// +kubebuilder:validation:Required
-	//Name: The name of the module, e.g. 'RedisBloom', 'RediSearch', 'RedisTimeSeries'
-	Name string `json:"name"`
+	Name *string `json:"name,omitempty"`
 }
 
 var _ genruntime.ARMTransformer = &Module{}
@@ -1169,7 +1183,7 @@ func (module *Module) ConvertToARM(resolved genruntime.ConvertToARMResolvedDetai
 	if module == nil {
 		return nil, nil
 	}
-	var result ModuleARM
+	result := &Module_ARM{}
 
 	// Set property ‘Args’:
 	if module.Args != nil {
@@ -1178,20 +1192,23 @@ func (module *Module) ConvertToARM(resolved genruntime.ConvertToARMResolvedDetai
 	}
 
 	// Set property ‘Name’:
-	result.Name = module.Name
+	if module.Name != nil {
+		name := *module.Name
+		result.Name = &name
+	}
 	return result, nil
 }
 
 // NewEmptyARMValue returns an empty ARM value suitable for deserializing into
 func (module *Module) NewEmptyARMValue() genruntime.ARMResourceStatus {
-	return &ModuleARM{}
+	return &Module_ARM{}
 }
 
 // PopulateFromARM populates a Kubernetes CRD object from an Azure ARM object
 func (module *Module) PopulateFromARM(owner genruntime.ArbitraryOwnerReference, armInput interface{}) error {
-	typedInput, ok := armInput.(ModuleARM)
+	typedInput, ok := armInput.(Module_ARM)
 	if !ok {
-		return fmt.Errorf("unexpected type supplied for PopulateFromARM() function. Expected ModuleARM, got %T", armInput)
+		return fmt.Errorf("unexpected type supplied for PopulateFromARM() function. Expected Module_ARM, got %T", armInput)
 	}
 
 	// Set property ‘Args’:
@@ -1201,27 +1218,30 @@ func (module *Module) PopulateFromARM(owner genruntime.ArbitraryOwnerReference, 
 	}
 
 	// Set property ‘Name’:
-	module.Name = typedInput.Name
+	if typedInput.Name != nil {
+		name := *typedInput.Name
+		module.Name = &name
+	}
 
 	// No error
 	return nil
 }
 
-// AssignPropertiesFromModule populates our Module from the provided source Module
-func (module *Module) AssignPropertiesFromModule(source *v1alpha1api20210301storage.Module) error {
+// AssignProperties_From_Module populates our Module from the provided source Module
+func (module *Module) AssignProperties_From_Module(source *alpha20210301s.Module) error {
 
 	// Args
 	module.Args = genruntime.ClonePointerToString(source.Args)
 
 	// Name
-	module.Name = genruntime.GetOptionalStringValue(source.Name)
+	module.Name = genruntime.ClonePointerToString(source.Name)
 
 	// No error
 	return nil
 }
 
-// AssignPropertiesToModule populates the provided destination Module from our Module
-func (module *Module) AssignPropertiesToModule(destination *v1alpha1api20210301storage.Module) error {
+// AssignProperties_To_Module populates the provided destination Module from our Module
+func (module *Module) AssignProperties_To_Module(destination *alpha20210301s.Module) error {
 	// Create a new property bag
 	propertyBag := genruntime.NewPropertyBag()
 
@@ -1229,8 +1249,7 @@ func (module *Module) AssignPropertiesToModule(destination *v1alpha1api20210301s
 	destination.Args = genruntime.ClonePointerToString(module.Args)
 
 	// Name
-	name := module.Name
-	destination.Name = &name
+	destination.Name = genruntime.ClonePointerToString(module.Name)
 
 	// Update the property bag
 	if len(propertyBag) > 0 {
@@ -1243,30 +1262,25 @@ func (module *Module) AssignPropertiesToModule(destination *v1alpha1api20210301s
 	return nil
 }
 
-type Module_Status struct {
-	//Args: Configuration options for the module, e.g. 'ERROR_RATE 0.00 INITIAL_SIZE 400'.
-	Args *string `json:"args,omitempty"`
-
-	// +kubebuilder:validation:Required
-	//Name: The name of the module, e.g. 'RedisBloom', 'RediSearch', 'RedisTimeSeries'
-	Name string `json:"name"`
-
-	//Version: The version of the module, e.g. '1.0'.
+// Deprecated version of Module_STATUS. Use v1beta20210301.Module_STATUS instead
+type Module_STATUS struct {
+	Args    *string `json:"args,omitempty"`
+	Name    *string `json:"name,omitempty"`
 	Version *string `json:"version,omitempty"`
 }
 
-var _ genruntime.FromARMConverter = &Module_Status{}
+var _ genruntime.FromARMConverter = &Module_STATUS{}
 
 // NewEmptyARMValue returns an empty ARM value suitable for deserializing into
-func (module *Module_Status) NewEmptyARMValue() genruntime.ARMResourceStatus {
-	return &Module_StatusARM{}
+func (module *Module_STATUS) NewEmptyARMValue() genruntime.ARMResourceStatus {
+	return &Module_STATUS_ARM{}
 }
 
 // PopulateFromARM populates a Kubernetes CRD object from an Azure ARM object
-func (module *Module_Status) PopulateFromARM(owner genruntime.ArbitraryOwnerReference, armInput interface{}) error {
-	typedInput, ok := armInput.(Module_StatusARM)
+func (module *Module_STATUS) PopulateFromARM(owner genruntime.ArbitraryOwnerReference, armInput interface{}) error {
+	typedInput, ok := armInput.(Module_STATUS_ARM)
 	if !ok {
-		return fmt.Errorf("unexpected type supplied for PopulateFromARM() function. Expected Module_StatusARM, got %T", armInput)
+		return fmt.Errorf("unexpected type supplied for PopulateFromARM() function. Expected Module_STATUS_ARM, got %T", armInput)
 	}
 
 	// Set property ‘Args’:
@@ -1276,7 +1290,10 @@ func (module *Module_Status) PopulateFromARM(owner genruntime.ArbitraryOwnerRefe
 	}
 
 	// Set property ‘Name’:
-	module.Name = typedInput.Name
+	if typedInput.Name != nil {
+		name := *typedInput.Name
+		module.Name = &name
+	}
 
 	// Set property ‘Version’:
 	if typedInput.Version != nil {
@@ -1288,14 +1305,14 @@ func (module *Module_Status) PopulateFromARM(owner genruntime.ArbitraryOwnerRefe
 	return nil
 }
 
-// AssignPropertiesFromModuleStatus populates our Module_Status from the provided source Module_Status
-func (module *Module_Status) AssignPropertiesFromModuleStatus(source *v1alpha1api20210301storage.Module_Status) error {
+// AssignProperties_From_Module_STATUS populates our Module_STATUS from the provided source Module_STATUS
+func (module *Module_STATUS) AssignProperties_From_Module_STATUS(source *alpha20210301s.Module_STATUS) error {
 
 	// Args
 	module.Args = genruntime.ClonePointerToString(source.Args)
 
 	// Name
-	module.Name = genruntime.GetOptionalStringValue(source.Name)
+	module.Name = genruntime.ClonePointerToString(source.Name)
 
 	// Version
 	module.Version = genruntime.ClonePointerToString(source.Version)
@@ -1304,8 +1321,8 @@ func (module *Module_Status) AssignPropertiesFromModuleStatus(source *v1alpha1ap
 	return nil
 }
 
-// AssignPropertiesToModuleStatus populates the provided destination Module_Status from our Module_Status
-func (module *Module_Status) AssignPropertiesToModuleStatus(destination *v1alpha1api20210301storage.Module_Status) error {
+// AssignProperties_To_Module_STATUS populates the provided destination Module_STATUS from our Module_STATUS
+func (module *Module_STATUS) AssignProperties_To_Module_STATUS(destination *alpha20210301s.Module_STATUS) error {
 	// Create a new property bag
 	propertyBag := genruntime.NewPropertyBag()
 
@@ -1313,8 +1330,7 @@ func (module *Module_Status) AssignPropertiesToModuleStatus(destination *v1alpha
 	destination.Args = genruntime.ClonePointerToString(module.Args)
 
 	// Name
-	name := module.Name
-	destination.Name = &name
+	destination.Name = genruntime.ClonePointerToString(module.Name)
 
 	// Version
 	destination.Version = genruntime.ClonePointerToString(module.Version)
@@ -1330,19 +1346,12 @@ func (module *Module_Status) AssignPropertiesToModuleStatus(destination *v1alpha
 	return nil
 }
 
-//Generated from: https://schema.management.azure.com/schemas/2021-03-01/Microsoft.Cache.Enterprise.json#/definitions/Persistence
+// Deprecated version of Persistence. Use v1beta20210301.Persistence instead
 type Persistence struct {
-	//AofEnabled: Sets whether AOF is enabled.
-	AofEnabled *bool `json:"aofEnabled,omitempty"`
-
-	//AofFrequency: Sets the frequency at which data is written to disk.
-	AofFrequency *PersistenceAofFrequency `json:"aofFrequency,omitempty"`
-
-	//RdbEnabled: Sets whether RDB is enabled.
-	RdbEnabled *bool `json:"rdbEnabled,omitempty"`
-
-	//RdbFrequency: Sets the frequency at which a snapshot of the database is created.
-	RdbFrequency *PersistenceRdbFrequency `json:"rdbFrequency,omitempty"`
+	AofEnabled   *bool                     `json:"aofEnabled,omitempty"`
+	AofFrequency *Persistence_AofFrequency `json:"aofFrequency,omitempty"`
+	RdbEnabled   *bool                     `json:"rdbEnabled,omitempty"`
+	RdbFrequency *Persistence_RdbFrequency `json:"rdbFrequency,omitempty"`
 }
 
 var _ genruntime.ARMTransformer = &Persistence{}
@@ -1352,7 +1361,7 @@ func (persistence *Persistence) ConvertToARM(resolved genruntime.ConvertToARMRes
 	if persistence == nil {
 		return nil, nil
 	}
-	var result PersistenceARM
+	result := &Persistence_ARM{}
 
 	// Set property ‘AofEnabled’:
 	if persistence.AofEnabled != nil {
@@ -1382,14 +1391,14 @@ func (persistence *Persistence) ConvertToARM(resolved genruntime.ConvertToARMRes
 
 // NewEmptyARMValue returns an empty ARM value suitable for deserializing into
 func (persistence *Persistence) NewEmptyARMValue() genruntime.ARMResourceStatus {
-	return &PersistenceARM{}
+	return &Persistence_ARM{}
 }
 
 // PopulateFromARM populates a Kubernetes CRD object from an Azure ARM object
 func (persistence *Persistence) PopulateFromARM(owner genruntime.ArbitraryOwnerReference, armInput interface{}) error {
-	typedInput, ok := armInput.(PersistenceARM)
+	typedInput, ok := armInput.(Persistence_ARM)
 	if !ok {
-		return fmt.Errorf("unexpected type supplied for PopulateFromARM() function. Expected PersistenceARM, got %T", armInput)
+		return fmt.Errorf("unexpected type supplied for PopulateFromARM() function. Expected Persistence_ARM, got %T", armInput)
 	}
 
 	// Set property ‘AofEnabled’:
@@ -1420,8 +1429,8 @@ func (persistence *Persistence) PopulateFromARM(owner genruntime.ArbitraryOwnerR
 	return nil
 }
 
-// AssignPropertiesFromPersistence populates our Persistence from the provided source Persistence
-func (persistence *Persistence) AssignPropertiesFromPersistence(source *v1alpha1api20210301storage.Persistence) error {
+// AssignProperties_From_Persistence populates our Persistence from the provided source Persistence
+func (persistence *Persistence) AssignProperties_From_Persistence(source *alpha20210301s.Persistence) error {
 
 	// AofEnabled
 	if source.AofEnabled != nil {
@@ -1433,7 +1442,7 @@ func (persistence *Persistence) AssignPropertiesFromPersistence(source *v1alpha1
 
 	// AofFrequency
 	if source.AofFrequency != nil {
-		aofFrequency := PersistenceAofFrequency(*source.AofFrequency)
+		aofFrequency := Persistence_AofFrequency(*source.AofFrequency)
 		persistence.AofFrequency = &aofFrequency
 	} else {
 		persistence.AofFrequency = nil
@@ -1449,7 +1458,7 @@ func (persistence *Persistence) AssignPropertiesFromPersistence(source *v1alpha1
 
 	// RdbFrequency
 	if source.RdbFrequency != nil {
-		rdbFrequency := PersistenceRdbFrequency(*source.RdbFrequency)
+		rdbFrequency := Persistence_RdbFrequency(*source.RdbFrequency)
 		persistence.RdbFrequency = &rdbFrequency
 	} else {
 		persistence.RdbFrequency = nil
@@ -1459,8 +1468,8 @@ func (persistence *Persistence) AssignPropertiesFromPersistence(source *v1alpha1
 	return nil
 }
 
-// AssignPropertiesToPersistence populates the provided destination Persistence from our Persistence
-func (persistence *Persistence) AssignPropertiesToPersistence(destination *v1alpha1api20210301storage.Persistence) error {
+// AssignProperties_To_Persistence populates the provided destination Persistence from our Persistence
+func (persistence *Persistence) AssignProperties_To_Persistence(destination *alpha20210301s.Persistence) error {
 	// Create a new property bag
 	propertyBag := genruntime.NewPropertyBag()
 
@@ -1507,32 +1516,26 @@ func (persistence *Persistence) AssignPropertiesToPersistence(destination *v1alp
 	return nil
 }
 
-type Persistence_Status struct {
-	//AofEnabled: Sets whether AOF is enabled.
-	AofEnabled *bool `json:"aofEnabled,omitempty"`
-
-	//AofFrequency: Sets the frequency at which data is written to disk.
-	AofFrequency *PersistenceStatusAofFrequency `json:"aofFrequency,omitempty"`
-
-	//RdbEnabled: Sets whether RDB is enabled.
-	RdbEnabled *bool `json:"rdbEnabled,omitempty"`
-
-	//RdbFrequency: Sets the frequency at which a snapshot of the database is created.
-	RdbFrequency *PersistenceStatusRdbFrequency `json:"rdbFrequency,omitempty"`
+// Deprecated version of Persistence_STATUS. Use v1beta20210301.Persistence_STATUS instead
+type Persistence_STATUS struct {
+	AofEnabled   *bool                            `json:"aofEnabled,omitempty"`
+	AofFrequency *Persistence_AofFrequency_STATUS `json:"aofFrequency,omitempty"`
+	RdbEnabled   *bool                            `json:"rdbEnabled,omitempty"`
+	RdbFrequency *Persistence_RdbFrequency_STATUS `json:"rdbFrequency,omitempty"`
 }
 
-var _ genruntime.FromARMConverter = &Persistence_Status{}
+var _ genruntime.FromARMConverter = &Persistence_STATUS{}
 
 // NewEmptyARMValue returns an empty ARM value suitable for deserializing into
-func (persistence *Persistence_Status) NewEmptyARMValue() genruntime.ARMResourceStatus {
-	return &Persistence_StatusARM{}
+func (persistence *Persistence_STATUS) NewEmptyARMValue() genruntime.ARMResourceStatus {
+	return &Persistence_STATUS_ARM{}
 }
 
 // PopulateFromARM populates a Kubernetes CRD object from an Azure ARM object
-func (persistence *Persistence_Status) PopulateFromARM(owner genruntime.ArbitraryOwnerReference, armInput interface{}) error {
-	typedInput, ok := armInput.(Persistence_StatusARM)
+func (persistence *Persistence_STATUS) PopulateFromARM(owner genruntime.ArbitraryOwnerReference, armInput interface{}) error {
+	typedInput, ok := armInput.(Persistence_STATUS_ARM)
 	if !ok {
-		return fmt.Errorf("unexpected type supplied for PopulateFromARM() function. Expected Persistence_StatusARM, got %T", armInput)
+		return fmt.Errorf("unexpected type supplied for PopulateFromARM() function. Expected Persistence_STATUS_ARM, got %T", armInput)
 	}
 
 	// Set property ‘AofEnabled’:
@@ -1563,8 +1566,8 @@ func (persistence *Persistence_Status) PopulateFromARM(owner genruntime.Arbitrar
 	return nil
 }
 
-// AssignPropertiesFromPersistenceStatus populates our Persistence_Status from the provided source Persistence_Status
-func (persistence *Persistence_Status) AssignPropertiesFromPersistenceStatus(source *v1alpha1api20210301storage.Persistence_Status) error {
+// AssignProperties_From_Persistence_STATUS populates our Persistence_STATUS from the provided source Persistence_STATUS
+func (persistence *Persistence_STATUS) AssignProperties_From_Persistence_STATUS(source *alpha20210301s.Persistence_STATUS) error {
 
 	// AofEnabled
 	if source.AofEnabled != nil {
@@ -1576,7 +1579,7 @@ func (persistence *Persistence_Status) AssignPropertiesFromPersistenceStatus(sou
 
 	// AofFrequency
 	if source.AofFrequency != nil {
-		aofFrequency := PersistenceStatusAofFrequency(*source.AofFrequency)
+		aofFrequency := Persistence_AofFrequency_STATUS(*source.AofFrequency)
 		persistence.AofFrequency = &aofFrequency
 	} else {
 		persistence.AofFrequency = nil
@@ -1592,7 +1595,7 @@ func (persistence *Persistence_Status) AssignPropertiesFromPersistenceStatus(sou
 
 	// RdbFrequency
 	if source.RdbFrequency != nil {
-		rdbFrequency := PersistenceStatusRdbFrequency(*source.RdbFrequency)
+		rdbFrequency := Persistence_RdbFrequency_STATUS(*source.RdbFrequency)
 		persistence.RdbFrequency = &rdbFrequency
 	} else {
 		persistence.RdbFrequency = nil
@@ -1602,8 +1605,8 @@ func (persistence *Persistence_Status) AssignPropertiesFromPersistenceStatus(sou
 	return nil
 }
 
-// AssignPropertiesToPersistenceStatus populates the provided destination Persistence_Status from our Persistence_Status
-func (persistence *Persistence_Status) AssignPropertiesToPersistenceStatus(destination *v1alpha1api20210301storage.Persistence_Status) error {
+// AssignProperties_To_Persistence_STATUS populates the provided destination Persistence_STATUS from our Persistence_STATUS
+func (persistence *Persistence_STATUS) AssignProperties_To_Persistence_STATUS(destination *alpha20210301s.Persistence_STATUS) error {
 	// Create a new property bag
 	propertyBag := genruntime.NewPropertyBag()
 
@@ -1650,21 +1653,23 @@ func (persistence *Persistence_Status) AssignPropertiesToPersistenceStatus(desti
 	return nil
 }
 
+// Deprecated version of Persistence_AofFrequency. Use v1beta20210301.Persistence_AofFrequency instead
 // +kubebuilder:validation:Enum={"1s","always"}
-type PersistenceAofFrequency string
+type Persistence_AofFrequency string
 
 const (
-	PersistenceAofFrequency1S     = PersistenceAofFrequency("1s")
-	PersistenceAofFrequencyAlways = PersistenceAofFrequency("always")
+	Persistence_AofFrequency_1S     = Persistence_AofFrequency("1s")
+	Persistence_AofFrequency_Always = Persistence_AofFrequency("always")
 )
 
+// Deprecated version of Persistence_RdbFrequency. Use v1beta20210301.Persistence_RdbFrequency instead
 // +kubebuilder:validation:Enum={"12h","1h","6h"}
-type PersistenceRdbFrequency string
+type Persistence_RdbFrequency string
 
 const (
-	PersistenceRdbFrequency12H = PersistenceRdbFrequency("12h")
-	PersistenceRdbFrequency1H  = PersistenceRdbFrequency("1h")
-	PersistenceRdbFrequency6H  = PersistenceRdbFrequency("6h")
+	Persistence_RdbFrequency_12H = Persistence_RdbFrequency("12h")
+	Persistence_RdbFrequency_1H  = Persistence_RdbFrequency("1h")
+	Persistence_RdbFrequency_6H  = Persistence_RdbFrequency("6h")
 )
 
 func init() {

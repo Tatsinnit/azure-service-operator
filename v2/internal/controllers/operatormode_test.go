@@ -9,7 +9,7 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1alpha1api20200601"
+	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
 	"github.com/Azure/azure-service-operator/v2/internal/config"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 )
@@ -72,6 +72,7 @@ func TestOperatorMode_Watchers(t *testing.T) {
 
 func TestOperatorMode_Both(t *testing.T) {
 	t.Parallel()
+
 	tc := globalTestContext.ForTestWithConfig(t, config.Values{
 		OperatorMode: config.OperatorModeBoth,
 	})

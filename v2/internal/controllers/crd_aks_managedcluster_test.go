@@ -11,8 +11,9 @@ import (
 	"github.com/Azure/go-autorest/autorest/to"
 	. "github.com/onsi/gomega"
 
-	aks "github.com/Azure/azure-service-operator/v2/api/containerservice/v1alpha1api20210501"
+	aks "github.com/Azure/azure-service-operator/v2/api/containerservice/v1beta20210501"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
+	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
 
 func Test_AKS_ManagedCluster_CRUD(t *testing.T) {
@@ -22,23 +23,26 @@ func Test_AKS_ManagedCluster_CRUD(t *testing.T) {
 
 	rg := tc.CreateTestResourceGroupAndWait()
 
+	region := to.StringPtr("westus3") // TODO: the default test region of westus2 doesn't allow ds2_v2 at the moment
+	//region := tc.AzureRegion
+
 	adminUsername := "adminUser"
 	sshPublicKey, err := tc.GenerateSSHKey(2048)
 	tc.Expect(err).ToNot(HaveOccurred())
 
-	identityKind := aks.ManagedClusterIdentityTypeSystemAssigned
-	osType := aks.ManagedClusterAgentPoolProfileOsTypeLinux
-	agentPoolMode := aks.ManagedClusterAgentPoolProfileModeSystem
+	identityKind := aks.ManagedClusterIdentity_Type_SystemAssigned
+	osType := aks.ManagedClusterAgentPoolProfile_OsType_Linux
+	agentPoolMode := aks.ManagedClusterAgentPoolProfile_Mode_System
 
 	cluster := &aks.ManagedCluster{
 		ObjectMeta: tc.MakeObjectMeta("mc"),
-		Spec: aks.ManagedClusters_Spec{
-			Location:  tc.AzureRegion,
+		Spec: aks.ManagedCluster_Spec{
+			Location:  region,
 			Owner:     testcommon.AsOwner(rg),
 			DnsPrefix: to.StringPtr("aso"),
 			AgentPoolProfiles: []aks.ManagedClusterAgentPoolProfile{
 				{
-					Name:   "ap1",
+					Name:   to.StringPtr("ap1"),
 					Count:  to.IntPtr(1),
 					VmSize: to.StringPtr("Standard_DS2_v2"),
 					OsType: &osType,
@@ -46,11 +50,11 @@ func Test_AKS_ManagedCluster_CRUD(t *testing.T) {
 				},
 			},
 			LinuxProfile: &aks.ContainerServiceLinuxProfile{
-				AdminUsername: adminUsername,
-				Ssh: aks.ContainerServiceSshConfiguration{
+				AdminUsername: &adminUsername,
+				Ssh: &aks.ContainerServiceSshConfiguration{
 					PublicKeys: []aks.ContainerServiceSshPublicKey{
 						{
-							KeyData: *sshPublicKey,
+							KeyData: sshPublicKey,
 						},
 					},
 				},
@@ -67,8 +71,8 @@ func Test_AKS_ManagedCluster_CRUD(t *testing.T) {
 	armId := *cluster.Status.Id
 
 	// Perform a simple patch
-	skuName := aks.ManagedClusterSKUNameBasic
-	skuTier := aks.ManagedClusterSKUTierPaid
+	skuName := aks.ManagedClusterSKU_Name_Basic
+	skuTier := aks.ManagedClusterSKU_Tier_Paid
 	old := cluster.DeepCopy()
 	cluster.Spec.Sku = &aks.ManagedClusterSKU{
 		Name: &skuName,
@@ -77,16 +81,23 @@ func Test_AKS_ManagedCluster_CRUD(t *testing.T) {
 	tc.PatchResourceAndWait(old, cluster)
 	tc.Expect(cluster.Status.Sku).ToNot(BeNil())
 	tc.Expect(cluster.Status.Sku.Name).ToNot(BeNil())
-	tc.Expect(*cluster.Status.Sku.Name).To(Equal(aks.ManagedClusterSKUStatusNameBasic))
+	tc.Expect(*cluster.Status.Sku.Name).To(Equal(aks.ManagedClusterSKU_Name_STATUS_Basic))
 	tc.Expect(cluster.Status.Sku.Tier).ToNot(BeNil())
-	tc.Expect(*cluster.Status.Sku.Tier).To(Equal(aks.ManagedClusterSKUStatusTierPaid))
+	tc.Expect(*cluster.Status.Sku.Tier).To(Equal(aks.ManagedClusterSKU_Tier_STATUS_Paid))
 
 	// Run sub tests
+	tc.RunSubtests(
+		testcommon.Subtest{
+			Name: "AKS KubeConfig secret CRUD",
+			Test: func(tc *testcommon.KubePerTestContext) {
+				AKS_ManagedCluster_Kubeconfig_Secrets(tc, cluster)
+			},
+		})
 	tc.RunParallelSubtests(
 		testcommon.Subtest{
 			Name: "AKS AgentPool CRUD",
-			Test: func(testContext *testcommon.KubePerTestContext) {
-				AKS_ManagedCluster_AgentPool_CRUD(testContext, cluster)
+			Test: func(tc *testcommon.KubePerTestContext) {
+				AKS_ManagedCluster_AgentPool_CRUD(tc, cluster)
 			},
 		},
 	)
@@ -94,19 +105,19 @@ func Test_AKS_ManagedCluster_CRUD(t *testing.T) {
 	tc.DeleteResourceAndWait(cluster)
 
 	// Ensure that the cluster was really deleted in Azure
-	exists, retryAfter, err := tc.AzureClient.HeadByID(tc.Ctx, armId, string(aks.ManagedClustersSpecAPIVersion20210501))
+	exists, retryAfter, err := tc.AzureClient.HeadByID(tc.Ctx, armId, string(aks.APIVersion_Value))
 	tc.Expect(err).ToNot(HaveOccurred())
 	tc.Expect(retryAfter).To(BeZero())
 	tc.Expect(exists).To(BeFalse())
 }
 
 func AKS_ManagedCluster_AgentPool_CRUD(tc *testcommon.KubePerTestContext, cluster *aks.ManagedCluster) {
-	osType := aks.ManagedClusterAgentPoolProfilePropertiesOsTypeLinux
-	agentPoolMode := aks.ManagedClusterAgentPoolProfilePropertiesModeSystem
+	osType := aks.ManagedClusterAgentPoolProfileProperties_OsType_Linux
+	agentPoolMode := aks.ManagedClusterAgentPoolProfileProperties_Mode_System
 
 	agentPool := &aks.ManagedClustersAgentPool{
 		ObjectMeta: tc.MakeObjectMetaWithName("ap2"),
-		Spec: aks.ManagedClustersAgentPools_Spec{
+		Spec: aks.ManagedClusters_AgentPool_Spec{
 			Owner:  testcommon.AsOwner(cluster),
 			Count:  to.IntPtr(1),
 			VmSize: to.StringPtr("Standard_DS2_v2"),
@@ -136,4 +147,18 @@ func AKS_ManagedCluster_AgentPool_CRUD(tc *testcommon.KubePerTestContext, cluste
 	}
 	tc.PatchResourceAndWait(old, agentPool)
 	tc.Expect(agentPool.Status.NodeLabels).To(HaveKey("mylabel"))
+}
+
+func AKS_ManagedCluster_Kubeconfig_Secrets(tc *testcommon.KubePerTestContext, cluster *aks.ManagedCluster) {
+	old := cluster.DeepCopy()
+	secret := "kubeconfig"
+	cluster.Spec.OperatorSpec = &aks.ManagedClusterOperatorSpec{
+		Secrets: &aks.ManagedClusterOperatorSecrets{
+			AdminCredentials: &genruntime.SecretDestination{Name: secret, Key: "admin"},
+			UserCredentials:  &genruntime.SecretDestination{Name: secret, Key: "user"},
+		},
+	}
+
+	tc.PatchResourceAndWait(old, cluster)
+	tc.ExpectSecretHasKeys(secret, "admin", "user")
 }

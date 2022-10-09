@@ -12,8 +12,8 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1alpha1api20200601"
-	storage "github.com/Azure/azure-service-operator/v2/api/storage/v1alpha1api20210401"
+	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
+	storage "github.com/Azure/azure-service-operator/v2/api/storage/v1beta20210401"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
@@ -72,8 +72,8 @@ func Test_WhenObjectPullSecretsAndSecretAlreadyExists_WarningConditionIsSet(t *t
 
 	// We expect the ready condition to include details of the error
 	tc.Expect(acct.Status.Conditions[0].Severity).To(Equal(conditions.ConditionSeverityError))
-	tc.Expect(acct.Status.Conditions[0].Reason).To(Equal("FailedWritingSecret"))
-	tc.Expect(acct.Status.Conditions[0].Message).To(MatchRegexp("cannot overwrite secret.*which is not owned by"))
+	tc.Expect(acct.Status.Conditions[0].Reason).To(Equal("FailedWritingAdditionalKubernetesObjects"))
+	tc.Expect(acct.Status.Conditions[0].Message).To(MatchRegexp("cannot overwrite Secret.*which is not owned by"))
 
 	// Delete the resource, it should be able to proceed and delete the underlying Azure resource
 	tc.DeleteResourceAndWait(acct)
@@ -82,7 +82,7 @@ func Test_WhenObjectPullSecretsAndSecretAlreadyExists_WarningConditionIsSet(t *t
 	exists, _, err := tc.AzureClient.HeadByID(
 		tc.Ctx,
 		armId,
-		string(storage.StorageAccountsSpecAPIVersion20210401))
+		string(storage.APIVersion_Value))
 	tc.Expect(err).ToNot(HaveOccurred())
 	tc.Expect(exists).To(BeFalse())
 }
@@ -104,8 +104,8 @@ func Test_TwoObjectsWriteSameSecret_WarningConditionIsSetOnSecond(t *testing.T) 
 	// We expect the ready condition to include details of the error
 	// Note that the error is fatal as the customer must take some action in order to resolve the problem.
 	tc.Expect(acct2.Status.Conditions[0].Severity).To(Equal(conditions.ConditionSeverityError))
-	tc.Expect(acct2.Status.Conditions[0].Reason).To(Equal("FailedWritingSecret"))
-	tc.Expect(acct2.Status.Conditions[0].Message).To(MatchRegexp("cannot overwrite secret.*which is not owned by"))
+	tc.Expect(acct2.Status.Conditions[0].Reason).To(Equal("FailedWritingAdditionalKubernetesObjects"))
+	tc.Expect(acct2.Status.Conditions[0].Message).To(MatchRegexp("cannot overwrite Secret.*which is not owned by"))
 }
 
 func Test_SameObjectHasTwoSecretsWritingToSameDestination_RejectedByWebhook(t *testing.T) {
@@ -123,20 +123,22 @@ func Test_SameObjectHasTwoSecretsWritingToSameDestination_RejectedByWebhook(t *t
 		Key:  "key1",
 	}
 
-	err := tc.CreateResourceExpectFailure(acct1)
+	err := tc.CreateResourceExpectRequestFailure(acct1)
 	tc.Expect(err.Error()).To(ContainSubstring("cannot write more than one secret to destination Name: %q, Key: %q", storageKeysSecret, "key1"))
 }
 
 func makeSimpleStorageAccountWithOperatorSpecSecrets(tc *testcommon.KubePerTestContext, rg *resources.ResourceGroup, secretName string, secretKey string) *storage.StorageAccount {
-	accessTier := storage.StorageAccountPropertiesCreateParametersAccessTierHot
+	accessTier := storage.StorageAccountPropertiesCreateParameters_AccessTier_Hot
+	kind := storage.StorageAccount_Kind_Spec_StorageV2
+	sku := storage.Sku_Name_Standard_LRS
 	acct := &storage.StorageAccount{
 		ObjectMeta: tc.MakeObjectMetaWithName(tc.NoSpaceNamer.GenerateName("stor")),
-		Spec: storage.StorageAccounts_Spec{
+		Spec: storage.StorageAccount_Spec{
 			Location: tc.AzureRegion,
 			Owner:    testcommon.AsOwner(rg),
-			Kind:     storage.StorageAccountsSpecKindStorageV2,
-			Sku: storage.Sku{
-				Name: storage.SkuNameStandardLRS,
+			Kind:     &kind,
+			Sku: &storage.Sku{
+				Name: &sku,
 			},
 			AccessTier: &accessTier,
 			OperatorSpec: &storage.StorageAccountOperatorSpec{

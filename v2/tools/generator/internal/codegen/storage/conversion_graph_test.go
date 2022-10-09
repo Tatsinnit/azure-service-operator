@@ -24,9 +24,9 @@ func TestConversionGraph_WithTwoUnrelatedReferences_HasExpectedTransitions(t *te
 	g := NewGomegaWithT(t)
 
 	omc := config.NewObjectModelConfiguration()
-	builder := NewConversionGraphBuilder(omc)
-	builder.Add(test.Pkg2020)
-	builder.Add(test.BatchPkg2020)
+	builder := NewConversionGraphBuilder(omc, "v")
+	builder.Add(test.Pkg2020, test.Pkg2020s)
+	builder.Add(test.BatchPkg2020, test.BatchPkg2020s)
 	graph, err := builder.Build()
 
 	// Check size of graph
@@ -65,17 +65,24 @@ func TestConversionGraph_GivenTypeName_ReturnsExpectedHubTypeName(t *testing.T) 
 	address2021 := test.CreateSimpleResource(test.Pkg2021, "Address")
 	address2021s := test.CreateSimpleResource(test.Pkg2021s, "Address")
 
+	// Need two versions of a student resource, ensuring they skip an intermediate version
+	student2020 := test.CreateSimpleResource(test.Pkg2020, "Student")
+	student2020s := test.CreateSimpleResource(test.Pkg2020s, "Student")
+	student2022 := test.CreateSimpleResource(test.Pkg2022, "Student")
+	student2022s := test.CreateSimpleResource(test.Pkg2022s, "Student")
+
 	// Create our set of definitions
 	defs := make(astmodel.TypeDefinitionSet)
 	defs.AddAll(person2020, person2021, person2022, address2020, address2021)
 	defs.AddAll(person2020s, person2021s, person2022s, address2020s, address2021s)
+	defs.AddAll(student2020, student2020s, student2022, student2022s)
 
 	// Create a builder use it to configure a graph to test
 	omc := config.NewObjectModelConfiguration()
-	builder := NewConversionGraphBuilder(omc)
-	builder.Add(person2020.Name().PackageReference)
-	builder.Add(person2021.Name().PackageReference)
-	builder.Add(person2022.Name().PackageReference)
+	builder := NewConversionGraphBuilder(omc, "v")
+	builder.Add(test.Pkg2020, test.Pkg2020s)
+	builder.Add(test.Pkg2021, test.Pkg2021s)
+	builder.Add(test.Pkg2022, test.Pkg2022s)
 
 	graph, err := builder.Build()
 	g.Expect(err).To(Succeed())
@@ -85,6 +92,9 @@ func TestConversionGraph_GivenTypeName_ReturnsExpectedHubTypeName(t *testing.T) 
 
 	// Address resources use this as the hub because Address doesn't exist in Pkg2022
 	addressHub := address2021s.Name()
+
+	// Student resources use this even though Student doesn't exist in Pkg2021
+	studentHub := student2022s.Name()
 
 	cases := []struct {
 		name         string
@@ -100,6 +110,8 @@ func TestConversionGraph_GivenTypeName_ReturnsExpectedHubTypeName(t *testing.T) 
 		{"Hub type returns self even when resource does not exist in latest package", addressHub, addressHub},
 		{"Directly linked api resolves when resource does not exist in latest package", address2021.Name(), addressHub},
 		{"Indirectly linked api resolves when resource does not exist in latest package", address2020.Name(), addressHub},
+		{"Directly linked API resolves when resource doesn't exist in intermediate package", student2022.Name(), studentHub},
+		{"Indirectly linked API resolves when resource doesn't exist in intermediate package", student2020.Name(), studentHub},
 	}
 
 	for _, c := range cases {
@@ -133,12 +145,20 @@ func Test_ConversionGraph_WhenRenameConfigured_FindsRenamedType(t *testing.T) {
 	defs.AddAll(person2020s, party2021s)
 
 	// Create configuration for our rename
-	omc := config.CreateTestObjectModelConfigurationForRename(person2020.Name(), party2021.Name().Name())
+	omc := config.NewObjectModelConfiguration()
+	g.Expect(
+		omc.ModifyType(
+			person2020.Name(),
+			func(tc *config.TypeConfiguration) error {
+				tc.SetNameInNextVersion(party2021.Name().Name())
+				return nil
+			})).
+		To(Succeed())
 
 	// Create a builder use it to configure a graph to test
-	builder := NewConversionGraphBuilder(omc)
-	builder.Add(person2020.Name().PackageReference)
-	builder.Add(party2021.Name().PackageReference)
+	builder := NewConversionGraphBuilder(omc, "v")
+	builder.Add(test.Pkg2020, test.Pkg2020s)
+	builder.Add(test.Pkg2021, test.Pkg2021s)
 
 	graph, err := builder.Build()
 	g.Expect(err).To(Succeed())
@@ -166,12 +186,20 @@ func Test_ConversionGraph_WhenRenameSpecifiesMissingType_ReturnsError(t *testing
 	defs.AddAll(person2020s, party2021s)
 
 	// Create mis-configuration for our rename specifying a type that doesn't exist
-	omc := config.CreateTestObjectModelConfigurationForRename(person2020.Name(), "Phantom")
+	omc := config.NewObjectModelConfiguration()
+	g.Expect(
+		omc.ModifyType(
+			person2020.Name(),
+			func(tc *config.TypeConfiguration) error {
+				tc.SetNameInNextVersion("Phantom")
+				return nil
+			})).
+		To(Succeed())
 
 	// Create a builder use it to configure a graph to test
-	builder := NewConversionGraphBuilder(omc)
-	builder.Add(person2020.Name().PackageReference)
-	builder.Add(party2021.Name().PackageReference)
+	builder := NewConversionGraphBuilder(omc, "v")
+	builder.Add(test.Pkg2020, test.Pkg2020s)
+	builder.Add(test.Pkg2021, test.Pkg2021s)
 
 	graph, err := builder.Build()
 	g.Expect(err).To(Succeed())
@@ -202,12 +230,20 @@ func Test_ConversionGraph_WhenRenameSpecifiesConflictingType_ReturnsError(t *tes
 	defs.AddAll(person2020s, person2021s, party2021s)
 
 	// Create mis-configuration for our rename that conflicts with the second type
-	omc := config.CreateTestObjectModelConfigurationForRename(person2020.Name(), party2021.Name().Name())
+	omc := config.NewObjectModelConfiguration()
+	g.Expect(
+		omc.ModifyType(
+			person2020.Name(),
+			func(tc *config.TypeConfiguration) error {
+				tc.SetNameInNextVersion(party2021.Name().Name())
+				return nil
+			})).
+		To(Succeed())
 
 	// Create a builder use it to configure a graph to test
-	builder := NewConversionGraphBuilder(omc)
-	builder.Add(person2020.Name().PackageReference)
-	builder.Add(person2021.Name().PackageReference)
+	builder := NewConversionGraphBuilder(omc, "v")
+	builder.Add(test.Pkg2020, test.Pkg2020s)
+	builder.Add(test.Pkg2021, test.Pkg2021s)
 
 	graph, err := builder.Build()
 	g.Expect(err).To(Succeed())

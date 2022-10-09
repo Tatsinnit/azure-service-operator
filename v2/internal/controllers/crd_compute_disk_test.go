@@ -10,7 +10,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	compute "github.com/Azure/azure-service-operator/v2/api/compute/v1alpha1api20200930"
+	compute "github.com/Azure/azure-service-operator/v2/api/compute/v1beta20200930"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 )
 
@@ -22,25 +22,26 @@ func Test_Compute_Disk_CRUD(t *testing.T) {
 	rg := tc.CreateTestResourceGroupAndWait()
 
 	// Create a disk.
-	standardSkuName := compute.DiskSkuNameStandardLRS
+	standardSkuName := compute.DiskSku_Name_Standard_LRS
 	sizeInGb := 500
+	createOption := compute.CreationData_CreateOption_Empty
 	disk := &compute.Disk{
 		ObjectMeta: tc.MakeObjectMeta("disk"),
-		Spec: compute.Disks_Spec{
+		Spec: compute.Disk_Spec{
 			Location: tc.AzureRegion,
 			Owner:    testcommon.AsOwner(rg),
 			Sku: &compute.DiskSku{
 				Name: &standardSkuName,
 			},
-			CreationData: compute.CreationData{
-				CreateOption: compute.CreationDataCreateOptionEmpty,
+			CreationData: &compute.CreationData{
+				CreateOption: &createOption,
 			},
 			DiskSizeGB: &sizeInGb,
 		},
 	}
 	tc.CreateResourceAndWait(disk)
 
-	tc.Expect(disk.Status.Location).To(Equal(&tc.AzureRegion))
+	tc.Expect(disk.Status.Location).To(Equal(tc.AzureRegion))
 	tc.Expect(disk.Status.Sku.Name).To(BeEquivalentTo(&standardSkuName))
 	tc.Expect(*disk.Status.DiskSizeGB).To(BeNumerically(">=", 500))
 	tc.Expect(disk.Status.Id).ToNot(BeNil())
@@ -48,7 +49,7 @@ func Test_Compute_Disk_CRUD(t *testing.T) {
 
 	// Perform a simple patch.
 	old := disk.DeepCopy()
-	networkAccessPolicy := compute.DiskPropertiesNetworkAccessPolicyDenyAll
+	networkAccessPolicy := compute.DiskProperties_NetworkAccessPolicy_DenyAll
 	disk.Spec.NetworkAccessPolicy = &networkAccessPolicy
 	tc.PatchResourceAndWait(old, disk)
 	tc.Expect(disk.Status.NetworkAccessPolicy).To(BeEquivalentTo(&networkAccessPolicy))
@@ -59,7 +60,7 @@ func Test_Compute_Disk_CRUD(t *testing.T) {
 	exists, _, err := tc.AzureClient.HeadByID(
 		tc.Ctx,
 		armId,
-		string(compute.DisksSpecAPIVersion20200930))
+		string(compute.APIVersion_Value))
 	tc.Expect(err).ToNot(HaveOccurred())
 	tc.Expect(exists).To(BeFalse())
 }

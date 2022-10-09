@@ -5,7 +5,8 @@ package v1alpha1api20210101preview
 
 import (
 	"encoding/json"
-	"github.com/Azure/azure-service-operator/v2/api/servicebus/v1alpha1api20210101previewstorage"
+	alpha20210101ps "github.com/Azure/azure-service-operator/v2/api/servicebus/v1alpha1api20210101previewstorage"
+	v20210101ps "github.com/Azure/azure-service-operator/v2/api/servicebus/v1beta20210101previewstorage"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/kr/pretty"
@@ -22,6 +23,7 @@ func Test_NamespacesTopic_WhenConvertedToHub_RoundTripsWithoutLoss(t *testing.T)
 	t.Parallel()
 	parameters := gopter.DefaultTestParameters()
 	parameters.MaxSize = 10
+	parameters.MinSuccessfulTests = 10
 	properties := gopter.NewProperties(parameters)
 	properties.Property(
 		"Round trip from NamespacesTopic to hub returns original",
@@ -35,7 +37,7 @@ func RunResourceConversionTestForNamespacesTopic(subject NamespacesTopic) string
 	copied := subject.DeepCopy()
 
 	// Convert to our hub version
-	var hub v1alpha1api20210101previewstorage.NamespacesTopic
+	var hub v20210101ps.NamespacesTopic
 	err := copied.ConvertTo(&hub)
 	if err != nil {
 		return err.Error()
@@ -66,7 +68,7 @@ func Test_NamespacesTopic_WhenPropertiesConverted_RoundTripsWithoutLoss(t *testi
 	parameters.MaxSize = 10
 	properties := gopter.NewProperties(parameters)
 	properties.Property(
-		"Round trip from NamespacesTopic to NamespacesTopic via AssignPropertiesToNamespacesTopic & AssignPropertiesFromNamespacesTopic returns original",
+		"Round trip from NamespacesTopic to NamespacesTopic via AssignProperties_To_NamespacesTopic & AssignProperties_From_NamespacesTopic returns original",
 		prop.ForAll(RunPropertyAssignmentTestForNamespacesTopic, NamespacesTopicGenerator()))
 	properties.TestingRun(t, gopter.NewFormatedReporter(false, 240, os.Stdout))
 }
@@ -77,20 +79,20 @@ func RunPropertyAssignmentTestForNamespacesTopic(subject NamespacesTopic) string
 	copied := subject.DeepCopy()
 
 	// Use AssignPropertiesTo() for the first stage of conversion
-	var other v1alpha1api20210101previewstorage.NamespacesTopic
-	err := copied.AssignPropertiesToNamespacesTopic(&other)
+	var other alpha20210101ps.NamespacesTopic
+	err := copied.AssignProperties_To_NamespacesTopic(&other)
 	if err != nil {
 		return err.Error()
 	}
 
 	// Use AssignPropertiesFrom() to convert back to our original type
 	var actual NamespacesTopic
-	err = actual.AssignPropertiesFromNamespacesTopic(&other)
+	err = actual.AssignProperties_From_NamespacesTopic(&other)
 	if err != nil {
 		return err.Error()
 	}
 
-	//Check for a match
+	// Check for a match
 	match := cmp.Equal(subject, actual)
 	if !match {
 		actualFmt := pretty.Sprint(actual)
@@ -105,7 +107,8 @@ func RunPropertyAssignmentTestForNamespacesTopic(subject NamespacesTopic) string
 func Test_NamespacesTopic_WhenSerializedToJson_DeserializesAsEqual(t *testing.T) {
 	t.Parallel()
 	parameters := gopter.DefaultTestParameters()
-	parameters.MaxSize = 10
+	parameters.MinSuccessfulTests = 20
+	parameters.MaxSize = 3
 	properties := gopter.NewProperties(parameters)
 	properties.Property(
 		"Round trip of NamespacesTopic via JSON returns original",
@@ -158,41 +161,41 @@ func NamespacesTopicGenerator() gopter.Gen {
 
 // AddRelatedPropertyGeneratorsForNamespacesTopic is a factory method for creating gopter generators
 func AddRelatedPropertyGeneratorsForNamespacesTopic(gens map[string]gopter.Gen) {
-	gens["Spec"] = NamespacesTopicsSpecGenerator()
-	gens["Status"] = SBTopicStatusGenerator()
+	gens["Spec"] = Namespaces_Topic_SpecGenerator()
+	gens["Status"] = SBTopic_STATUSGenerator()
 }
 
-func Test_NamespacesTopics_Spec_WhenPropertiesConverted_RoundTripsWithoutLoss(t *testing.T) {
+func Test_Namespaces_Topic_Spec_WhenPropertiesConverted_RoundTripsWithoutLoss(t *testing.T) {
 	t.Parallel()
 	parameters := gopter.DefaultTestParameters()
 	parameters.MaxSize = 10
 	properties := gopter.NewProperties(parameters)
 	properties.Property(
-		"Round trip from NamespacesTopics_Spec to NamespacesTopics_Spec via AssignPropertiesToNamespacesTopicsSpec & AssignPropertiesFromNamespacesTopicsSpec returns original",
-		prop.ForAll(RunPropertyAssignmentTestForNamespacesTopicsSpec, NamespacesTopicsSpecGenerator()))
+		"Round trip from Namespaces_Topic_Spec to Namespaces_Topic_Spec via AssignProperties_To_Namespaces_Topic_Spec & AssignProperties_From_Namespaces_Topic_Spec returns original",
+		prop.ForAll(RunPropertyAssignmentTestForNamespaces_Topic_Spec, Namespaces_Topic_SpecGenerator()))
 	properties.TestingRun(t, gopter.NewFormatedReporter(false, 240, os.Stdout))
 }
 
-// RunPropertyAssignmentTestForNamespacesTopicsSpec tests if a specific instance of NamespacesTopics_Spec can be assigned to v1alpha1api20210101previewstorage and back losslessly
-func RunPropertyAssignmentTestForNamespacesTopicsSpec(subject NamespacesTopics_Spec) string {
+// RunPropertyAssignmentTestForNamespaces_Topic_Spec tests if a specific instance of Namespaces_Topic_Spec can be assigned to v1alpha1api20210101previewstorage and back losslessly
+func RunPropertyAssignmentTestForNamespaces_Topic_Spec(subject Namespaces_Topic_Spec) string {
 	// Copy subject to make sure assignment doesn't modify it
 	copied := subject.DeepCopy()
 
 	// Use AssignPropertiesTo() for the first stage of conversion
-	var other v1alpha1api20210101previewstorage.NamespacesTopics_Spec
-	err := copied.AssignPropertiesToNamespacesTopicsSpec(&other)
+	var other alpha20210101ps.Namespaces_Topic_Spec
+	err := copied.AssignProperties_To_Namespaces_Topic_Spec(&other)
 	if err != nil {
 		return err.Error()
 	}
 
 	// Use AssignPropertiesFrom() to convert back to our original type
-	var actual NamespacesTopics_Spec
-	err = actual.AssignPropertiesFromNamespacesTopicsSpec(&other)
+	var actual Namespaces_Topic_Spec
+	err = actual.AssignProperties_From_Namespaces_Topic_Spec(&other)
 	if err != nil {
 		return err.Error()
 	}
 
-	//Check for a match
+	// Check for a match
 	match := cmp.Equal(subject, actual)
 	if !match {
 		actualFmt := pretty.Sprint(actual)
@@ -204,19 +207,20 @@ func RunPropertyAssignmentTestForNamespacesTopicsSpec(subject NamespacesTopics_S
 	return ""
 }
 
-func Test_NamespacesTopics_Spec_WhenSerializedToJson_DeserializesAsEqual(t *testing.T) {
+func Test_Namespaces_Topic_Spec_WhenSerializedToJson_DeserializesAsEqual(t *testing.T) {
 	t.Parallel()
 	parameters := gopter.DefaultTestParameters()
-	parameters.MaxSize = 10
+	parameters.MinSuccessfulTests = 80
+	parameters.MaxSize = 3
 	properties := gopter.NewProperties(parameters)
 	properties.Property(
-		"Round trip of NamespacesTopics_Spec via JSON returns original",
-		prop.ForAll(RunJSONSerializationTestForNamespacesTopicsSpec, NamespacesTopicsSpecGenerator()))
+		"Round trip of Namespaces_Topic_Spec via JSON returns original",
+		prop.ForAll(RunJSONSerializationTestForNamespaces_Topic_Spec, Namespaces_Topic_SpecGenerator()))
 	properties.TestingRun(t, gopter.NewFormatedReporter(true, 240, os.Stdout))
 }
 
-// RunJSONSerializationTestForNamespacesTopicsSpec runs a test to see if a specific instance of NamespacesTopics_Spec round trips to JSON and back losslessly
-func RunJSONSerializationTestForNamespacesTopicsSpec(subject NamespacesTopics_Spec) string {
+// RunJSONSerializationTestForNamespaces_Topic_Spec runs a test to see if a specific instance of Namespaces_Topic_Spec round trips to JSON and back losslessly
+func RunJSONSerializationTestForNamespaces_Topic_Spec(subject Namespaces_Topic_Spec) string {
 	// Serialize to JSON
 	bin, err := json.Marshal(subject)
 	if err != nil {
@@ -224,7 +228,7 @@ func RunJSONSerializationTestForNamespacesTopicsSpec(subject NamespacesTopics_Sp
 	}
 
 	// Deserialize back into memory
-	var actual NamespacesTopics_Spec
+	var actual Namespaces_Topic_Spec
 	err = json.Unmarshal(bin, &actual)
 	if err != nil {
 		return err.Error()
@@ -242,25 +246,25 @@ func RunJSONSerializationTestForNamespacesTopicsSpec(subject NamespacesTopics_Sp
 	return ""
 }
 
-// Generator of NamespacesTopics_Spec instances for property testing - lazily instantiated by
-//NamespacesTopicsSpecGenerator()
-var namespacesTopicsSpecGenerator gopter.Gen
+// Generator of Namespaces_Topic_Spec instances for property testing - lazily instantiated by
+// Namespaces_Topic_SpecGenerator()
+var namespaces_Topic_SpecGenerator gopter.Gen
 
-// NamespacesTopicsSpecGenerator returns a generator of NamespacesTopics_Spec instances for property testing.
-func NamespacesTopicsSpecGenerator() gopter.Gen {
-	if namespacesTopicsSpecGenerator != nil {
-		return namespacesTopicsSpecGenerator
+// Namespaces_Topic_SpecGenerator returns a generator of Namespaces_Topic_Spec instances for property testing.
+func Namespaces_Topic_SpecGenerator() gopter.Gen {
+	if namespaces_Topic_SpecGenerator != nil {
+		return namespaces_Topic_SpecGenerator
 	}
 
 	generators := make(map[string]gopter.Gen)
-	AddIndependentPropertyGeneratorsForNamespacesTopicsSpec(generators)
-	namespacesTopicsSpecGenerator = gen.Struct(reflect.TypeOf(NamespacesTopics_Spec{}), generators)
+	AddIndependentPropertyGeneratorsForNamespaces_Topic_Spec(generators)
+	namespaces_Topic_SpecGenerator = gen.Struct(reflect.TypeOf(Namespaces_Topic_Spec{}), generators)
 
-	return namespacesTopicsSpecGenerator
+	return namespaces_Topic_SpecGenerator
 }
 
-// AddIndependentPropertyGeneratorsForNamespacesTopicsSpec is a factory method for creating gopter generators
-func AddIndependentPropertyGeneratorsForNamespacesTopicsSpec(gens map[string]gopter.Gen) {
+// AddIndependentPropertyGeneratorsForNamespaces_Topic_Spec is a factory method for creating gopter generators
+func AddIndependentPropertyGeneratorsForNamespaces_Topic_Spec(gens map[string]gopter.Gen) {
 	gens["AutoDeleteOnIdle"] = gen.PtrOf(gen.AlphaString())
 	gens["AzureName"] = gen.AlphaString()
 	gens["DefaultMessageTimeToLive"] = gen.PtrOf(gen.AlphaString())
@@ -275,37 +279,37 @@ func AddIndependentPropertyGeneratorsForNamespacesTopicsSpec(gens map[string]gop
 	gens["Tags"] = gen.MapOf(gen.AlphaString(), gen.AlphaString())
 }
 
-func Test_SBTopic_Status_WhenPropertiesConverted_RoundTripsWithoutLoss(t *testing.T) {
+func Test_SBTopic_STATUS_WhenPropertiesConverted_RoundTripsWithoutLoss(t *testing.T) {
 	t.Parallel()
 	parameters := gopter.DefaultTestParameters()
 	parameters.MaxSize = 10
 	properties := gopter.NewProperties(parameters)
 	properties.Property(
-		"Round trip from SBTopic_Status to SBTopic_Status via AssignPropertiesToSBTopicStatus & AssignPropertiesFromSBTopicStatus returns original",
-		prop.ForAll(RunPropertyAssignmentTestForSBTopicStatus, SBTopicStatusGenerator()))
+		"Round trip from SBTopic_STATUS to SBTopic_STATUS via AssignProperties_To_SBTopic_STATUS & AssignProperties_From_SBTopic_STATUS returns original",
+		prop.ForAll(RunPropertyAssignmentTestForSBTopic_STATUS, SBTopic_STATUSGenerator()))
 	properties.TestingRun(t, gopter.NewFormatedReporter(false, 240, os.Stdout))
 }
 
-// RunPropertyAssignmentTestForSBTopicStatus tests if a specific instance of SBTopic_Status can be assigned to v1alpha1api20210101previewstorage and back losslessly
-func RunPropertyAssignmentTestForSBTopicStatus(subject SBTopic_Status) string {
+// RunPropertyAssignmentTestForSBTopic_STATUS tests if a specific instance of SBTopic_STATUS can be assigned to v1alpha1api20210101previewstorage and back losslessly
+func RunPropertyAssignmentTestForSBTopic_STATUS(subject SBTopic_STATUS) string {
 	// Copy subject to make sure assignment doesn't modify it
 	copied := subject.DeepCopy()
 
 	// Use AssignPropertiesTo() for the first stage of conversion
-	var other v1alpha1api20210101previewstorage.SBTopic_Status
-	err := copied.AssignPropertiesToSBTopicStatus(&other)
+	var other alpha20210101ps.SBTopic_STATUS
+	err := copied.AssignProperties_To_SBTopic_STATUS(&other)
 	if err != nil {
 		return err.Error()
 	}
 
 	// Use AssignPropertiesFrom() to convert back to our original type
-	var actual SBTopic_Status
-	err = actual.AssignPropertiesFromSBTopicStatus(&other)
+	var actual SBTopic_STATUS
+	err = actual.AssignProperties_From_SBTopic_STATUS(&other)
 	if err != nil {
 		return err.Error()
 	}
 
-	//Check for a match
+	// Check for a match
 	match := cmp.Equal(subject, actual)
 	if !match {
 		actualFmt := pretty.Sprint(actual)
@@ -317,19 +321,20 @@ func RunPropertyAssignmentTestForSBTopicStatus(subject SBTopic_Status) string {
 	return ""
 }
 
-func Test_SBTopic_Status_WhenSerializedToJson_DeserializesAsEqual(t *testing.T) {
+func Test_SBTopic_STATUS_WhenSerializedToJson_DeserializesAsEqual(t *testing.T) {
 	t.Parallel()
 	parameters := gopter.DefaultTestParameters()
-	parameters.MaxSize = 10
+	parameters.MinSuccessfulTests = 80
+	parameters.MaxSize = 3
 	properties := gopter.NewProperties(parameters)
 	properties.Property(
-		"Round trip of SBTopic_Status via JSON returns original",
-		prop.ForAll(RunJSONSerializationTestForSBTopicStatus, SBTopicStatusGenerator()))
+		"Round trip of SBTopic_STATUS via JSON returns original",
+		prop.ForAll(RunJSONSerializationTestForSBTopic_STATUS, SBTopic_STATUSGenerator()))
 	properties.TestingRun(t, gopter.NewFormatedReporter(true, 240, os.Stdout))
 }
 
-// RunJSONSerializationTestForSBTopicStatus runs a test to see if a specific instance of SBTopic_Status round trips to JSON and back losslessly
-func RunJSONSerializationTestForSBTopicStatus(subject SBTopic_Status) string {
+// RunJSONSerializationTestForSBTopic_STATUS runs a test to see if a specific instance of SBTopic_STATUS round trips to JSON and back losslessly
+func RunJSONSerializationTestForSBTopic_STATUS(subject SBTopic_STATUS) string {
 	// Serialize to JSON
 	bin, err := json.Marshal(subject)
 	if err != nil {
@@ -337,7 +342,7 @@ func RunJSONSerializationTestForSBTopicStatus(subject SBTopic_Status) string {
 	}
 
 	// Deserialize back into memory
-	var actual SBTopic_Status
+	var actual SBTopic_STATUS
 	err = json.Unmarshal(bin, &actual)
 	if err != nil {
 		return err.Error()
@@ -355,33 +360,33 @@ func RunJSONSerializationTestForSBTopicStatus(subject SBTopic_Status) string {
 	return ""
 }
 
-// Generator of SBTopic_Status instances for property testing - lazily instantiated by SBTopicStatusGenerator()
-var sbTopicStatusGenerator gopter.Gen
+// Generator of SBTopic_STATUS instances for property testing - lazily instantiated by SBTopic_STATUSGenerator()
+var sbTopic_STATUSGenerator gopter.Gen
 
-// SBTopicStatusGenerator returns a generator of SBTopic_Status instances for property testing.
-// We first initialize sbTopicStatusGenerator with a simplified generator based on the
+// SBTopic_STATUSGenerator returns a generator of SBTopic_STATUS instances for property testing.
+// We first initialize sbTopic_STATUSGenerator with a simplified generator based on the
 // fields with primitive types then replacing it with a more complex one that also handles complex fields
 // to ensure any cycles in the object graph properly terminate.
-func SBTopicStatusGenerator() gopter.Gen {
-	if sbTopicStatusGenerator != nil {
-		return sbTopicStatusGenerator
+func SBTopic_STATUSGenerator() gopter.Gen {
+	if sbTopic_STATUSGenerator != nil {
+		return sbTopic_STATUSGenerator
 	}
 
 	generators := make(map[string]gopter.Gen)
-	AddIndependentPropertyGeneratorsForSBTopicStatus(generators)
-	sbTopicStatusGenerator = gen.Struct(reflect.TypeOf(SBTopic_Status{}), generators)
+	AddIndependentPropertyGeneratorsForSBTopic_STATUS(generators)
+	sbTopic_STATUSGenerator = gen.Struct(reflect.TypeOf(SBTopic_STATUS{}), generators)
 
 	// The above call to gen.Struct() captures the map, so create a new one
 	generators = make(map[string]gopter.Gen)
-	AddIndependentPropertyGeneratorsForSBTopicStatus(generators)
-	AddRelatedPropertyGeneratorsForSBTopicStatus(generators)
-	sbTopicStatusGenerator = gen.Struct(reflect.TypeOf(SBTopic_Status{}), generators)
+	AddIndependentPropertyGeneratorsForSBTopic_STATUS(generators)
+	AddRelatedPropertyGeneratorsForSBTopic_STATUS(generators)
+	sbTopic_STATUSGenerator = gen.Struct(reflect.TypeOf(SBTopic_STATUS{}), generators)
 
-	return sbTopicStatusGenerator
+	return sbTopic_STATUSGenerator
 }
 
-// AddIndependentPropertyGeneratorsForSBTopicStatus is a factory method for creating gopter generators
-func AddIndependentPropertyGeneratorsForSBTopicStatus(gens map[string]gopter.Gen) {
+// AddIndependentPropertyGeneratorsForSBTopic_STATUS is a factory method for creating gopter generators
+func AddIndependentPropertyGeneratorsForSBTopic_STATUS(gens map[string]gopter.Gen) {
 	gens["AccessedAt"] = gen.PtrOf(gen.AlphaString())
 	gens["AutoDeleteOnIdle"] = gen.PtrOf(gen.AlphaString())
 	gens["CreatedAt"] = gen.PtrOf(gen.AlphaString())
@@ -396,23 +401,23 @@ func AddIndependentPropertyGeneratorsForSBTopicStatus(gens map[string]gopter.Gen
 	gens["RequiresDuplicateDetection"] = gen.PtrOf(gen.Bool())
 	gens["SizeInBytes"] = gen.PtrOf(gen.Int())
 	gens["Status"] = gen.PtrOf(gen.OneConstOf(
-		EntityStatus_StatusActive,
-		EntityStatus_StatusCreating,
-		EntityStatus_StatusDeleting,
-		EntityStatus_StatusDisabled,
-		EntityStatus_StatusReceiveDisabled,
-		EntityStatus_StatusRenaming,
-		EntityStatus_StatusRestoring,
-		EntityStatus_StatusSendDisabled,
-		EntityStatus_StatusUnknown))
+		EntityStatus_STATUS_Active,
+		EntityStatus_STATUS_Creating,
+		EntityStatus_STATUS_Deleting,
+		EntityStatus_STATUS_Disabled,
+		EntityStatus_STATUS_ReceiveDisabled,
+		EntityStatus_STATUS_Renaming,
+		EntityStatus_STATUS_Restoring,
+		EntityStatus_STATUS_SendDisabled,
+		EntityStatus_STATUS_Unknown))
 	gens["SubscriptionCount"] = gen.PtrOf(gen.Int())
 	gens["SupportOrdering"] = gen.PtrOf(gen.Bool())
 	gens["Type"] = gen.PtrOf(gen.AlphaString())
 	gens["UpdatedAt"] = gen.PtrOf(gen.AlphaString())
 }
 
-// AddRelatedPropertyGeneratorsForSBTopicStatus is a factory method for creating gopter generators
-func AddRelatedPropertyGeneratorsForSBTopicStatus(gens map[string]gopter.Gen) {
-	gens["CountDetails"] = gen.PtrOf(MessageCountDetailsStatusGenerator())
-	gens["SystemData"] = gen.PtrOf(SystemDataStatusGenerator())
+// AddRelatedPropertyGeneratorsForSBTopic_STATUS is a factory method for creating gopter generators
+func AddRelatedPropertyGeneratorsForSBTopic_STATUS(gens map[string]gopter.Gen) {
+	gens["CountDetails"] = gen.PtrOf(MessageCountDetails_STATUSGenerator())
+	gens["SystemData"] = gen.PtrOf(SystemData_STATUSGenerator())
 }

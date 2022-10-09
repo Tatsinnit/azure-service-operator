@@ -29,6 +29,9 @@ var UInt32Type = &PrimitiveType{"uint32", "0"}
 // StringType represents the Go string type
 var StringType = &PrimitiveType{"string", "\"\""}
 
+// ARMIDType represents the Go string type for an ARM ID
+var ARMIDType = &PrimitiveType{"armid", "\"\""}
+
 // FloatType represents the Go float64 type
 var FloatType = &PrimitiveType{"float64", "0"}
 
@@ -97,7 +100,7 @@ func (prim *PrimitiveType) String() string {
 }
 
 // WriteDebugDescription adds a description of this primitive type to the passed builder
-func (prim *PrimitiveType) WriteDebugDescription(builder *strings.Builder, _ TypeDefinitionSet) {
+func (prim *PrimitiveType) WriteDebugDescription(builder *strings.Builder, currentPackage PackageReference) {
 	if prim == nil {
 		builder.WriteString("<nilPrimitive>")
 		return

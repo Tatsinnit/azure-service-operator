@@ -4,30 +4,29 @@
 package v1alpha1api20210601storage
 
 import (
+	"fmt"
+	v20210601s "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1beta20210601storage"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
 	"github.com/pkg/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/conversion"
 )
-
-// +kubebuilder:rbac:groups=dbforpostgresql.azure.com,resources=flexibleserversconfigurations,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=dbforpostgresql.azure.com,resources={flexibleserversconfigurations/status,flexibleserversconfigurations/finalizers},verbs=get;update;patch
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Severity",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].severity"
 // +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].reason"
 // +kubebuilder:printcolumn:name="Message",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].message"
-//Storage version of v1alpha1api20210601.FlexibleServersConfiguration
-//Generated from: https://schema.management.azure.com/schemas/2021-06-01/Microsoft.DBforPostgreSQL.json#/resourceDefinitions/flexibleServers_configurations
+// Storage version of v1alpha1api20210601.FlexibleServersConfiguration
+// Deprecated version of FlexibleServersConfiguration. Use v1beta20210601.FlexibleServersConfiguration instead
 type FlexibleServersConfiguration struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec              FlexibleServersConfigurations_Spec `json:"spec,omitempty"`
-	Status            Configuration_Status               `json:"status,omitempty"`
+	Spec              FlexibleServers_Configuration_Spec `json:"spec,omitempty"`
+	Status            Configuration_STATUS               `json:"status,omitempty"`
 }
 
 var _ conditions.Conditioner = &FlexibleServersConfiguration{}
@@ -42,6 +41,28 @@ func (configuration *FlexibleServersConfiguration) SetConditions(conditions cond
 	configuration.Status.Conditions = conditions
 }
 
+var _ conversion.Convertible = &FlexibleServersConfiguration{}
+
+// ConvertFrom populates our FlexibleServersConfiguration from the provided hub FlexibleServersConfiguration
+func (configuration *FlexibleServersConfiguration) ConvertFrom(hub conversion.Hub) error {
+	source, ok := hub.(*v20210601s.FlexibleServersConfiguration)
+	if !ok {
+		return fmt.Errorf("expected dbforpostgresql/v1beta20210601storage/FlexibleServersConfiguration but received %T instead", hub)
+	}
+
+	return configuration.AssignProperties_From_FlexibleServersConfiguration(source)
+}
+
+// ConvertTo populates the provided hub FlexibleServersConfiguration from our FlexibleServersConfiguration
+func (configuration *FlexibleServersConfiguration) ConvertTo(hub conversion.Hub) error {
+	destination, ok := hub.(*v20210601s.FlexibleServersConfiguration)
+	if !ok {
+		return fmt.Errorf("expected dbforpostgresql/v1beta20210601storage/FlexibleServersConfiguration but received %T instead", hub)
+	}
+
+	return configuration.AssignProperties_To_FlexibleServersConfiguration(destination)
+}
+
 var _ genruntime.KubernetesResource = &FlexibleServersConfiguration{}
 
 // AzureName returns the Azure name of the resource
@@ -51,12 +72,12 @@ func (configuration *FlexibleServersConfiguration) AzureName() string {
 
 // GetAPIVersion returns the ARM API version of the resource. This is always "2021-06-01"
 func (configuration FlexibleServersConfiguration) GetAPIVersion() string {
-	return "2021-06-01"
+	return string(APIVersion_Value)
 }
 
-// GetResourceKind returns the kind of the resource
-func (configuration *FlexibleServersConfiguration) GetResourceKind() genruntime.ResourceKind {
-	return genruntime.ResourceKindNormal
+// GetResourceScope returns the scope of the resource
+func (configuration *FlexibleServersConfiguration) GetResourceScope() genruntime.ResourceScope {
+	return genruntime.ResourceScopeResourceGroup
 }
 
 // GetSpec returns the specification of this resource
@@ -76,7 +97,7 @@ func (configuration *FlexibleServersConfiguration) GetType() string {
 
 // NewEmptyStatus returns a new empty (blank) status
 func (configuration *FlexibleServersConfiguration) NewEmptyStatus() genruntime.ConvertibleStatus {
-	return &Configuration_Status{}
+	return &Configuration_STATUS{}
 }
 
 // Owner returns the ResourceReference of the owner, or nil if there is no owner
@@ -92,13 +113,13 @@ func (configuration *FlexibleServersConfiguration) Owner() *genruntime.ResourceR
 // SetStatus sets the status of this resource
 func (configuration *FlexibleServersConfiguration) SetStatus(status genruntime.ConvertibleStatus) error {
 	// If we have exactly the right type of status, assign it
-	if st, ok := status.(*Configuration_Status); ok {
+	if st, ok := status.(*Configuration_STATUS); ok {
 		configuration.Status = *st
 		return nil
 	}
 
 	// Convert status to required version
-	var st Configuration_Status
+	var st Configuration_STATUS
 	err := status.ConvertStatusTo(&st)
 	if err != nil {
 		return errors.Wrap(err, "failed to convert status")
@@ -108,8 +129,57 @@ func (configuration *FlexibleServersConfiguration) SetStatus(status genruntime.C
 	return nil
 }
 
-// Hub marks that this FlexibleServersConfiguration is the hub type for conversion
-func (configuration *FlexibleServersConfiguration) Hub() {}
+// AssignProperties_From_FlexibleServersConfiguration populates our FlexibleServersConfiguration from the provided source FlexibleServersConfiguration
+func (configuration *FlexibleServersConfiguration) AssignProperties_From_FlexibleServersConfiguration(source *v20210601s.FlexibleServersConfiguration) error {
+
+	// ObjectMeta
+	configuration.ObjectMeta = *source.ObjectMeta.DeepCopy()
+
+	// Spec
+	var spec FlexibleServers_Configuration_Spec
+	err := spec.AssignProperties_From_FlexibleServers_Configuration_Spec(&source.Spec)
+	if err != nil {
+		return errors.Wrap(err, "calling AssignProperties_From_FlexibleServers_Configuration_Spec() to populate field Spec")
+	}
+	configuration.Spec = spec
+
+	// Status
+	var status Configuration_STATUS
+	err = status.AssignProperties_From_Configuration_STATUS(&source.Status)
+	if err != nil {
+		return errors.Wrap(err, "calling AssignProperties_From_Configuration_STATUS() to populate field Status")
+	}
+	configuration.Status = status
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_FlexibleServersConfiguration populates the provided destination FlexibleServersConfiguration from our FlexibleServersConfiguration
+func (configuration *FlexibleServersConfiguration) AssignProperties_To_FlexibleServersConfiguration(destination *v20210601s.FlexibleServersConfiguration) error {
+
+	// ObjectMeta
+	destination.ObjectMeta = *configuration.ObjectMeta.DeepCopy()
+
+	// Spec
+	var spec v20210601s.FlexibleServers_Configuration_Spec
+	err := configuration.Spec.AssignProperties_To_FlexibleServers_Configuration_Spec(&spec)
+	if err != nil {
+		return errors.Wrap(err, "calling AssignProperties_To_FlexibleServers_Configuration_Spec() to populate field Spec")
+	}
+	destination.Spec = spec
+
+	// Status
+	var status v20210601s.Configuration_STATUS
+	err = configuration.Status.AssignProperties_To_Configuration_STATUS(&status)
+	if err != nil {
+		return errors.Wrap(err, "calling AssignProperties_To_Configuration_STATUS() to populate field Status")
+	}
+	destination.Status = status
+
+	// No error
+	return nil
+}
 
 // OriginalGVK returns a GroupValueKind for the original API version used to create the resource
 func (configuration *FlexibleServersConfiguration) OriginalGVK() *schema.GroupVersionKind {
@@ -121,16 +191,17 @@ func (configuration *FlexibleServersConfiguration) OriginalGVK() *schema.GroupVe
 }
 
 // +kubebuilder:object:root=true
-//Storage version of v1alpha1api20210601.FlexibleServersConfiguration
-//Generated from: https://schema.management.azure.com/schemas/2021-06-01/Microsoft.DBforPostgreSQL.json#/resourceDefinitions/flexibleServers_configurations
+// Storage version of v1alpha1api20210601.FlexibleServersConfiguration
+// Deprecated version of FlexibleServersConfiguration. Use v1beta20210601.FlexibleServersConfiguration instead
 type FlexibleServersConfigurationList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []FlexibleServersConfiguration `json:"items"`
 }
 
-//Storage version of v1alpha1api20210601.Configuration_Status
-type Configuration_Status struct {
+// Storage version of v1alpha1api20210601.Configuration_STATUS
+// Deprecated version of Configuration_STATUS. Use v1beta20210601.Configuration_STATUS instead
+type Configuration_STATUS struct {
 	AllowedValues          *string                `json:"allowedValues,omitempty"`
 	Conditions             []conditions.Condition `json:"conditions,omitempty"`
 	DataType               *string                `json:"dataType,omitempty"`
@@ -144,66 +215,389 @@ type Configuration_Status struct {
 	Name                   *string                `json:"name,omitempty"`
 	PropertyBag            genruntime.PropertyBag `json:"$propertyBag,omitempty"`
 	Source                 *string                `json:"source,omitempty"`
-	SystemData             *SystemData_Status     `json:"systemData,omitempty"`
+	SystemData             *SystemData_STATUS     `json:"systemData,omitempty"`
 	Type                   *string                `json:"type,omitempty"`
 	Unit                   *string                `json:"unit,omitempty"`
 	Value                  *string                `json:"value,omitempty"`
 }
 
-var _ genruntime.ConvertibleStatus = &Configuration_Status{}
+var _ genruntime.ConvertibleStatus = &Configuration_STATUS{}
 
-// ConvertStatusFrom populates our Configuration_Status from the provided source
-func (configuration *Configuration_Status) ConvertStatusFrom(source genruntime.ConvertibleStatus) error {
-	if source == configuration {
-		return errors.New("attempted conversion between unrelated implementations of github.com/Azure/azure-service-operator/v2/pkg/genruntime/ConvertibleStatus")
+// ConvertStatusFrom populates our Configuration_STATUS from the provided source
+func (configuration *Configuration_STATUS) ConvertStatusFrom(source genruntime.ConvertibleStatus) error {
+	src, ok := source.(*v20210601s.Configuration_STATUS)
+	if ok {
+		// Populate our instance from source
+		return configuration.AssignProperties_From_Configuration_STATUS(src)
 	}
 
-	return source.ConvertStatusTo(configuration)
-}
-
-// ConvertStatusTo populates the provided destination from our Configuration_Status
-func (configuration *Configuration_Status) ConvertStatusTo(destination genruntime.ConvertibleStatus) error {
-	if destination == configuration {
-		return errors.New("attempted conversion between unrelated implementations of github.com/Azure/azure-service-operator/v2/pkg/genruntime/ConvertibleStatus")
+	// Convert to an intermediate form
+	src = &v20210601s.Configuration_STATUS{}
+	err := src.ConvertStatusFrom(source)
+	if err != nil {
+		return errors.Wrap(err, "initial step of conversion in ConvertStatusFrom()")
 	}
 
-	return destination.ConvertStatusFrom(configuration)
+	// Update our instance from src
+	err = configuration.AssignProperties_From_Configuration_STATUS(src)
+	if err != nil {
+		return errors.Wrap(err, "final step of conversion in ConvertStatusFrom()")
+	}
+
+	return nil
 }
 
-//Storage version of v1alpha1api20210601.FlexibleServersConfigurations_Spec
-type FlexibleServersConfigurations_Spec struct {
-	//AzureName: The name of the resource in Azure. This is often the same as the name of the resource in Kubernetes but it
-	//doesn't have to be.
-	AzureName       string  `json:"azureName"`
+// ConvertStatusTo populates the provided destination from our Configuration_STATUS
+func (configuration *Configuration_STATUS) ConvertStatusTo(destination genruntime.ConvertibleStatus) error {
+	dst, ok := destination.(*v20210601s.Configuration_STATUS)
+	if ok {
+		// Populate destination from our instance
+		return configuration.AssignProperties_To_Configuration_STATUS(dst)
+	}
+
+	// Convert to an intermediate form
+	dst = &v20210601s.Configuration_STATUS{}
+	err := configuration.AssignProperties_To_Configuration_STATUS(dst)
+	if err != nil {
+		return errors.Wrap(err, "initial step of conversion in ConvertStatusTo()")
+	}
+
+	// Update dst from our instance
+	err = dst.ConvertStatusTo(destination)
+	if err != nil {
+		return errors.Wrap(err, "final step of conversion in ConvertStatusTo()")
+	}
+
+	return nil
+}
+
+// AssignProperties_From_Configuration_STATUS populates our Configuration_STATUS from the provided source Configuration_STATUS
+func (configuration *Configuration_STATUS) AssignProperties_From_Configuration_STATUS(source *v20210601s.Configuration_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// AllowedValues
+	configuration.AllowedValues = genruntime.ClonePointerToString(source.AllowedValues)
+
+	// Conditions
+	configuration.Conditions = genruntime.CloneSliceOfCondition(source.Conditions)
+
+	// DataType
+	configuration.DataType = genruntime.ClonePointerToString(source.DataType)
+
+	// DefaultValue
+	configuration.DefaultValue = genruntime.ClonePointerToString(source.DefaultValue)
+
+	// Description
+	configuration.Description = genruntime.ClonePointerToString(source.Description)
+
+	// DocumentationLink
+	configuration.DocumentationLink = genruntime.ClonePointerToString(source.DocumentationLink)
+
+	// Id
+	configuration.Id = genruntime.ClonePointerToString(source.Id)
+
+	// IsConfigPendingRestart
+	if source.IsConfigPendingRestart != nil {
+		isConfigPendingRestart := *source.IsConfigPendingRestart
+		configuration.IsConfigPendingRestart = &isConfigPendingRestart
+	} else {
+		configuration.IsConfigPendingRestart = nil
+	}
+
+	// IsDynamicConfig
+	if source.IsDynamicConfig != nil {
+		isDynamicConfig := *source.IsDynamicConfig
+		configuration.IsDynamicConfig = &isDynamicConfig
+	} else {
+		configuration.IsDynamicConfig = nil
+	}
+
+	// IsReadOnly
+	if source.IsReadOnly != nil {
+		isReadOnly := *source.IsReadOnly
+		configuration.IsReadOnly = &isReadOnly
+	} else {
+		configuration.IsReadOnly = nil
+	}
+
+	// Name
+	configuration.Name = genruntime.ClonePointerToString(source.Name)
+
+	// Source
+	configuration.Source = genruntime.ClonePointerToString(source.Source)
+
+	// SystemData
+	if source.SystemData != nil {
+		var systemDatum SystemData_STATUS
+		err := systemDatum.AssignProperties_From_SystemData_STATUS(source.SystemData)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_From_SystemData_STATUS() to populate field SystemData")
+		}
+		configuration.SystemData = &systemDatum
+	} else {
+		configuration.SystemData = nil
+	}
+
+	// Type
+	configuration.Type = genruntime.ClonePointerToString(source.Type)
+
+	// Unit
+	configuration.Unit = genruntime.ClonePointerToString(source.Unit)
+
+	// Value
+	configuration.Value = genruntime.ClonePointerToString(source.Value)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		configuration.PropertyBag = propertyBag
+	} else {
+		configuration.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_Configuration_STATUS populates the provided destination Configuration_STATUS from our Configuration_STATUS
+func (configuration *Configuration_STATUS) AssignProperties_To_Configuration_STATUS(destination *v20210601s.Configuration_STATUS) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(configuration.PropertyBag)
+
+	// AllowedValues
+	destination.AllowedValues = genruntime.ClonePointerToString(configuration.AllowedValues)
+
+	// Conditions
+	destination.Conditions = genruntime.CloneSliceOfCondition(configuration.Conditions)
+
+	// DataType
+	destination.DataType = genruntime.ClonePointerToString(configuration.DataType)
+
+	// DefaultValue
+	destination.DefaultValue = genruntime.ClonePointerToString(configuration.DefaultValue)
+
+	// Description
+	destination.Description = genruntime.ClonePointerToString(configuration.Description)
+
+	// DocumentationLink
+	destination.DocumentationLink = genruntime.ClonePointerToString(configuration.DocumentationLink)
+
+	// Id
+	destination.Id = genruntime.ClonePointerToString(configuration.Id)
+
+	// IsConfigPendingRestart
+	if configuration.IsConfigPendingRestart != nil {
+		isConfigPendingRestart := *configuration.IsConfigPendingRestart
+		destination.IsConfigPendingRestart = &isConfigPendingRestart
+	} else {
+		destination.IsConfigPendingRestart = nil
+	}
+
+	// IsDynamicConfig
+	if configuration.IsDynamicConfig != nil {
+		isDynamicConfig := *configuration.IsDynamicConfig
+		destination.IsDynamicConfig = &isDynamicConfig
+	} else {
+		destination.IsDynamicConfig = nil
+	}
+
+	// IsReadOnly
+	if configuration.IsReadOnly != nil {
+		isReadOnly := *configuration.IsReadOnly
+		destination.IsReadOnly = &isReadOnly
+	} else {
+		destination.IsReadOnly = nil
+	}
+
+	// Name
+	destination.Name = genruntime.ClonePointerToString(configuration.Name)
+
+	// Source
+	destination.Source = genruntime.ClonePointerToString(configuration.Source)
+
+	// SystemData
+	if configuration.SystemData != nil {
+		var systemDatum v20210601s.SystemData_STATUS
+		err := configuration.SystemData.AssignProperties_To_SystemData_STATUS(&systemDatum)
+		if err != nil {
+			return errors.Wrap(err, "calling AssignProperties_To_SystemData_STATUS() to populate field SystemData")
+		}
+		destination.SystemData = &systemDatum
+	} else {
+		destination.SystemData = nil
+	}
+
+	// Type
+	destination.Type = genruntime.ClonePointerToString(configuration.Type)
+
+	// Unit
+	destination.Unit = genruntime.ClonePointerToString(configuration.Unit)
+
+	// Value
+	destination.Value = genruntime.ClonePointerToString(configuration.Value)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// Storage version of v1alpha1api20210601.FlexibleServers_Configuration_Spec
+type FlexibleServers_Configuration_Spec struct {
+	// AzureName: The name of the resource in Azure. This is often the same as the name of the resource in Kubernetes but it
+	// doesn't have to be.
+	AzureName       string  `json:"azureName,omitempty"`
 	Location        *string `json:"location,omitempty"`
-	OriginalVersion string  `json:"originalVersion"`
+	OriginalVersion string  `json:"originalVersion,omitempty"`
 
 	// +kubebuilder:validation:Required
-	Owner       genruntime.KnownResourceReference `group:"dbforpostgresql.azure.com" json:"owner" kind:"FlexibleServer"`
-	PropertyBag genruntime.PropertyBag            `json:"$propertyBag,omitempty"`
-	Source      *string                           `json:"source,omitempty"`
-	Tags        map[string]string                 `json:"tags,omitempty"`
-	Value       *string                           `json:"value,omitempty"`
+	// Owner: The owner of the resource. The owner controls where the resource goes when it is deployed. The owner also
+	// controls the resources lifecycle. When the owner is deleted the resource will also be deleted. Owner is expected to be a
+	// reference to a dbforpostgresql.azure.com/FlexibleServer resource
+	Owner       *genruntime.KnownResourceReference `group:"dbforpostgresql.azure.com" json:"owner,omitempty" kind:"FlexibleServer"`
+	PropertyBag genruntime.PropertyBag             `json:"$propertyBag,omitempty"`
+	Source      *string                            `json:"source,omitempty"`
+	Tags        map[string]string                  `json:"tags,omitempty"`
+	Value       *string                            `json:"value,omitempty"`
 }
 
-var _ genruntime.ConvertibleSpec = &FlexibleServersConfigurations_Spec{}
+var _ genruntime.ConvertibleSpec = &FlexibleServers_Configuration_Spec{}
 
-// ConvertSpecFrom populates our FlexibleServersConfigurations_Spec from the provided source
-func (configurations *FlexibleServersConfigurations_Spec) ConvertSpecFrom(source genruntime.ConvertibleSpec) error {
-	if source == configurations {
-		return errors.New("attempted conversion between unrelated implementations of github.com/Azure/azure-service-operator/v2/pkg/genruntime/ConvertibleSpec")
+// ConvertSpecFrom populates our FlexibleServers_Configuration_Spec from the provided source
+func (configuration *FlexibleServers_Configuration_Spec) ConvertSpecFrom(source genruntime.ConvertibleSpec) error {
+	src, ok := source.(*v20210601s.FlexibleServers_Configuration_Spec)
+	if ok {
+		// Populate our instance from source
+		return configuration.AssignProperties_From_FlexibleServers_Configuration_Spec(src)
 	}
 
-	return source.ConvertSpecTo(configurations)
+	// Convert to an intermediate form
+	src = &v20210601s.FlexibleServers_Configuration_Spec{}
+	err := src.ConvertSpecFrom(source)
+	if err != nil {
+		return errors.Wrap(err, "initial step of conversion in ConvertSpecFrom()")
+	}
+
+	// Update our instance from src
+	err = configuration.AssignProperties_From_FlexibleServers_Configuration_Spec(src)
+	if err != nil {
+		return errors.Wrap(err, "final step of conversion in ConvertSpecFrom()")
+	}
+
+	return nil
 }
 
-// ConvertSpecTo populates the provided destination from our FlexibleServersConfigurations_Spec
-func (configurations *FlexibleServersConfigurations_Spec) ConvertSpecTo(destination genruntime.ConvertibleSpec) error {
-	if destination == configurations {
-		return errors.New("attempted conversion between unrelated implementations of github.com/Azure/azure-service-operator/v2/pkg/genruntime/ConvertibleSpec")
+// ConvertSpecTo populates the provided destination from our FlexibleServers_Configuration_Spec
+func (configuration *FlexibleServers_Configuration_Spec) ConvertSpecTo(destination genruntime.ConvertibleSpec) error {
+	dst, ok := destination.(*v20210601s.FlexibleServers_Configuration_Spec)
+	if ok {
+		// Populate destination from our instance
+		return configuration.AssignProperties_To_FlexibleServers_Configuration_Spec(dst)
 	}
 
-	return destination.ConvertSpecFrom(configurations)
+	// Convert to an intermediate form
+	dst = &v20210601s.FlexibleServers_Configuration_Spec{}
+	err := configuration.AssignProperties_To_FlexibleServers_Configuration_Spec(dst)
+	if err != nil {
+		return errors.Wrap(err, "initial step of conversion in ConvertSpecTo()")
+	}
+
+	// Update dst from our instance
+	err = dst.ConvertSpecTo(destination)
+	if err != nil {
+		return errors.Wrap(err, "final step of conversion in ConvertSpecTo()")
+	}
+
+	return nil
+}
+
+// AssignProperties_From_FlexibleServers_Configuration_Spec populates our FlexibleServers_Configuration_Spec from the provided source FlexibleServers_Configuration_Spec
+func (configuration *FlexibleServers_Configuration_Spec) AssignProperties_From_FlexibleServers_Configuration_Spec(source *v20210601s.FlexibleServers_Configuration_Spec) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
+
+	// AzureName
+	configuration.AzureName = source.AzureName
+
+	// Location
+	configuration.Location = genruntime.ClonePointerToString(source.Location)
+
+	// OriginalVersion
+	configuration.OriginalVersion = source.OriginalVersion
+
+	// Owner
+	if source.Owner != nil {
+		owner := source.Owner.Copy()
+		configuration.Owner = &owner
+	} else {
+		configuration.Owner = nil
+	}
+
+	// Source
+	configuration.Source = genruntime.ClonePointerToString(source.Source)
+
+	// Tags
+	configuration.Tags = genruntime.CloneMapOfStringToString(source.Tags)
+
+	// Value
+	configuration.Value = genruntime.ClonePointerToString(source.Value)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		configuration.PropertyBag = propertyBag
+	} else {
+		configuration.PropertyBag = nil
+	}
+
+	// No error
+	return nil
+}
+
+// AssignProperties_To_FlexibleServers_Configuration_Spec populates the provided destination FlexibleServers_Configuration_Spec from our FlexibleServers_Configuration_Spec
+func (configuration *FlexibleServers_Configuration_Spec) AssignProperties_To_FlexibleServers_Configuration_Spec(destination *v20210601s.FlexibleServers_Configuration_Spec) error {
+	// Clone the existing property bag
+	propertyBag := genruntime.NewPropertyBag(configuration.PropertyBag)
+
+	// AzureName
+	destination.AzureName = configuration.AzureName
+
+	// Location
+	destination.Location = genruntime.ClonePointerToString(configuration.Location)
+
+	// OriginalVersion
+	destination.OriginalVersion = configuration.OriginalVersion
+
+	// Owner
+	if configuration.Owner != nil {
+		owner := configuration.Owner.Copy()
+		destination.Owner = &owner
+	} else {
+		destination.Owner = nil
+	}
+
+	// Source
+	destination.Source = genruntime.ClonePointerToString(configuration.Source)
+
+	// Tags
+	destination.Tags = genruntime.CloneMapOfStringToString(configuration.Tags)
+
+	// Value
+	destination.Value = genruntime.ClonePointerToString(configuration.Value)
+
+	// Update the property bag
+	if len(propertyBag) > 0 {
+		destination.PropertyBag = propertyBag
+	} else {
+		destination.PropertyBag = nil
+	}
+
+	// No error
+	return nil
 }
 
 func init() {

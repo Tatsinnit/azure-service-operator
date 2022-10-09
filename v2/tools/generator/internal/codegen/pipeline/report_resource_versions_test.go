@@ -9,21 +9,29 @@ import (
 	"strings"
 	"testing"
 
+	. "github.com/onsi/gomega"
 	"github.com/sebdah/goldie/v2"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
+	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/config"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/test"
 )
 
 func TestGolden_ReportResourceVersions(t *testing.T) {
 	t.Parallel()
-	g := goldie.New(t)
+	g := NewGomegaWithT(t)
+	gold := goldie.New(t)
 
+	person2020desc := []string{
+		"This is an older version",
+		"of the Person resource",
+	}
 	person2020 := test.CreateResource(
 		test.Pkg2020,
 		"Person",
 		test.CreateSpec(test.Pkg2020, "Person"),
-		test.CreateStatus(test.Pkg2020, "Person"))
+		test.CreateStatus(test.Pkg2020, "Person")).
+		WithDescription(person2020desc)
 
 	address2020 := test.CreateResource(
 		test.Pkg2020,
@@ -31,11 +39,16 @@ func TestGolden_ReportResourceVersions(t *testing.T) {
 		test.CreateSpec(test.Pkg2020, "Address"),
 		test.CreateStatus(test.Pkg2020, "Address"))
 
+	person2021desc := []string{
+		"This is a newer version",
+		"of the Person resource",
+	}
 	person2021 := test.CreateResource(
 		test.Pkg2021,
 		"Person",
 		test.CreateSpec(test.Pkg2021, "Person"),
-		test.CreateStatus(test.Pkg2021, "Person"))
+		test.CreateStatus(test.Pkg2021, "Person")).
+		WithDescription(person2021desc)
 
 	address2021 := test.CreateResource(
 		test.Pkg2021,
@@ -43,13 +56,43 @@ func TestGolden_ReportResourceVersions(t *testing.T) {
 		test.CreateSpec(test.Pkg2021, "Address"),
 		test.CreateStatus(test.Pkg2021, "Address"))
 
-	defs := make(astmodel.TypeDefinitionSet)
-	defs.AddAll(person2020, address2020, person2021, address2021)
+	batch2021 := test.CreateResource(
+		test.BatchPkgBeta2021,
+		"BatchAccount",
+		test.CreateSpec(test.BatchPkgBeta2021, "BatchAccount"),
+		test.CreateStatus(test.BatchPkgBeta2021, "BatchAccount"))
 
-	report := NewResourceVersionsReport(defs)
+	defs := make(astmodel.TypeDefinitionSet)
+	defs.AddAll(person2020, address2020, person2021, address2021, batch2021)
+
+	// utility function used to configure a which ASO version from which a resource was supported
+	supportedFrom := func(from string) func(tc *config.TypeConfiguration) error {
+		return func(tc *config.TypeConfiguration) error {
+			tc.SetSupportedFrom(from)
+			return nil
+		}
+	}
+
+	cfg := config.NewConfiguration()
+	cfg.RootURL = "https://github.com/Azure/azure-service-operator/tree/main/v2"
+	cfg.SamplesPath = "../../../../../config/samples"
+
+	omc := cfg.ObjectModelConfiguration
+	g.Expect(omc.ModifyType(person2020.Name(), supportedFrom("beta.0"))).To(Succeed())
+	g.Expect(omc.ModifyType(address2020.Name(), supportedFrom("beta.0"))).To(Succeed())
+	g.Expect(omc.ModifyType(person2021.Name(), supportedFrom("beta.2"))).To(Succeed())
+	g.Expect(omc.ModifyType(address2021.Name(), supportedFrom("beta.2"))).To(Succeed())
+	g.Expect(omc.ModifyType(batch2021.Name(), supportedFrom("beta.2"))).To(Succeed())
+
+	srr := cfg.SupportedResourcesReport
+	srr.Introduction = "These are the resources with Azure Service Operator support."
+
+	report := NewResourceVersionsReport(defs, cfg)
 
 	var buffer strings.Builder
-	report.WriteToBuffer(&buffer, "https://github.com/Azure/azure-service-operator/tree/main/v2/config/samples")
+	g.Expect(report.WriteToBuffer(
+		&buffer)).
+		To(Succeed())
 
-	g.Assert(t, t.Name(), []byte(buffer.String()))
+	gold.Assert(t, t.Name(), []byte(buffer.String()))
 }

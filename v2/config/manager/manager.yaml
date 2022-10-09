@@ -1,9 +1,13 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  labels:
-    control-plane: controller-manager
   name: system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: default
+  namespace: system
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -23,11 +27,25 @@ spec:
       labels:
         aadpodidbinding: aso-manager-binding
         control-plane: controller-manager
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
     spec:
+      serviceAccountName: default
       containers:
       - args:
         - --enable-leader-election
         - --v=2
+        ports:
+          - containerPort: 8081
+            name: liveness-port
+            protocol: TCP
+          - containerPort: 8080
+            name: metrics-port
+            protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
         image: controller:latest
         name: manager
         resources:

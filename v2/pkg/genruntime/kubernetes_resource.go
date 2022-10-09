@@ -8,17 +8,18 @@ package genruntime
 import (
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/runtime"
-
-	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-// KubernetesResource is an Azure resource. This interface contains the common set of
-// methods that apply to all ASO resources.
-type KubernetesResource interface {
-	conditions.Conditioner
-
+type ARMOwned interface {
 	// Owner returns the ResourceReference of the owner, or nil if there is no owner
 	Owner() *ResourceReference
+}
+
+// KubernetesResource is an Azure resource. This interface contains the common set of
+// methods that apply to all ASO ARM resources.
+type KubernetesResource interface {
+	ARMOwned
 
 	// TODO: I think we need this?
 	// KnownOwner() *KnownResourceReference
@@ -30,8 +31,8 @@ type KubernetesResource interface {
 	// Microsoft.Network/networkSecurityGroups/securityRules
 	GetType() string
 
-	// GetResourceKind returns the ResourceKind of the resource.
-	GetResourceKind() ResourceKind
+	// GetResourceScope returns the ResourceScope of the resource.
+	GetResourceScope() ResourceScope
 
 	// Some types, but not all, have a corresponding:
 	// 	SetAzureName(name string)
@@ -56,34 +57,37 @@ type KubernetesResource interface {
 // NewEmptyVersionedResource returns a new blank resource based on the passed metaObject; the original API version used
 // (if available) from when the resource was first created is used to identify the version to return.
 // Returns an empty resource.
-func NewEmptyVersionedResource(metaObject MetaObject, scheme *runtime.Scheme) (MetaObject, error) {
-	// GVK of our current object
-	currentGVK := metaObject.GetObjectKind().GroupVersionKind()
+func NewEmptyVersionedResource(metaObject ARMMetaObject, scheme *runtime.Scheme) (ARMMetaObject, error) {
+	return NewEmptyVersionedResourceFromGVK(scheme, GetOriginalGVK(metaObject))
+}
 
-	// GVK that we'll return
-	resultGVK := currentGVK
-
-	// If our current resource is aware of its original GVK, use that for our result
-	aware, ok := metaObject.(GroupVersionKindAware)
-	if ok {
-		resultGVK = *aware.OriginalGVK()
-	}
-
+// NewEmptyVersionedResourceFromGVK creates a new empty versioned resource from the specified GVK
+func NewEmptyVersionedResourceFromGVK(scheme *runtime.Scheme, gvk schema.GroupVersionKind) (ARMMetaObject, error) {
 	// Create an empty resource at the desired version
-	rsrc, err := scheme.New(resultGVK)
+	rsrc, err := scheme.New(gvk)
 	if err != nil {
-		return nil, errors.Wrapf(err, "unable to create new %s", resultGVK)
+		return nil, errors.Wrapf(err, "unable to create new %s", gvk)
 	}
 
 	// Convert it to our interface
-	mo, ok := rsrc.(MetaObject)
+	mo, ok := rsrc.(ARMMetaObject)
 	if !ok {
-		return nil, errors.Errorf("expected resource %s to implement genruntime.MetaObject", resultGVK)
+		return nil, errors.Errorf("expected resource %s to implement genruntime.ARMMetaObject", gvk)
 	}
 
 	// Ensure GVK is populated
-	mo.GetObjectKind().SetGroupVersionKind(resultGVK)
+	mo.GetObjectKind().SetGroupVersionKind(gvk)
 
 	// Return the empty resource
 	return mo, nil
+}
+
+// GetAPIVersion returns the ARM API version that should be used with the resource
+func GetAPIVersion(metaObject ARMMetaObject, scheme *runtime.Scheme) (string, error) {
+	rsrc, err := NewEmptyVersionedResource(metaObject, scheme)
+	if err != nil {
+		return "", errors.Wrapf(err, "unable return API version for %s", metaObject.GetObjectKind().GroupVersionKind())
+	}
+
+	return rsrc.GetAPIVersion(), nil
 }

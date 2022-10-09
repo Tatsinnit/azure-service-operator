@@ -7,11 +7,9 @@ package pipeline
 
 import (
 	"context"
-
-	"github.com/pkg/errors"
-
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/testcases"
+	"github.com/pkg/errors"
 
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 )
@@ -68,9 +66,14 @@ func makeObjectSerializationTestCaseFactory(idFactory astmodel.IdentifierFactory
 
 // NeedsTest returns true if we should generate a testcase for the specified definition
 func (s *objectSerializationTestCaseFactory) NeedsTest(def astmodel.TypeDefinition) bool {
-	_, ok := astmodel.AsPropertyContainer(def.Type())
+	pc, ok := astmodel.AsPropertyContainer(def.Type())
 	if !ok {
 		// Can only generate tests for property containers
+		return false
+	}
+
+	// No test needed for types with no properties
+	if len(pc.Properties().AsSlice()) == 0 {
 		return false
 	}
 
@@ -98,6 +101,26 @@ func (s *objectSerializationTestCaseFactory) AddTestTo(def astmodel.TypeDefiniti
 
 	isOneOf := astmodel.OneOfFlag.IsOn(def.Type()) // this is ugly but can’t do much better right now
 
+	// How many tests we want to run for resources
+	const resourceTestCount = 20
+
+	// How many tests to run just on spec types (gopter default is 100)
+	const specTestCount = 100 - resourceTestCount
+
+	// How many tests to run just on status types (gopter default is 100)
+	const statusTestCount = 100 - resourceTestCount
+
 	testcase := testcases.NewJSONSerializationTestCase(def.Name(), container, isOneOf, s.idFactory)
+	if _, isResource := astmodel.AsResourceType(def.Type()); isResource {
+		// Don't need to test resources many times, the spec and status types are tested independently
+		testcase.SetMinSuccessfulTests(resourceTestCount)
+	} else if def.Name().IsSpec() {
+		// Reduce count of Spec and Status tests to reflect those done by the resource tests
+		testcase.SetMinSuccessfulTests(specTestCount)
+	} else if def.Name().IsStatus() {
+		// Reduce count of Spec and Status tests to reflect those done by the resource tests
+		testcase.SetMinSuccessfulTests(statusTestCount)
+	}
+
 	return s.injector.Inject(def, testcase)
 }

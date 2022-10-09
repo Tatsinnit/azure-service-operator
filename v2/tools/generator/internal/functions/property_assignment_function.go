@@ -12,6 +12,7 @@ import (
 
 	"github.com/dave/dst"
 	"github.com/pkg/errors"
+	"golang.org/x/exp/maps"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
@@ -43,6 +44,8 @@ type PropertyAssignmentFunction struct {
 	readsFromPropertyBag bool
 	// writesToPropertyBag keeps track of whether we will be writing property values into a property bag
 	writesToPropertyBag bool
+	// packageReferences is our set of referenced packages
+	packageReferences *astmodel.PackageReferenceSet
 }
 
 // StoragePropertyConversion represents a function that generates the correct AST to convert a single property value
@@ -88,6 +91,10 @@ func NewPropertyAssignmentFunction(
 		conversions:        make(map[string]StoragePropertyConversion),
 		receiverName:       receiverName,
 		parameterName:      parameterName,
+		packageReferences: astmodel.NewPackageReferenceSet(
+			astmodel.GitHubErrorsReference,
+			astmodel.GenRuntimeReference,
+			otherDefinition.Name().PackageReference),
 	}
 
 	// Flag receiver and parameter names as used
@@ -106,11 +113,13 @@ func NewPropertyAssignmentFunction(
 
 	result.conversionContext = conversionContext.WithFunctionName(result.Name()).
 		WithDirection(direction).
-		WithPropertyBag(propertyBagName)
+		WithPropertyBag(propertyBagName).
+		WithPackageReferenceSet(result.packageReferences)
 
 	err := result.createConversions(sourceEndpoints, destinationEndpoints)
 	if err != nil {
-		return nil, errors.Wrapf(err, "creating '%s()'", result.Name())
+		parameterType := astmodel.DebugDescription(otherDefinition.Name(), receiver.Name().PackageReference)
+		return nil, errors.Wrapf(err, "creating '%s(%s)'", result.Name(), parameterType)
 	}
 
 	return result, nil
@@ -123,12 +132,7 @@ func (fn *PropertyAssignmentFunction) Name() string {
 
 // RequiredPackageReferences returns the set of package references required by this function
 func (fn *PropertyAssignmentFunction) RequiredPackageReferences() *astmodel.PackageReferenceSet {
-	result := astmodel.NewPackageReferenceSet(
-		astmodel.GitHubErrorsReference,
-		astmodel.GenRuntimeReference,
-		fn.otherDefinition.Name().PackageReference)
-
-	return result
+	return fn.packageReferences
 }
 
 // References returns the set of types referenced by this function
@@ -235,8 +239,8 @@ func (fn *PropertyAssignmentFunction) generateBody(
 // source is the name of the source to read the property bag from
 func (fn *PropertyAssignmentFunction) createPropertyBagPrologue(
 	source string,
-	generationContext *astmodel.CodeGenerationContext) []dst.Stmt {
-
+	generationContext *astmodel.CodeGenerationContext,
+) []dst.Stmt {
 	sourcePropertyBag, sourcePropertyBagFound := fn.findPropertyBagProperty(fn.sourceType())
 	_, destinationPropertyBagFound := fn.findPropertyBagProperty(fn.destinationType())
 
@@ -290,8 +294,8 @@ func (fn *PropertyAssignmentFunction) createPropertyBagPrologue(
 //     >  Otherwise we need to store our current property bag there
 //   o Otherwise we do nothing
 func (fn *PropertyAssignmentFunction) propertyBagEpilogue(
-	destination string) []dst.Stmt {
-
+	destination string,
+) []dst.Stmt {
 	if prop, found := fn.findPropertyBagProperty(fn.destinationType()); found {
 
 		bagId := dst.NewIdent(fn.conversionContext.PropertyBagName())
@@ -321,14 +325,12 @@ func (fn *PropertyAssignmentFunction) generateAssignments(
 	parameter string,
 	source dst.Expr,
 	destination dst.Expr,
-	generationContext *astmodel.CodeGenerationContext) []dst.Stmt {
+	generationContext *astmodel.CodeGenerationContext,
+) []dst.Stmt {
 	var result []dst.Stmt
 
 	// Find all the properties for which we have a conversion
-	var properties []string
-	for p := range fn.conversions {
-		properties = append(properties, p)
-	}
+	properties := maps.Keys(fn.conversions)
 
 	// Sort the properties into alphabetical order to ensure deterministic generation
 	sort.Strings(properties)
@@ -355,8 +357,8 @@ func (fn *PropertyAssignmentFunction) generateAssignments(
 // our other type and generating conversions where possible
 func (fn *PropertyAssignmentFunction) createConversions(
 	sourceEndpoints conversions.ReadableConversionEndpointSet,
-	destinationEndpoints conversions.WritableConversionEndpointSet) error {
-
+	destinationEndpoints conversions.WritableConversionEndpointSet,
+) error {
 	for destinationName, destinationEndpoint := range destinationEndpoints {
 		sourceEndpoint, ok := sourceEndpoints[destinationName]
 
@@ -387,9 +389,12 @@ func (fn *PropertyAssignmentFunction) createConversions(
 // conversion functions in priority order. If no valid conversion can be created an error is returned.
 func (fn *PropertyAssignmentFunction) createConversion(
 	sourceEndpoint *conversions.ReadableConversionEndpoint,
-	destinationEndpoint *conversions.WritableConversionEndpoint) (StoragePropertyConversion, error) {
-
-	conversion, err := conversions.CreateTypeConversion(sourceEndpoint.Endpoint(), destinationEndpoint.Endpoint(), fn.conversionContext)
+	destinationEndpoint *conversions.WritableConversionEndpoint,
+) (StoragePropertyConversion, error) {
+	conversion, err := conversions.CreateTypeConversion(
+		sourceEndpoint.Endpoint(),
+		destinationEndpoint.Endpoint(),
+		fn.conversionContext)
 	if err != nil {
 		return nil, errors.Wrapf(
 			err,
@@ -411,7 +416,7 @@ func (fn *PropertyAssignmentFunction) createConversion(
 // We recognize the property bag by type, so that the name can vary to avoid collisions with other properties if needed.
 func (fn *PropertyAssignmentFunction) findPropertyBagProperty(instance astmodel.Type) (*astmodel.PropertyDefinition, bool) {
 	if container, ok := astmodel.AsPropertyContainer(instance); ok {
-		for _, prop := range container.Properties() {
+		for _, prop := range container.Properties().Copy() {
 			if astmodel.TypeEquals(prop.PropertyType(), astmodel.PropertyBagType) {
 				return prop, true
 			}

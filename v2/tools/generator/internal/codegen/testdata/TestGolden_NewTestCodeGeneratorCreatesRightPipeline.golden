@@ -6,31 +6,37 @@ allof-anyof-objects                                  Convert allOf and oneOf to 
 flattenResources                                     Flatten nested resource types
 augmentSpecWithStatus                                Merge information from Status into Spec
 stripUnused                                          Strip unused types for test
+removeAliases                                        Remove type aliases
+pluralizeNames                                       Improve resource pluralization
 nameTypes                                            Name inner types for CRD
 propertyRewrites                                     Modify property types using configured transforms
 removeResourceScope                                  Remove scope from all resources
 makeStatusPropertiesOptional                         Force all status properties to be optional
 removeStatusPropertyValidation                       Remove validation from all status properties
+transformValidatedFloats                             Transform validated 'spec' float type values to validated integer types for compatibility with controller-gen
 unrollRecursiveTypes                                 Unroll directly recursive types since they are not supported by controller-gen
 determineResourceOwnership                           Determine ARM resource relationships
 removeAliases                                        Remove type aliases
-pluralizeNames                                       Improve resource pluralization
 stripUnused                                          Strip unused types for test
 assertTypesStructureValid                            Verify that all local TypeNames refer to a type
 removeTypeProperty                                   Remove the ARM type property and instead augment the ResourceType with it
 removeAPIVersionProperty                             Remove the ARM API version property and instead augment the ResourceType with it
+add-api-version-enums                                Add enums for API Versions in each package
 verifyNoErroredTypes                                 Verify there are no ErroredType's containing errors
 stripUnused                                          Strip unused types for test
 replaceAnyTypeWithJSON                               Replace properties using interface{} with arbitrary JSON
 addSecrets                                azure      Replace properties flagged as secret with genruntime.SecretReference
+makeOneOfDiscriminantRequired             azure      Fix one of types to a discriminator which is not omitempty/optional
 applyKubernetesResourceInterface          azure      Add the KubernetesResource interface to every resource
 flattenProperties                                    Apply flattening to properties marked for flattening
 stripUnused                                          Strip unused types for test
 addStatusConditions                       azure      Add the property 'Conditions' to all status types and implements genruntime.Conditioner on all resources
 addOperatorSpec                           azure      Adds the property 'OperatorSpec' to all Spec types that require it
+addKubernetesExporter                     azure      Adds the KubernetesExporter interface to resources that need it
 applyDefaulterAndValidatorInterfaces      azure      Add the admission.Defaulter and admission.Validator interfaces to each resource that requires them
-createConversionGraph                     azure      Create the graph of conversions between versions of each resource group
 injectOriginalVersionFunction             azure      Inject the function OriginalVersion() into each Spec type
+createStorageTypes                        azure      Create storage versions of CRD types
+createConversionGraph                     azure      Create the graph of conversions between versions of each resource group
 injectOriginalVersionProperty             azure      Inject the property OriginalVersion into each Storage Spec type
 injectPropertyAssignmentFunctions         azure      Inject property assignment functions AssignFrom() and AssignTo() into resources and objects
 implementConvertibleSpecInterface         azure      Inject ConvertSpecTo() and ConvertSpecFrom() to implement genruntime.ConvertibleSpec on each Spec type

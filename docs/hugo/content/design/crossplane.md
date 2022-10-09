@@ -1,6 +1,8 @@
-# Thoughts on performing provider-azure code generation for Crossplane
-
-The patterns identified below were extrapolated from [the Crossplane VNET spec](https://github.com/crossplane/provider-azure/blob/master/config/crd/network.azure.crossplane.io_virtualnetworks.yaml).
+---
+title: Code generation for Crossplane
+linktitle: Crossplane support
+---
+The patterns identified below were extrapolated from [the Crossplane VNET spec](https://github.com/crossplane-contrib/provider-azure/blob/master/package/crds/network.azure.crossplane.io_virtualnetworks.yaml).
 
 ## General notes
 

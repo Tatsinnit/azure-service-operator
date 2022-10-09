@@ -13,30 +13,32 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	"k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/conversion"
 
-	documentdb "github.com/Azure/azure-service-operator/v2/api/documentdb/v1alpha1api20210515storage"
+	documentdb "github.com/Azure/azure-service-operator/v2/api/documentdb/v1beta20210515storage"
 	"github.com/Azure/azure-service-operator/v2/internal/genericarmclient"
 	. "github.com/Azure/azure-service-operator/v2/internal/logging"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
-	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/extensions"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/secrets"
 )
 
-var _ extensions.SecretsRetriever = &DatabaseAccountExtension{}
+var _ genruntime.KubernetesExporter = &DatabaseAccountExtension{}
 
-func (ext *DatabaseAccountExtension) RetrieveSecrets(
+func (ext *DatabaseAccountExtension) ExportKubernetesResources(
 	ctx context.Context,
 	obj genruntime.MetaObject,
 	armClient *genericarmclient.GenericClient,
-	log logr.Logger) ([]*v1.Secret, error) {
+	log logr.Logger) ([]client.Object, error) {
 
+	// This has to be the current hub storage version. It will need to be updated
+	// if the hub storage version changes.
 	typedObj, ok := obj.(*documentdb.DatabaseAccount)
 	if !ok {
-		return nil, errors.Errorf("cannot run on unknown resource type %T", obj)
+		return nil, errors.Errorf("cannot run on unknown resource type %T, expected *documentdb.DatabaseAccount", obj)
 	}
 
-	// Type assert that we are the hub type. This should fail to compile if
+	// Type assert that we are the hub type. This will fail to compile if
 	// the hub type has been changed but this extension has not
 	var _ conversion.Hub = typedObj
 
@@ -46,7 +48,7 @@ func (ext *DatabaseAccountExtension) RetrieveSecrets(
 		return nil, nil
 	}
 
-	id, err := genruntime.GetAndParseResourceID(obj)
+	id, err := genruntime.GetAndParseResourceID(typedObj)
 	if err != nil {
 		return nil, err
 	}
@@ -57,12 +59,16 @@ func (ext *DatabaseAccountExtension) RetrieveSecrets(
 		subscription := armClient.SubscriptionID()
 		// Using armClient.ClientOptions() here ensures we share the same HTTP connection, so this is not opening a new
 		// connection each time through
-		acctClient := armcosmos.NewDatabaseAccountsClient(subscription, armClient.Creds(), armClient.ClientOptions())
+		var acctClient *armcosmos.DatabaseAccountsClient
+		acctClient, err = armcosmos.NewDatabaseAccountsClient(subscription, armClient.Creds(), armClient.ClientOptions())
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to create new DatabaseAccountClient")
+		}
 
 		// TODO: There is a ListReadOnlyKeys API that requires less permissions. We should consider determining
 		// TODO: that we don't need to call the ListKeys API and install call the listReadOnlyKeys API.
 		var resp armcosmos.DatabaseAccountsClientListKeysResponse
-		resp, err = acctClient.ListKeys(ctx, id.ResourceGroupName, obj.AzureName(), nil)
+		resp, err = acctClient.ListKeys(ctx, id.ResourceGroupName, typedObj.AzureName(), nil)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed listing keys")
 		}
@@ -75,7 +81,7 @@ func (ext *DatabaseAccountExtension) RetrieveSecrets(
 		return nil, err
 	}
 
-	return secretSlice, nil
+	return secrets.SliceToClientObjectSlice(secretSlice), nil
 }
 
 func secretsSpecified(obj *documentdb.DatabaseAccount) (bool, bool) {
@@ -83,17 +89,17 @@ func secretsSpecified(obj *documentdb.DatabaseAccount) (bool, bool) {
 		return false, false
 	}
 
-	secrets := obj.Spec.OperatorSpec.Secrets
+	specSecrets := obj.Spec.OperatorSpec.Secrets
 	hasSecrets := false
 	hasEndpoints := false
-	if secrets.PrimaryMasterKey != nil ||
-		secrets.SecondaryMasterKey != nil ||
-		secrets.PrimaryReadonlyMasterKey != nil ||
-		secrets.SecondaryReadonlyMasterKey != nil {
+	if specSecrets.PrimaryMasterKey != nil ||
+		specSecrets.SecondaryMasterKey != nil ||
+		specSecrets.PrimaryReadonlyMasterKey != nil ||
+		specSecrets.SecondaryReadonlyMasterKey != nil {
 		hasSecrets = true
 	}
 
-	if secrets.DocumentEndpoint != nil {
+	if specSecrets.DocumentEndpoint != nil {
 		hasEndpoints = true
 	}
 
@@ -106,12 +112,12 @@ func secretsToWrite(obj *documentdb.DatabaseAccount, accessKeys armcosmos.Databa
 		return nil, errors.Errorf("unexpected nil operatorspec")
 	}
 
-	collector := secrets.NewSecretCollector(obj.Namespace)
-	collector.AddSecretValue(operatorSpecSecrets.PrimaryMasterKey, to.String(accessKeys.PrimaryMasterKey))
-	collector.AddSecretValue(operatorSpecSecrets.SecondaryMasterKey, to.String(accessKeys.SecondaryMasterKey))
-	collector.AddSecretValue(operatorSpecSecrets.PrimaryReadonlyMasterKey, to.String(accessKeys.PrimaryReadonlyMasterKey))
-	collector.AddSecretValue(operatorSpecSecrets.SecondaryReadonlyMasterKey, to.String(accessKeys.SecondaryReadonlyMasterKey))
-	collector.AddSecretValue(operatorSpecSecrets.DocumentEndpoint, to.String(obj.Status.DocumentEndpoint))
+	collector := secrets.NewCollector(obj.Namespace)
+	collector.AddValue(operatorSpecSecrets.PrimaryMasterKey, to.String(accessKeys.PrimaryMasterKey))
+	collector.AddValue(operatorSpecSecrets.SecondaryMasterKey, to.String(accessKeys.SecondaryMasterKey))
+	collector.AddValue(operatorSpecSecrets.PrimaryReadonlyMasterKey, to.String(accessKeys.PrimaryReadonlyMasterKey))
+	collector.AddValue(operatorSpecSecrets.SecondaryReadonlyMasterKey, to.String(accessKeys.SecondaryReadonlyMasterKey))
+	collector.AddValue(operatorSpecSecrets.DocumentEndpoint, to.String(obj.Status.DocumentEndpoint))
 
-	return collector.Secrets(), nil
+	return collector.Values()
 }

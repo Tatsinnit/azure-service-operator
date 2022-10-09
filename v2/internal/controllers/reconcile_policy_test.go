@@ -8,11 +8,12 @@ package controllers_test
 import (
 	"testing"
 
+	"github.com/Azure/go-autorest/autorest/to"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1alpha1api20200601"
+	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
 )
 
 func Test_ReconcilePolicy_SkipReconcileAddedAlongWithTagsChange_ReconcileIsSkipped(t *testing.T) {
@@ -25,7 +26,7 @@ func Test_ReconcilePolicy_SkipReconcileAddedAlongWithTagsChange_ReconcileIsSkipp
 
 	// check properties
 	tc.Expect(rg.Status.Location).To(Equal(tc.AzureRegion))
-	tc.Expect(rg.Status.ProvisioningState).To(Equal("Succeeded"))
+	tc.Expect(rg.Status.ProvisioningState).To(Equal(to.StringPtr("Succeeded")))
 	tc.Expect(rg.Status.ID).ToNot(BeNil())
 
 	// Update the tags but also skip reconcile
@@ -59,7 +60,7 @@ func Test_ReconcilePolicy_UnknownPolicyIsIgnored(t *testing.T) {
 
 	// check properties
 	tc.Expect(rg.Status.Location).To(Equal(tc.AzureRegion))
-	tc.Expect(rg.Status.ProvisioningState).To(Equal("Succeeded"))
+	tc.Expect(rg.Status.ProvisioningState).To(Equal(to.StringPtr("Succeeded")))
 	tc.Expect(rg.Status.ID).ToNot(BeNil())
 
 	// Update the tags but also reconcile policy
@@ -89,14 +90,20 @@ func testDeleteSkipped(t *testing.T, policy string) {
 
 	// check properties
 	tc.Expect(rg.Status.Location).To(Equal(tc.AzureRegion))
-	tc.Expect(rg.Status.ProvisioningState).To(Equal("Succeeded"))
+	tc.Expect(rg.Status.ProvisioningState).To(Equal(to.StringPtr("Succeeded")))
 	tc.Expect(rg.Status.ID).ToNot(BeNil())
-	armId := rg.Status.ID
+	armId := *rg.Status.ID
 
 	// Update to skip reconcile
 	old := rg.DeepCopy()
+	rg.Status.Conditions[0].ObservedGeneration = -1 // This is a hack so that we can tell when reconcile has happened to avoid a race
+	tc.PatchStatus(old, rg)
+
 	rg.Annotations["serviceoperator.azure.com/reconcile-policy"] = policy
 	tc.Patch(old, rg)
+	rv := rg.GetResourceVersion()
+	print(rv)
+	tc.Eventually(rg).Should(tc.Match.BeProvisioned(0))
 
 	tc.DeleteResourceAndWait(rg)
 

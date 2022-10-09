@@ -12,18 +12,24 @@ import (
 	"strings"
 
 	"github.com/dave/dst"
+	"golang.org/x/exp/maps"
 	"k8s.io/klog/v2"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 )
 
-type ResourceKind string
+// ResourceScope is the scope the resource is deployed at.
+type ResourceScope string
 
 const (
-	// ResourceKindNormal is a standard ARM resource.
-	ResourceKindNormal = ResourceKind("normal")
-	// ResourceKindExtension is an extension resource. Extension resources can have any resource as their parent.
-	ResourceKindExtension = ResourceKind("extension")
+	// ResourceScopeLocation is a resource deployed into a location (subscription + location)
+	ResourceScopeLocation = ResourceScope("location")
+	// ResourceScopeResourceGroup is a standard ARM resource that deploys into a resource group.
+	ResourceScopeResourceGroup = ResourceScope("resourcegroup")
+	// ResourceScopeExtension is an extension resource. Extension resources can have any resource as their parent.
+	ResourceScopeExtension = ResourceScope("extension")
+	// ResourceScopeTenant is an ARM resource at the tenant level (for example subscription, managementGroup, etc)
+	ResourceScopeTenant = ResourceScope("tenant")
 )
 
 // ResourceType represents a Kubernetes CRD resource which has both
@@ -37,7 +43,7 @@ type ResourceType struct {
 	functions           map[string]Function
 	testcases           map[string]TestCase
 	annotations         []string // TODO: Consider ensuring that these are actually kubebuilder annotations.
-	kind                ResourceKind
+	scope               ResourceScope
 	armType             string
 	apiVersionTypeName  TypeName
 	apiVersionEnumValue EnumValue
@@ -51,7 +57,7 @@ func NewResourceType(specType Type, statusType Type) *ResourceType {
 		owner:                nil,
 		functions:            make(map[string]Function),
 		testcases:            make(map[string]TestCase),
-		kind:                 ResourceKindNormal,
+		scope:                ResourceScopeResourceGroup,
 		InterfaceImplementer: MakeInterfaceImplementer(),
 	}
 
@@ -70,7 +76,7 @@ func IsResourceDefinition(def TypeDefinition) bool {
 // NewAzureResourceType defines a new resource type for Azure. It ensures that
 // the resource has certain expected properties such as type and name.
 // The typeName parameter is just used for logging.
-func NewAzureResourceType(specType Type, statusType Type, typeName TypeName, kind ResourceKind) *ResourceType {
+func NewAzureResourceType(specType Type, statusType Type, typeName TypeName, scope ResourceScope) *ResourceType {
 	if objectType, ok := specType.(*ObjectType); ok {
 		// We have certain expectations about structure for resources
 		var nameProperty *PropertyDefinition
@@ -79,25 +85,25 @@ func NewAzureResourceType(specType Type, statusType Type, typeName TypeName, kin
 
 		isNameOptional := false
 		isTypeOptional := false
-		for _, property := range objectType.Properties() {
+		objectType.Properties().ForEach(func(property *PropertyDefinition) {
 			// force this string because otherwise linter complains thinking it's an enum without an exhaustive switch...
 			// It turns out there are other reasons to alias string than just to make an enum, seems like the linter doesn't
 			// realize that
 			switch string(property.PropertyName()) {
 			case NameProperty:
 				nameProperty = property
-				if _, ok := property.PropertyType().(*OptionalType); ok {
+				if _, ok := AsOptionalType(property.PropertyType()); ok {
 					isNameOptional = true
 				}
 			case TypeProperty:
 				typeProperty = property
-				if _, ok := property.PropertyType().(*OptionalType); ok {
+				if _, ok := AsOptionalType(property.PropertyType()); ok {
 					isTypeOptional = true
 				}
 			case APIVersionProperty:
 				apiVersionProperty = property
 			}
-		}
+		})
 
 		if typeProperty == nil {
 			panic(fmt.Sprintf("Resource %s is missing type property", typeName))
@@ -117,7 +123,7 @@ func NewAzureResourceType(specType Type, statusType Type, typeName TypeName, kin
 
 		if isNameOptional {
 			// Fix name to be required -- again this is an artifact of bad spec more than anything
-			nameProperty = nameProperty.MakeRequired()
+			nameProperty = nameProperty.MakeTypeRequired()
 			objectType = objectType.WithProperty(nameProperty)
 		}
 
@@ -125,18 +131,18 @@ func NewAzureResourceType(specType Type, statusType Type, typeName TypeName, kin
 		// case forcing it to required makes our lives simpler (and the vast majority of resources specify
 		// it as required anyway). The only time it's allowed to be optional is if you set apiProfile on
 		// the ARM template instead, which we never do.
-		apiVersionProperty = apiVersionProperty.MakeRequired()
+		apiVersionProperty = apiVersionProperty.MakeTypeRequired()
 		objectType = objectType.WithProperty(apiVersionProperty)
 
 		if isTypeOptional {
-			typeProperty = typeProperty.MakeRequired()
+			typeProperty = typeProperty.MakeTypeRequired()
 			objectType = objectType.WithProperty(typeProperty)
 		}
 
 		specType = objectType
 	}
 
-	return NewResourceType(specType, statusType).WithKind(kind)
+	return NewResourceType(specType, statusType).WithScope(scope)
 }
 
 // Ensure ResourceType implements the Type interface correctly
@@ -225,6 +231,24 @@ func (resource *ResourceType) WithFunction(function Function) *ResourceType {
 	return result
 }
 
+// WithoutFunction returns a new Resource without the specific function
+func (resource *ResourceType) WithoutFunction(name string) *ResourceType {
+	// Create a copy to preserve immutability
+	result := resource.copy()
+	delete(result.functions, name)
+
+	return result
+}
+
+// WithoutFunctions creates a new Resource with no functions (useful for testing)
+func (resource *ResourceType) WithoutFunctions() *ResourceType {
+	// Create a copy to preserve immutability
+	result := resource.copy()
+	result.functions = make(map[string]Function)
+
+	return result
+}
+
 // WithTestCase creates a new Resource that's a copy with an additional test case included
 func (resource *ResourceType) WithTestCase(testcase TestCase) *ResourceType {
 	result := resource.copy()
@@ -232,10 +256,10 @@ func (resource *ResourceType) WithTestCase(testcase TestCase) *ResourceType {
 	return result
 }
 
-// WithKind returns a new ResourceType with the specified kind
-func (resource *ResourceType) WithKind(kind ResourceKind) *ResourceType {
+// WithScope returns a new ResourceType with the specified scope
+func (resource *ResourceType) WithScope(scope ResourceScope) *ResourceType {
 	result := resource.copy()
-	result.kind = kind
+	result.scope = scope
 	return result
 }
 
@@ -256,10 +280,7 @@ func (resource *ResourceType) WithAPIVersion(apiVersionTypeName TypeName, apiVer
 
 // TestCases returns a new slice containing all the test cases associated with this resource
 func (resource *ResourceType) TestCases() []TestCase {
-	var result []TestCase
-	for _, tc := range resource.testcases {
-		result = append(result, tc)
-	}
+	result := maps.Values(resource.testcases)
 
 	sort.Slice(result, func(i int, j int) bool {
 		return result[i].Name() < result[j].Name()
@@ -297,7 +318,7 @@ func (resource *ResourceType) Equals(other Type, override EqualityOverrides) boo
 		!TypeEquals(resource.spec, otherResource.spec, override) ||
 		!TypeEquals(resource.status, otherResource.status, override) ||
 		len(resource.annotations) != len(otherResource.annotations) ||
-		resource.kind != otherResource.kind ||
+		resource.scope != otherResource.scope ||
 		resource.armType != otherResource.armType ||
 		!TypeEquals(resource.apiVersionTypeName, otherResource.apiVersionTypeName) ||
 		resource.apiVersionEnumValue.Equals(&otherResource.apiVersionEnumValue) ||
@@ -347,7 +368,7 @@ func (resource *ResourceType) Equals(other Type, override EqualityOverrides) boo
 func (resource *ResourceType) EmbeddedProperties() []*PropertyDefinition {
 	typeMetaType := MakeTypeName(MetaV1Reference, "TypeMeta")
 	typeMetaProperty := NewPropertyDefinition("", "", typeMetaType).
-		WithTag("json", "inline")
+		WithTag("json", "inline").WithoutTag("json", "omitempty")
 
 	objectMetaProperty := NewPropertyDefinition("", "metadata", ObjectMetaType).
 		WithTag("json", "omitempty")
@@ -359,7 +380,7 @@ func (resource *ResourceType) EmbeddedProperties() []*PropertyDefinition {
 }
 
 // Properties returns all the properties from this resource type
-func (resource *ResourceType) Properties() PropertySet {
+func (resource *ResourceType) Properties() ReadOnlyPropertySet {
 	result := NewPropertySet(resource.createSpecProperty())
 	if resource.status != nil {
 		result.Add(resource.createStatusProperty())
@@ -392,9 +413,9 @@ func (resource *ResourceType) Property(name PropertyName) (*PropertyDefinition, 
 	return nil, false
 }
 
-// Kind returns the ResourceKind of the resource
-func (resource *ResourceType) Kind() ResourceKind {
-	return resource.kind
+// Scope returns the ResourceScope of the resource
+func (resource *ResourceType) Scope() ResourceScope {
+	return resource.scope
 }
 
 // ARMType returns the ARM Type of the resource. The ARM type is something like Microsoft.Batch/batchAccounts
@@ -402,9 +423,16 @@ func (resource *ResourceType) ARMType() string {
 	return resource.armType
 }
 
-// TODO: It's possible we could do this at the package level?
+func (resource *ResourceType) HasAPIVersion() bool {
+	return !resource.apiVersionTypeName.IsEmpty()
+}
+
 // APIVersionTypeName returns the type name of the API version
 func (resource *ResourceType) APIVersionTypeName() TypeName {
+	if !resource.HasAPIVersion() {
+		panic("resource has no APIVersion TypeName to return")
+	}
+
 	return resource.apiVersionTypeName
 }
 
@@ -416,10 +444,7 @@ func (resource *ResourceType) APIVersionEnumValue() EnumValue {
 // Functions returns all the function implementations
 // A sorted slice is returned to preserve immutability and provide determinism
 func (resource *ResourceType) Functions() []Function {
-	var functions []Function
-	for _, f := range resource.functions {
-		functions = append(functions, f)
-	}
+	functions := maps.Values(resource.functions)
 
 	sort.Slice(functions, func(i int, j int) bool {
 		return functions[i].Name() < functions[j].Name()
@@ -444,9 +469,10 @@ func (resource *ResourceType) References() TypeNameSet {
 	}
 
 	result := SetUnion(spec, status)
+
 	// It's a bit awkward to have to do this, but it doesn't exist as a reference
 	// anywhere else
-	if !resource.APIVersionTypeName().Equals(TypeName{}, EqualityOverrides{}) {
+	if resource.HasAPIVersion() {
 		result.Add(resource.APIVersionTypeName())
 	}
 
@@ -539,10 +565,7 @@ func (resource *ResourceType) AsDeclarations(codeGenerationContext *CodeGenerati
 
 	// Add required RBAC annotations, only on storage version
 	if resource.isStorageVersion {
-		group, _, ok := declContext.Name.PackageReference.GroupVersion()
-		if !ok {
-			panic(fmt.Sprintf("expected resource package reference to be local: %q", declContext.Name))
-		}
+		group, _ := declContext.Name.PackageReference.GroupVersion()
 		group = strings.ToLower(group + GroupSuffix)
 		resourceName := strings.ToLower(declContext.Name.Plural().Name())
 
@@ -593,10 +616,10 @@ func (resource *ResourceType) AsDeclarations(codeGenerationContext *CodeGenerati
 }
 
 func (resource *ResourceType) generateMethodDecls(codeGenerationContext *CodeGenerationContext, typeName TypeName) []dst.Decl {
-	var result []dst.Decl
-
-	for _, f := range resource.Functions() {
-		funcDef := f.AsFunc(codeGenerationContext, typeName)
+	funcs := resource.Functions()
+	result := make([]dst.Decl, 0, len(funcs))
+	for _, f := range funcs {
+		funcDef := generateMethodDeclForFunction(typeName, f, codeGenerationContext)
 		result = append(result, funcDef)
 	}
 
@@ -612,8 +635,8 @@ func (resource *ResourceType) makeResourceListTypeName(name TypeName) TypeName {
 func (resource *ResourceType) resourceListTypeDecls(
 	codeGenerationContext *CodeGenerationContext,
 	resourceTypeName TypeName,
-	description []string) []dst.Decl {
-
+	description []string,
+) []dst.Decl {
 	typeName := resource.makeResourceListTypeName(resourceTypeName)
 
 	packageName := codeGenerationContext.MustGetImportedPackageName(MetaV1Reference)
@@ -676,7 +699,7 @@ func (resource *ResourceType) copy() *ResourceType {
 		functions:            make(map[string]Function),
 		testcases:            make(map[string]TestCase),
 		annotations:          append([]string(nil), resource.annotations...),
-		kind:                 resource.kind,
+		scope:                resource.scope,
 		armType:              resource.armType,
 		apiVersionTypeName:   resource.apiVersionTypeName,
 		apiVersionEnumValue:  resource.apiVersionEnumValue,
@@ -705,15 +728,39 @@ func (resource *ResourceType) HasTestCases() bool {
 // WriteDebugDescription adds a description of the current type to the passed builder
 // builder receives the full description, including nested types
 // definitions is a dictionary for resolving named types
-func (resource *ResourceType) WriteDebugDescription(builder *strings.Builder, definitions TypeDefinitionSet) {
+func (resource *ResourceType) WriteDebugDescription(builder *strings.Builder, currentPackage PackageReference) {
 	if resource == nil {
 		builder.WriteString("<nilResource>")
 		return
 	}
 
-	builder.WriteString("Resource[spec:")
-	resource.spec.WriteDebugDescription(builder, definitions)
-	builder.WriteString("|status:")
-	resource.status.WriteDebugDescription(builder, definitions)
+	builder.WriteString("Resource[")
+	resource.spec.WriteDebugDescription(builder, currentPackage)
+
+	if resource.status != nil {
+		builder.WriteString("+")
+		resource.status.WriteDebugDescription(builder, currentPackage)
+	}
+
 	builder.WriteString("]")
+}
+
+// generateMethodDeclForFunction generates the AST for a function; if a panic occurs, the identity of the type and
+// function being generated will be wrapped around the existing panic details to aid in debugging.
+func generateMethodDeclForFunction(
+	typeName TypeName,
+	f Function,
+	codeGenerationContext *CodeGenerationContext,
+) *dst.FuncDecl {
+	defer func() {
+		if err := recover(); err != nil {
+			panic(fmt.Sprintf(
+				"generating method declaration for %s.%s: %s",
+				typeName.Name(),
+				f.Name(),
+				err))
+		}
+	}()
+
+	return f.AsFunc(codeGenerationContext, typeName)
 }

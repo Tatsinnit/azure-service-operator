@@ -283,11 +283,24 @@ func AddrOf(expr dst.Expr) *dst.UnaryExpr {
 	}
 }
 
+// AsReference returns a statement that is a reference to the supplied expression
+//
+//	&<expr>
+//
+// If the expression given is a StarExpr dereference, we unwrap it instead of taking its address
+func AsReference(expr dst.Expr) dst.Expr {
+	if star, ok := expr.(*dst.StarExpr); ok {
+		return star.X
+	}
+
+	return AddrOf(expr)
+}
+
 // Dereference returns a statement that dereferences the pointer returned by the provided expression
 //
 // *<expr>
 //
-func Dereference(expr dst.Expr) *dst.StarExpr {
+func Dereference(expr dst.Expr) dst.Expr {
 	return &dst.StarExpr{
 		X: dst.Clone(expr).(dst.Expr),
 	}
@@ -387,7 +400,7 @@ func NotExpr(expr dst.Expr) *dst.UnaryExpr {
 	}
 }
 
-// NotNil generates an `x != nil` comparison
+// NotNil generates an `x != nil` condition
 func NotNil(x dst.Expr) *dst.BinaryExpr {
 	return AreNotEqual(x, Nil())
 }
@@ -395,6 +408,22 @@ func NotNil(x dst.Expr) *dst.BinaryExpr {
 // Nil returns the nil identifier (not keyword!)
 func Nil() *dst.Ident {
 	return dst.NewIdent("nil")
+}
+
+// Continue returns the continue keyword
+func Continue() dst.Stmt {
+	return &dst.BranchStmt{
+		Tok: token.CONTINUE,
+	}
+}
+
+// NotEmpty generates an `len(x) > 0` condition
+func NotEmpty(x dst.Expr) *dst.BinaryExpr {
+	return &dst.BinaryExpr{
+		X:  CallFunc("len", x),
+		Op: token.GTR,
+		Y:  dst.NewIdent("0"),
+	}
 }
 
 // StatementBlock generates a block containing the supplied statements
@@ -441,7 +470,7 @@ func Statements(statements ...interface{}) []dst.Stmt {
 		}
 	}
 
-	var result []dst.Stmt
+	result := make([]dst.Stmt, 0, len(stmts))
 	for _, st := range stmts {
 		result = append(result, dst.Clone(st).(dst.Stmt))
 	}
@@ -469,7 +498,7 @@ func Expressions(statements ...interface{}) []dst.Expr {
 		}
 	}
 
-	var result []dst.Expr
+	result := make([]dst.Expr, 0, len(exprs))
 	for _, ex := range exprs {
 		result = append(result, dst.Clone(ex).(dst.Expr))
 	}

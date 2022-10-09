@@ -100,7 +100,11 @@ func (builder *convertToARMBuilder) functionBodyStatements() []dst.Stmt {
 	result = append(
 		result,
 		astbuilder.ReturnIfNil(dst.NewIdent(builder.receiverIdent), astbuilder.Nil(), astbuilder.Nil()))
-	result = append(result, astbuilder.NewVariable(builder.resultIdent, builder.armTypeIdent))
+
+	decl := astbuilder.ShortDeclaration(
+		builder.resultIdent,
+		astbuilder.AddrOf(astbuilder.NewCompositeLiteralBuilder(dst.NewIdent(builder.armTypeIdent)).Build()))
+	result = append(result, decl)
 
 	// Each ARM object property needs to be filled out
 	result = append(
@@ -164,7 +168,10 @@ func (builder *convertToARMBuilder) referencePropertyHandler(
 	// This is just an optimization to avoid scanning excess properties collections
 	isString := astmodel.TypeEquals(toProp.PropertyType(), astmodel.StringType)
 	isOptionalString := astmodel.TypeEquals(toProp.PropertyType(), astmodel.NewOptionalType(astmodel.StringType))
-	if !isString && !isOptionalString {
+	isSliceString := astmodel.TypeEquals(toProp.PropertyType(), astmodel.NewArrayType(astmodel.StringType))
+	isMapString := astmodel.TypeEquals(toProp.PropertyType(), astmodel.NewMapType(astmodel.StringType, astmodel.StringType))
+
+	if !isString && !isOptionalString && !isSliceString && !isMapString {
 		return nil, false
 	}
 
@@ -368,7 +375,7 @@ func (builder *convertToARMBuilder) propertiesWithSameNameHandler(
 
 // convertReferenceProperty handles conversion of reference properties.
 // This function generates code that looks like this:
-//	<namehint>ARMID, err := resolved.ResolvedReferences.ARMIDOrErr(<source>)
+//	<namehint>ARMID, err := resolved.ResolvedReferences.Lookup(<source>)
 //	if err != nil {
 //		return nil, err
 //	}
@@ -391,7 +398,7 @@ func (builder *convertToARMBuilder) convertReferenceProperty(_ *astmodel.Convers
 		token.DEFINE,
 		astbuilder.CallExpr(
 			astbuilder.Selector(dst.NewIdent(resolvedParameterString), "ResolvedReferences"),
-			"ARMIDOrErr",
+			"Lookup",
 			params.Source))
 
 	returnIfNotNil := astbuilder.ReturnIfNotNil(dst.NewIdent("err"), astbuilder.Nil(), dst.NewIdent("err"))
@@ -403,7 +410,7 @@ func (builder *convertToARMBuilder) convertReferenceProperty(_ *astmodel.Convers
 
 // convertSecretProperty handles conversion of secret properties.
 // This function generates code that looks like this:
-//	<namehint>Secret, err := resolved.ResolvedSecrets.LookupSecret(<source>)
+//	<namehint>Secret, err := resolved.ResolvedSecrets.Lookup(<source>)
 //	if err != nil {
 //		return nil, errors.Wrap(err, "looking up secret for <source>")
 //	}
@@ -427,7 +434,7 @@ func (builder *convertToARMBuilder) convertSecretProperty(_ *astmodel.Conversion
 		token.DEFINE,
 		astbuilder.CallExpr(
 			astbuilder.Selector(dst.NewIdent(resolvedParameterString), "ResolvedSecrets"),
-			"LookupSecret",
+			"Lookup",
 			params.Source))
 
 	wrappedError := astbuilder.WrapError(
@@ -447,7 +454,7 @@ func (builder *convertToARMBuilder) convertSecretProperty(_ *astmodel.Conversion
 //	if err != nil {
 //		return nil, err
 //	}
-//	<destination> = <nameHint>.(FooARM)
+//	<destination> = <nameHint>.(*FooARM)
 func (builder *convertToARMBuilder) convertComplexTypeNameProperty(conversionBuilder *astmodel.ConversionFunctionBuilder, params astmodel.ConversionParameters) []dst.Stmt {
 	destinationType, ok := params.DestinationType.(astmodel.TypeName)
 	if !ok {
@@ -465,14 +472,14 @@ func (builder *convertToARMBuilder) convertComplexTypeNameProperty(conversionBui
 	}
 
 	var results []dst.Stmt
-	propertyLocalVarName := params.Locals.CreateLocal(params.NameHint, "ARM")
+	propertyLocalVarName := params.Locals.CreateLocal(params.NameHint, astmodel.ARMSuffix)
 
 	// Call ToARM on the property
 	results = append(results, callToARMFunction(params.GetSource(), dst.NewIdent(propertyLocalVarName), builder.methodName)...)
 
 	typeAssertExpr := &dst.TypeAssertExpr{
 		X:    dst.NewIdent(propertyLocalVarName),
-		Type: dst.NewIdent(destinationType.Name()),
+		Type: astbuilder.Dereference(dst.NewIdent(destinationType.Name())),
 	}
 
 	if !destinationType.PackageReference.Equals(conversionBuilder.CodeGenerationContext.CurrentPackage()) {
@@ -482,10 +489,17 @@ func (builder *convertToARMBuilder) convertComplexTypeNameProperty(conversionBui
 			panic(err)
 		}
 
-		typeAssertExpr.Type = astbuilder.Selector(dst.NewIdent(packageName), destinationType.Name())
+		typeAssertExpr.Type = astbuilder.Dereference(astbuilder.Selector(dst.NewIdent(packageName), destinationType.Name()))
 	}
 
-	results = append(results, params.AssignmentHandlerOrDefault()(params.GetDestination(), typeAssertExpr))
+	// TODO: This results in code that isn't very "human-like". Today the contract of most handlers is that they
+	// TODO: result in a type which is not a ptr. This is a useful contract as then the caller always knows if they need
+	// TODO: to take the address of the inner result (&result) to assign to a ptr field, or not (to assign to a non-ptr field).
+	// TODO: Unfortunately, we can't fix this issue by inverting things and making the contract that the type is a ptr type, as
+	// TODO: in many cases (primitive types, strings, etc) that doesn't make sense and also results in awkward to read code.
+	finalAssignmentExpr := astbuilder.Dereference(typeAssertExpr)
+
+	results = append(results, params.AssignmentHandlerOrDefault()(params.GetDestination(), finalAssignmentExpr))
 
 	return results
 }

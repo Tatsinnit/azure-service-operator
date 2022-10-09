@@ -6,8 +6,10 @@
 package reflecthelpers_test
 
 import (
+	"reflect"
 	"testing"
 
+	"github.com/pkg/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -89,11 +91,27 @@ type ResourceWithReferencesSpec struct {
 
 	AzureName string `json:"azureName"`
 
-	Ref *ResourceReference `json:"ref,omitempty"`
+	Ref      *ResourceReference                      `json:"ref,omitempty"`
+	RefSlice []genruntime.ResourceReference          `armReference:"RefSlice" json:"refSlice,omitempty"`
+	RefMap   map[string]genruntime.ResourceReference `armReference:"RefMap" json:"refMap,omitempty"`
 
 	Secret *genruntime.SecretReference `json:"secret,omitempty"`
 
 	Location string `json:"location,omitempty"`
+}
+
+var _ genruntime.ARMTransformer = &ResourceWithReferencesSpec{}
+
+func (in *ResourceWithReferencesSpec) ConvertToARM(resolved genruntime.ConvertToARMResolvedDetails) (interface{}, error) {
+	panic("not expected to be called")
+}
+
+func (in *ResourceWithReferencesSpec) NewEmptyARMValue() genruntime.ARMResourceStatus {
+	panic("not expected to be called")
+}
+
+func (in *ResourceWithReferencesSpec) PopulateFromARM(owner genruntime.ArbitraryOwnerReference, input interface{}) error {
+	panic("not expected to be called")
 }
 
 type ResourceReference struct {
@@ -104,7 +122,11 @@ func Test_FindReferences(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
-	ref := genruntime.ResourceReference{ARMID: "test"}
+	ref1 := genruntime.ResourceReference{ARMID: "test1"}
+	ref2 := genruntime.ResourceReference{ARMID: "test2"}
+	ref3 := genruntime.ResourceReference{ARMID: "test3"}
+	ref4 := genruntime.ResourceReference{ARMID: "test4"}
+	ref5 := genruntime.ResourceReference{ARMID: "test5"}
 
 	res := ResourceWithReferences{
 		Spec: ResourceWithReferencesSpec{
@@ -114,7 +136,15 @@ func Test_FindReferences(t *testing.T) {
 				Name: "myrg",
 			},
 			Ref: &ResourceReference{
-				Reference: ref,
+				Reference: ref1,
+			},
+			RefSlice: []genruntime.ResourceReference{
+				ref2,
+				ref3,
+			},
+			RefMap: map[string]genruntime.ResourceReference{
+				"a": ref4,
+				"b": ref5,
 			},
 		},
 		ObjectMeta: metav1.ObjectMeta{
@@ -125,8 +155,12 @@ func Test_FindReferences(t *testing.T) {
 
 	refs, err := reflecthelpers.FindResourceReferences(res)
 	g.Expect(err).ToNot(HaveOccurred())
-	g.Expect(refs).To(HaveLen(1))
-	g.Expect(refs).To(HaveKey(ref))
+	g.Expect(refs).To(HaveLen(5))
+	g.Expect(refs).To(HaveKey(ref1))
+	g.Expect(refs).To(HaveKey(ref2))
+	g.Expect(refs).To(HaveKey(ref3))
+	g.Expect(refs).To(HaveKey(ref4))
+	g.Expect(refs).To(HaveKey(ref5))
 }
 
 func Test_FindSecrets(t *testing.T) {
@@ -154,6 +188,67 @@ func Test_FindSecrets(t *testing.T) {
 	g.Expect(err).ToNot(HaveOccurred())
 	g.Expect(refs).To(HaveLen(1))
 	g.Expect(refs).To(HaveKey(ref))
+}
+
+// defaultResourceReferencesName exists to showcase an example where ReflectVisitor is used to modify the object in question
+func defaultResourceReferencesName(transformer genruntime.ARMTransformer, name string) error {
+	visitor := reflecthelpers.NewReflectVisitor()
+	visitor.VisitStruct = func(this *reflecthelpers.ReflectVisitor, it reflect.Value, ctx interface{}) error {
+		if it.Type() == reflect.TypeOf(genruntime.ResourceReference{}) {
+			if it.CanInterface() {
+				reference := it.Interface().(genruntime.ResourceReference)
+				if reference.Name == "" {
+					// Cannot do assignment on the reference variable as it is a copy
+					f := it.FieldByName("Name")
+					if !f.CanSet() {
+						return errors.New("cannot set 'Name' field of 'genruntime.ResourceReference'")
+					}
+					f.SetString(name)
+				}
+			} else {
+				// This should be impossible given how the visitor works
+				return errors.New("genruntime.ResourceReference field was unexpectedly nil")
+			}
+			return nil
+		}
+
+		return reflecthelpers.IdentityVisitStruct(this, it, ctx)
+	}
+
+	err := visitor.Visit(transformer, nil)
+	if err != nil {
+		return errors.Wrap(err, "defaulting genruntime.ResourceReference")
+	}
+
+	return nil
+}
+
+func Test_CanUseReflectVisitorToModifyResource(t *testing.T) {
+	t.Parallel()
+	g := NewGomegaWithT(t)
+
+	ref := genruntime.ResourceReference{Group: "microsoft.keyvault", Kind: "keyvault"}
+
+	res := ResourceWithReferences{
+		Spec: ResourceWithReferencesSpec{
+			AzureName: "azureName",
+			Location:  "westus",
+			Owner: genruntime.KnownResourceReference{
+				Name: "myrg",
+			},
+			Ref: &ResourceReference{
+				Reference: ref,
+			},
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-group",
+			Namespace: "test-namespace",
+		},
+	}
+
+	err := defaultResourceReferencesName(&res.Spec, "myname")
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(res.Spec.Ref.Reference.Name).To(Equal("myname"))
 }
 
 func Test_GetObjectListItems(t *testing.T) {
@@ -184,4 +279,31 @@ func Test_GetObjectListItems(t *testing.T) {
 	g.Expect(err).ToNot(HaveOccurred())
 	g.Expect(items).To(HaveLen(1))
 	g.Expect(items[0].GetName()).To(Equal("test-group"))
+}
+
+func Test_SetObjectListItems(t *testing.T) {
+	t.Parallel()
+	g := NewGomegaWithT(t)
+
+	res := &ResourceWithReferences{
+		Spec: ResourceWithReferencesSpec{
+			AzureName: "azureName",
+			Location:  "westus",
+			Owner: genruntime.KnownResourceReference{
+				Name: "myrg",
+			},
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-group",
+			Namespace: "test-namespace",
+		},
+	}
+
+	list := &ResourceWithReferencesList{}
+
+	itemList := []client.Object{res}
+	err := reflecthelpers.SetObjectListItems(list, itemList)
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(list.Items).To(HaveLen(1))
+	g.Expect(list.Items[0].GetName()).To(Equal("test-group"))
 }

@@ -29,7 +29,7 @@ var (
 var emptyObject = astmodel.NewObjectType()
 
 func defineEnum(strings ...string) astmodel.Type {
-	var values []astmodel.EnumValue
+	values := make([]astmodel.EnumValue, 0, len(strings))
 	for _, value := range strings {
 		values = append(values, astmodel.EnumValue{
 			Identifier: value,
@@ -74,7 +74,7 @@ func TestMergeMapEmptyObject(t *testing.T) {
 	g.Expect(synth.intersectTypes(emptyObject, mapStringString)).To(Equal(mapStringString))
 }
 
-// merging a map with an object puts the map into 'additionalProperties'
+// merging a map with an object puts the map into 'AdditionalProperties'
 func TestMergeMapObject(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
@@ -85,7 +85,10 @@ func TestMergeMapObject(t *testing.T) {
 	)
 
 	expected := oneProp.WithProperties(
-		astmodel.NewPropertyDefinition("additionalProperties", "additionalProperties", newMap),
+		astmodel.NewPropertyDefinition(
+			astmodel.AdditionalPropertiesPropertyName,
+			astmodel.AdditionalPropertiesJsonName,
+			newMap),
 	)
 
 	synth := makeSynth()
@@ -375,9 +378,9 @@ func TestOneOfResourceSpec(t *testing.T) {
 
 	expected := astmodel.NewObjectType().WithProperties(
 		astmodel.NewPropertyDefinition(astmodel.PropertyName("Bool0"), "bool0", astmodel.BoolType).
-			MakeOptional().WithDescription("Mutually exclusive with all other properties"),
-		astmodel.NewPropertyDefinition(astmodel.PropertyName("Resource1"), "resource1", r).MakeOptional().
-			MakeOptional().WithDescription("Mutually exclusive with all other properties"),
+			MakeTypeOptional().WithDescription("Mutually exclusive with all other properties"),
+		astmodel.NewPropertyDefinition(astmodel.PropertyName("Resource1"), "resource1", r).
+			MakeTypeOptional().WithDescription("Mutually exclusive with all other properties"),
 	)
 
 	names, err := synth.getOneOfPropNames(oneOf)

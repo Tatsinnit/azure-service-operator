@@ -39,8 +39,22 @@ func CreateStorageTypes() *Stage {
 			// Filter to the types we want to process
 			typesToConvert := state.Definitions().Where(isResourceOrObject).Where(isNotARMType)
 
+			// HACK: include the APIVersion in the storage types package.
+			// really we don't want storage types to have API Version at all,
+			// but it's difficult to remove the GetApiVersion() Function at the moment
+			storageAPIVersions := make(astmodel.TypeNameSet)
+			for _, tdef := range typesToConvert {
+				if rt, ok := astmodel.AsResourceType(tdef.Type()); ok && rt.HasAPIVersion() {
+					storageAPIVersions.Add(rt.APIVersionTypeName())
+				}
+			}
+
+			for name := range storageAPIVersions {
+				typesToConvert.Add(state.Definitions()[name])
+			}
+
 			storageDefs := make(astmodel.TypeDefinitionSet)
-			typeConverter := storage.NewTypeConverter(state.Definitions(), state.ConversionGraph())
+			typeConverter := storage.NewTypeConverter(state.Definitions())
 
 			// Create storage variants
 			for name, def := range typesToConvert {
@@ -57,8 +71,6 @@ func CreateStorageTypes() *Stage {
 
 			return state.WithDefinitions(defs), nil
 		})
-
-	stage.RequiresPrerequisiteStages(InjectOriginalVersionFunctionStageID, CreateConversionGraphStageId)
 
 	return stage
 }

@@ -11,9 +11,9 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	authorization "github.com/Azure/azure-service-operator/v2/api/authorization/v1alpha1api20200801preview"
-	managedidentity "github.com/Azure/azure-service-operator/v2/api/managedidentity/v1alpha1api20181130"
-	storage "github.com/Azure/azure-service-operator/v2/api/storage/v1alpha1api20210401"
+	authorization "github.com/Azure/azure-service-operator/v2/api/authorization/v1beta20200801preview"
+	managedidentity "github.com/Azure/azure-service-operator/v2/api/managedidentity/v1beta20181130"
+	storage "github.com/Azure/azure-service-operator/v2/api/storage/v1beta20210401"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
@@ -32,7 +32,7 @@ func Test_Authorization_RoleAssignment_OnResourceGroup_CRUD(t *testing.T) {
 	// Create a dummy managed identity which we will assign to a role
 	mi := &managedidentity.UserAssignedIdentity{
 		ObjectMeta: tc.MakeObjectMeta("mi"),
-		Spec: managedidentity.UserAssignedIdentities_Spec{
+		Spec: managedidentity.UserAssignedIdentity_Spec{
 			Location: tc.AzureRegion,
 			Owner:    testcommon.AsOwner(rg),
 		},
@@ -48,11 +48,11 @@ func Test_Authorization_RoleAssignment_OnResourceGroup_CRUD(t *testing.T) {
 
 	roleAssignment := &authorization.RoleAssignment{
 		ObjectMeta: tc.MakeObjectMetaWithName(roleAssignmentGUID.String()),
-		Spec: authorization.RoleAssignments_Spec{
-			Location:    &tc.AzureRegion,
+		Spec: authorization.RoleAssignment_Spec{
+			Location:    tc.AzureRegion,
 			Owner:       tc.AsExtensionOwner(rg),
-			PrincipalId: *mi.Status.PrincipalId,
-			RoleDefinitionReference: genruntime.ResourceReference{
+			PrincipalId: mi.Status.PrincipalId,
+			RoleDefinitionReference: &genruntime.ResourceReference{
 				ARMID: fmt.Sprintf("/subscriptions/%s/providers/Microsoft.Authorization/roleDefinitions/b24988ac-6180-42a0-ab88-20f7382dd24c", tc.AzureSubscription), // This is contributor
 			},
 		},
@@ -69,7 +69,7 @@ func Test_Authorization_RoleAssignment_OnResourceGroup_CRUD(t *testing.T) {
 	exists, _, err := tc.AzureClient.HeadByID(
 		tc.Ctx,
 		armId,
-		string(authorization.RoleAssignmentsSpecAPIVersion20200801Preview))
+		string(authorization.APIVersion_Value))
 	tc.Expect(err).ToNot(HaveOccurred())
 	tc.Expect(exists).To(BeFalse())
 }
@@ -84,7 +84,7 @@ func Test_Authorization_RoleAssignment_OnStorageAccount_CRUD(t *testing.T) {
 	// Create a dummy managed identity which we will assign to a role
 	mi := &managedidentity.UserAssignedIdentity{
 		ObjectMeta: tc.MakeObjectMeta("mi"),
-		Spec: managedidentity.UserAssignedIdentities_Spec{
+		Spec: managedidentity.UserAssignedIdentity_Spec{
 			Location: tc.AzureRegion,
 			Owner:    testcommon.AsOwner(rg),
 		},
@@ -95,15 +95,17 @@ func Test_Authorization_RoleAssignment_OnStorageAccount_CRUD(t *testing.T) {
 	tc.Expect(mi.Status.PrincipalId).ToNot(BeNil())
 
 	// Create a storage account
-	accessTier := storage.StorageAccountPropertiesCreateParametersAccessTierHot
+	accessTier := storage.StorageAccountPropertiesCreateParameters_AccessTier_Hot
+	kind := storage.StorageAccount_Kind_Spec_BlobStorage
+	sku := storage.Sku_Name_Standard_LRS
 	acct := &storage.StorageAccount{
 		ObjectMeta: tc.MakeObjectMetaWithName(tc.NoSpaceNamer.GenerateName("stor")),
-		Spec: storage.StorageAccounts_Spec{
+		Spec: storage.StorageAccount_Spec{
 			Location: tc.AzureRegion,
 			Owner:    testcommon.AsOwner(rg),
-			Kind:     storage.StorageAccountsSpecKindBlobStorage,
-			Sku: storage.Sku{
-				Name: storage.SkuNameStandardLRS,
+			Kind:     &kind,
+			Sku: &storage.Sku{
+				Name: &sku,
 			},
 			AccessTier: &accessTier,
 		},
@@ -117,11 +119,11 @@ func Test_Authorization_RoleAssignment_OnStorageAccount_CRUD(t *testing.T) {
 
 	roleAssignment := &authorization.RoleAssignment{
 		ObjectMeta: tc.MakeObjectMetaWithName(roleAssignmentGUID.String()),
-		Spec: authorization.RoleAssignments_Spec{
-			Location:    &tc.AzureRegion,
+		Spec: authorization.RoleAssignment_Spec{
+			Location:    tc.AzureRegion,
 			Owner:       tc.AsExtensionOwner(acct),
-			PrincipalId: *mi.Status.PrincipalId,
-			RoleDefinitionReference: genruntime.ResourceReference{
+			PrincipalId: mi.Status.PrincipalId,
+			RoleDefinitionReference: &genruntime.ResourceReference{
 				ARMID: fmt.Sprintf("/subscriptions/%s/providers/Microsoft.Authorization/roleDefinitions/b24988ac-6180-42a0-ab88-20f7382dd24c", tc.AzureSubscription), // This is contributor
 			},
 		},
@@ -141,7 +143,7 @@ func Test_Authorization_RoleAssignment_OnStorageAccount_CRUD(t *testing.T) {
 	exists, _, err := tc.AzureClient.HeadByID(
 		tc.Ctx,
 		armId,
-		string(authorization.RoleAssignmentsSpecAPIVersion20200801Preview))
+		string(authorization.APIVersion_Value))
 	tc.Expect(err).ToNot(HaveOccurred())
 	tc.Expect(exists).To(BeFalse())
 }

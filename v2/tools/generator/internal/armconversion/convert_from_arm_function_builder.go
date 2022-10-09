@@ -28,8 +28,8 @@ func newConvertFromARMFunctionBuilder(
 	c *ARMConversionFunction,
 	codeGenerationContext *astmodel.CodeGenerationContext,
 	receiver astmodel.TypeName,
-	methodName string) *convertFromARMBuilder {
-
+	methodName string,
+) *convertFromARMBuilder {
 	result := &convertFromARMBuilder{
 		// Note: If we have a property with these names we will have a compilation issue in the generated
 		// code. Right now that doesn't seem to be the case anywhere but if it does happen we may need
@@ -156,8 +156,8 @@ func (builder *convertFromARMBuilder) assertInputTypeIsARM(needsResult bool) []d
 
 func (builder *convertFromARMBuilder) namePropertyHandler(
 	toProp *astmodel.PropertyDefinition,
-	fromType *astmodel.ObjectType) ([]dst.Stmt, bool) {
-
+	fromType *astmodel.ObjectType,
+) ([]dst.Stmt, bool) {
 	if builder.typeKind != TypeKindSpec || !toProp.HasName(astmodel.AzureNameProperty) {
 		return nil, false
 	}
@@ -185,12 +185,9 @@ func (builder *convertFromARMBuilder) namePropertyHandler(
 
 func (builder *convertFromARMBuilder) referencePropertyHandler(
 	toProp *astmodel.PropertyDefinition,
-	_ *astmodel.ObjectType) ([]dst.Stmt, bool) {
-
-	isResourceReference := astmodel.TypeEquals(toProp.PropertyType(), astmodel.ResourceReferenceType)
-	isOptionalResourceReference := astmodel.TypeEquals(toProp.PropertyType(), astmodel.NewOptionalType(astmodel.ResourceReferenceType))
-
-	if !isResourceReference && !isOptionalResourceReference {
+	_ *astmodel.ObjectType,
+) ([]dst.Stmt, bool) {
+	if !astmodel.IsTypeResourceReference(toProp.PropertyType()) {
 		return nil, false
 	}
 
@@ -202,8 +199,8 @@ func (builder *convertFromARMBuilder) referencePropertyHandler(
 
 func (builder *convertFromARMBuilder) secretPropertyHandler(
 	toProp *astmodel.PropertyDefinition,
-	_ *astmodel.ObjectType) ([]dst.Stmt, bool) {
-
+	_ *astmodel.ObjectType,
+) ([]dst.Stmt, bool) {
 	isSecretReference := astmodel.TypeEquals(toProp.PropertyType(), astmodel.SecretReferenceType)
 	isOptionalSecretReference := astmodel.TypeEquals(toProp.PropertyType(), astmodel.NewOptionalType(astmodel.SecretReferenceType))
 
@@ -219,8 +216,8 @@ func (builder *convertFromARMBuilder) secretPropertyHandler(
 
 func (builder *convertFromARMBuilder) ownerPropertyHandler(
 	toProp *astmodel.PropertyDefinition,
-	_ *astmodel.ObjectType) ([]dst.Stmt, bool) {
-
+	_ *astmodel.ObjectType,
+) ([]dst.Stmt, bool) {
 	ownerParameter := builder.idFactory.CreateIdentifier(astmodel.OwnerProperty, astmodel.NotExported)
 	ownerProp := builder.idFactory.CreatePropertyName(astmodel.OwnerProperty, astmodel.Exported)
 	if toProp.PropertyName() != ownerProp || builder.typeKind != TypeKindSpec {
@@ -243,9 +240,9 @@ func (builder *convertFromARMBuilder) ownerPropertyHandler(
 	if ownerNameType == astmodel.KnownResourceReferenceType {
 		compositeLit := astbuilder.NewCompositeLiteralBuilder(astmodel.KnownResourceReferenceType.AsType(builder.codeGenerationContext))
 		compositeLit.AddField("Name", astbuilder.Selector(dst.NewIdent(ownerParameter), "Name"))
-		convertedOwner = compositeLit.Build()
+		convertedOwner = astbuilder.AddrOf(compositeLit.Build())
 	} else if ownerNameType == astmodel.ArbitraryOwnerReference {
-		convertedOwner = dst.NewIdent(ownerParameter)
+		convertedOwner = astbuilder.AddrOf(dst.NewIdent(ownerParameter))
 	} else {
 		panic(fmt.Sprintf("found Owner property on spec with unexpected TypeName %s", ownerNameType.String()))
 	}
@@ -263,8 +260,8 @@ func (builder *convertFromARMBuilder) ownerPropertyHandler(
 // after each reconcile and so does not need to be preserved.
 func (builder *convertFromARMBuilder) conditionsPropertyHandler(
 	toProp *astmodel.PropertyDefinition,
-	_ *astmodel.ObjectType) ([]dst.Stmt, bool) {
-
+	_ *astmodel.ObjectType,
+) ([]dst.Stmt, bool) {
 	isPropConditions := toProp.PropertyName() == builder.idFactory.CreatePropertyName(astmodel.ConditionsProperty, astmodel.Exported)
 	if !isPropConditions || builder.typeKind != TypeKindStatus {
 		return nil, false
@@ -279,8 +276,8 @@ func (builder *convertFromARMBuilder) conditionsPropertyHandler(
 // TODO: so just skip this
 func (builder *convertFromARMBuilder) operatorSpecPropertyHandler(
 	toProp *astmodel.PropertyDefinition,
-	_ *astmodel.ObjectType) ([]dst.Stmt, bool) {
-
+	_ *astmodel.ObjectType,
+) ([]dst.Stmt, bool) {
 	if toProp.PropertyName() != astmodel.OperatorSpecProperty || builder.typeKind != TypeKindSpec {
 		return nil, false
 	}
@@ -301,13 +298,13 @@ func (builder *convertFromARMBuilder) operatorSpecPropertyHandler(
 // to the type being converted.
 func (builder *convertFromARMBuilder) flattenedPropertyHandler(
 	toProp *astmodel.PropertyDefinition,
-	fromType *astmodel.ObjectType) ([]dst.Stmt, bool) {
-
+	fromType *astmodel.ObjectType,
+) ([]dst.Stmt, bool) {
 	if !toProp.WasFlattened() {
 		return nil, false
 	}
 
-	for _, fromProp := range fromType.Properties() {
+	for _, fromProp := range fromType.Properties().Copy() {
 		if toProp.WasFlattenedFrom(fromProp.PropertyName()) {
 			return builder.buildFlattenedAssignment(toProp, fromProp), true
 		}
@@ -423,8 +420,8 @@ func (builder *convertFromARMBuilder) buildFlattenedAssignment(toProp *astmodel.
 
 func (builder *convertFromARMBuilder) propertiesWithSameNameHandler(
 	toProp *astmodel.PropertyDefinition,
-	fromType *astmodel.ObjectType) ([]dst.Stmt, bool) {
-
+	fromType *astmodel.ObjectType,
+) ([]dst.Stmt, bool) {
 	fromProp, ok := fromType.Property(toProp.PropertyName())
 	if !ok {
 		return nil, false

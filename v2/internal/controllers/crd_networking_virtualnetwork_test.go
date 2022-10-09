@@ -8,10 +8,11 @@ package controllers_test
 import (
 	"testing"
 
+	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 	"github.com/Azure/go-autorest/autorest/to"
 	. "github.com/onsi/gomega"
 
-	network "github.com/Azure/azure-service-operator/v2/api/network/v1alpha1api20201101"
+	network "github.com/Azure/azure-service-operator/v2/api/network/v1beta20201101"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 )
 
@@ -22,16 +23,7 @@ func Test_Networking_VirtualNetwork_CRUD(t *testing.T) {
 
 	rg := tc.CreateTestResourceGroupAndWait()
 
-	vnet := &network.VirtualNetwork{
-		ObjectMeta: tc.MakeObjectMetaWithName(tc.Namer.GenerateName("vn")),
-		Spec: network.VirtualNetworks_Spec{
-			Owner:    testcommon.AsOwner(rg),
-			Location: testcommon.DefaultTestRegion,
-			AddressSpace: network.AddressSpace{
-				AddressPrefixes: []string{"10.0.0.0/8"},
-			},
-		},
-	}
+	vnet := newVNet(tc, testcommon.AsOwner(rg), []string{"10.0.0.0/8"})
 
 	tc.CreateResourceAndWait(vnet)
 
@@ -41,8 +33,8 @@ func Test_Networking_VirtualNetwork_CRUD(t *testing.T) {
 	tc.RunParallelSubtests(
 		testcommon.Subtest{
 			Name: "Subnet CRUD",
-			Test: func(testContext *testcommon.KubePerTestContext) {
-				Subnet_CRUD(testContext, vnet)
+			Test: func(tc *testcommon.KubePerTestContext) {
+				Subnet_CRUD(tc, vnet)
 			},
 		},
 	)
@@ -50,7 +42,7 @@ func Test_Networking_VirtualNetwork_CRUD(t *testing.T) {
 	tc.DeleteResourceAndWait(vnet)
 
 	// Ensure that the resource was really deleted in Azure
-	exists, retryAfter, err := tc.AzureClient.HeadByID(tc.Ctx, armId, string(network.VirtualNetworksSpecAPIVersion20201101))
+	exists, retryAfter, err := tc.AzureClient.HeadByID(tc.Ctx, armId, string(network.APIVersion_Value))
 	tc.Expect(err).ToNot(HaveOccurred())
 	tc.Expect(retryAfter).To(BeZero())
 	tc.Expect(exists).To(BeFalse())
@@ -59,9 +51,9 @@ func Test_Networking_VirtualNetwork_CRUD(t *testing.T) {
 func Subnet_CRUD(tc *testcommon.KubePerTestContext, vnet *network.VirtualNetwork) {
 	subnet := &network.VirtualNetworksSubnet{
 		ObjectMeta: tc.MakeObjectMeta("subnet"),
-		Spec: network.VirtualNetworksSubnets_Spec{
+		Spec: network.VirtualNetworks_Subnet_Spec{
 			Owner:         testcommon.AsOwner(vnet),
-			AddressPrefix: "10.0.0.0/24",
+			AddressPrefix: to.StringPtr("10.0.0.0/24"),
 		},
 	}
 
@@ -73,12 +65,60 @@ func Subnet_CRUD(tc *testcommon.KubePerTestContext, vnet *network.VirtualNetwork
 
 	// Update the subnet
 	old := subnet.DeepCopy()
-	subnet.Spec.Delegations = []network.VirtualNetworksSubnets_Spec_Properties_Delegations{
+	subnet.Spec.Delegations = []network.VirtualNetworks_Subnet_Properties_Delegations_Spec{
 		{
-			Name:        "mydelegation",
+			Name:        to.StringPtr("mydelegation"),
 			ServiceName: to.StringPtr("Microsoft.DBforMySQL/serversv2"),
 		},
 	}
 	tc.PatchResourceAndWait(old, subnet)
 	tc.Expect(subnet.Status.Delegations).To(HaveLen(1))
+}
+
+func Test_Networking_Subnet_CreatedThenVNETUpdated_SubnetStillExists(t *testing.T) {
+	t.Parallel()
+	tc := globalTestContext.ForTest(t)
+	rg := tc.CreateTestResourceGroupAndWait()
+
+	vnet := newVNet(tc, testcommon.AsOwner(rg), []string{"10.0.0.0/16"})
+
+	subnet := &network.VirtualNetworksSubnet{
+		ObjectMeta: tc.MakeObjectMeta("subnet"),
+		Spec: network.VirtualNetworks_Subnet_Spec{
+			Owner:         testcommon.AsOwner(vnet),
+			AddressPrefix: to.StringPtr("10.0.0.0/24"),
+		},
+	}
+
+	tc.CreateResourceAndWait(vnet)
+	tc.CreateResourceAndWait(subnet)
+	tc.Expect(subnet.Status.Id).ToNot(BeNil())
+	armId := *subnet.Status.Id
+
+	// Now update the VNET
+	old := vnet.DeepCopy()
+	vnet.Spec.Tags = map[string]string{
+		"taters": "boil 'em, mash 'em, stick 'em in a stew",
+	}
+	tc.PatchResourceAndWait(old, vnet)
+
+	// Now ensure that the Subnet still exists
+	// Ensure that the resource was really deleted in Azure
+	exists, _, err := tc.AzureClient.HeadByID(tc.Ctx, armId, string(network.APIVersion_Value))
+	tc.Expect(err).ToNot(HaveOccurred())
+	tc.Expect(exists).To(BeTrue())
+}
+
+func newVNet(tc *testcommon.KubePerTestContext, owner *genruntime.KnownResourceReference, addressPrefixes []string) *network.VirtualNetwork {
+	vnet := &network.VirtualNetwork{
+		ObjectMeta: tc.MakeObjectMeta("vn"),
+		Spec: network.VirtualNetwork_Spec{
+			Owner:    owner,
+			Location: tc.AzureRegion,
+			AddressSpace: &network.AddressSpace{
+				AddressPrefixes: addressPrefixes,
+			},
+		},
+	}
+	return vnet
 }

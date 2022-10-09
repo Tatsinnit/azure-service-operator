@@ -30,7 +30,7 @@ const (
 // Configuration is used to control which types get generated
 type Configuration struct {
 	// Base URL for the JSON schema to generate
-	SchemaURL string `yaml:"schemaUrl"`
+	SchemaURLs []string `yaml:"schemaUrls"`
 	// Part of the schema URL to rewrite, allows repointing to local files
 	SchemaURLRewrite *RewriteRule `yaml:"schemaUrlRewrite"`
 	// Information about where to locate status (Swagger) files
@@ -50,10 +50,14 @@ type Configuration struct {
 	TypeFilters []*TypeFilter `yaml:"typeFilters"`
 	// Transformers used to remap types
 	Transformers []*TypeTransformer `yaml:"typeTransformers"`
-	// SamplesURL is the URL the samples are accessible at. Paths will be appended to the end of this to
-	// build full sample links. If this is not specified, no samples links are generated.
-	SamplesURL string `yaml:"samplesUrl"`
-
+	// RootURL is the root URL for ASOv2 repo, paths are appended to this to generate resource links.
+	RootURL string `yaml:"rootUrl"`
+	// SamplesPath is the Path the samples are accessible at. This is used to walk through the samples directory and generate sample links.
+	SamplesPath string `yaml:"samplesPath"`
+	// EmitDocFiles is used as a signal to create doc.go files for packages. If omitted, default is false.
+	EmitDocFiles bool `yaml:"emitDocFiles"`
+	// Destination file and additional information for our supported resources report
+	SupportedResourcesReport *SupportedResourcesReport `yaml:"supportedResourcesReport"`
 	// Additional information about our object model
 	ObjectModelConfiguration *ObjectModelConfiguration `yaml:"objectModelConfiguration"`
 
@@ -91,8 +95,8 @@ func (config *Configuration) FullTypesRegistrationOutputFilePath() string {
 
 func (config *Configuration) GetTypeFiltersError() error {
 	for _, filter := range config.TypeFilters {
-		if !filter.MatchedRequiredTypes() {
-			return errors.Errorf("Type filter action: %q, target: %q matched no types", filter.Action, filter.String())
+		if err := filter.RequiredTypesWereMatched(); err != nil {
+			return errors.Wrapf(err, "type filter action: %q", filter.Action)
 		}
 	}
 
@@ -101,8 +105,8 @@ func (config *Configuration) GetTypeFiltersError() error {
 
 func (config *Configuration) GetTypeTransformersError() error {
 	for _, filter := range config.typeTransformers {
-		if !filter.MatchedRequiredTypes() {
-			return errors.Errorf("Type transformer target: %q matched no types", filter.String())
+		if err := filter.RequiredTypesWereMatched(); err != nil {
+			return errors.Wrap(err, "type transformer")
 		}
 	}
 
@@ -110,35 +114,49 @@ func (config *Configuration) GetTypeTransformersError() error {
 }
 
 func (config *Configuration) GetPropertyTransformersError() error {
+	var errs []error
 	for _, filter := range config.propertyTransformers {
-		if !filter.MatchedRequiredTypes() {
-			return errors.Errorf("Type transformer target: %q for property %q matched no types", filter.String(), filter.Property)
+		if err := filter.RequiredTypesWereMatched(); err != nil {
+			errs = append(errs, err)
+			continue
 		}
-		if !filter.MatchedRequiredProperties() {
-			return errors.Errorf("Type transformer target: %q for property %q matched types, but no types had the property", filter.String(), filter.Property)
+
+		if err := filter.RequiredPropertiesWereMatched(); err != nil {
+			errs = append(errs, err)
 		}
 	}
 
-	return nil
+	return errors.Wrap(
+		kerrors.NewAggregate(errs),
+		"type transformer target")
 }
 
 // NewConfiguration returns a new empty Configuration
 func NewConfiguration() *Configuration {
-	return &Configuration{
+	result := &Configuration{
 		ObjectModelConfiguration: NewObjectModelConfiguration(),
 	}
+
+	result.SupportedResourcesReport = NewSupportedResourcesReport(result)
+
+	return result
 }
 
 // LoadConfiguration loads a `Configuration` from the specified file
 func LoadConfiguration(configurationFile string) (*Configuration, error) {
-	data, err := os.ReadFile(configurationFile)
+	f, err := os.Open(configurationFile)
 	if err != nil {
 		return nil, err
 	}
 
-	result := &Configuration{}
+	// MUST use this to ensure that ObjectModelConfiguration is instantiated correctly
+	// TODO: split Configuration struct so that domain model is not used for serialization!
+	result := NewConfiguration()
 
-	err = yaml.Unmarshal(data, result)
+	decoder := yaml.NewDecoder(f)
+	decoder.KnownFields(true) // Error on unknown fields
+
+	err = decoder.Decode(result)
 	if err != nil {
 		return nil, errors.Wrapf(err, "configuration file loaded from %q is not valid YAML", configurationFile)
 	}
@@ -186,11 +204,32 @@ func (config *Configuration) IsSecret(name astmodel.TypeName, property astmodel.
 	return config.ObjectModelConfiguration.IsSecret(name, property)
 }
 
+// VerifyIsSecretConsumed returns an error if any configured Secret References were not consumed
+func (config *Configuration) VerifyIsSecretConsumed() error {
+	return config.ObjectModelConfiguration.VerifyIsSecretConsumed()
+}
+
+// IsResourceLifecycleOwnedByParent looks up a property to determine if represents a subresource whose lifecycle is owned
+// by the parent resource.
+func (config *Configuration) IsResourceLifecycleOwnedByParent(name astmodel.TypeName, property astmodel.PropertyName) (bool, error) {
+	return config.ObjectModelConfiguration.IsResourceLifecycleOwnedByParent(name, property)
+}
+
+// MarkIsResourceLifecycleOwnedByParentUnconsumed marks all IsResourceLifecycleOwnedByParent as unconsumed
+func (config *Configuration) MarkIsResourceLifecycleOwnedByParentUnconsumed() error {
+	return config.ObjectModelConfiguration.MarkIsResourceLifecycleOwnedByParentUnconsumed()
+}
+
+// VerifyIsResourceLifecycleOwnedByParentConsumed returns an error if any IsResourceLifecycleOwnedByParent flag is not consumed
+func (config *Configuration) VerifyIsResourceLifecycleOwnedByParentConsumed() error {
+	return config.ObjectModelConfiguration.VerifyIsResourceLifecycleOwnedByParentConsumed()
+}
+
 // initialize checks for common errors and initializes structures inside the configuration
 // which need additional setup after json deserialization
 func (config *Configuration) initialize(configPath string) error {
-	if config.SchemaURL == "" {
-		return errors.New("SchemaURL missing")
+	if len(config.SchemaURLs) == 0 {
+		return errors.New("SchemaURLs missing")
 	}
 
 	absConfigLocation, err := filepath.Abs(configPath)
@@ -200,15 +239,19 @@ func (config *Configuration) initialize(configPath string) error {
 
 	configDirectory := filepath.Dir(absConfigLocation)
 
-	schemaURL, err := url.Parse(config.SchemaURL)
-	if err != nil {
-		return errors.Wrapf(err, "SchemaURL invalid")
-	}
-
 	configDirectoryURL := absDirectoryPathToURL(configDirectory)
 
 	// resolve URLs relative to config directory (if needed)
-	config.SchemaURL = configDirectoryURL.ResolveReference(schemaURL).String()
+	resolvedURLs := make([]string, 0, len(config.SchemaURLs))
+	for _, schemaURLStr := range config.SchemaURLs {
+		var schemaURL *url.URL
+		schemaURL, err = url.Parse(schemaURLStr)
+		if err != nil {
+			return errors.Wrapf(err, "SchemaURL invalid")
+		}
+		resolvedURLs = append(resolvedURLs, configDirectoryURL.ResolveReference(schemaURL).String())
+	}
+	config.SchemaURLs = resolvedURLs
 
 	if config.SchemaURLRewrite != nil {
 		rewrite := config.SchemaURLRewrite
@@ -276,7 +319,7 @@ func (config *Configuration) initialize(configPath string) error {
 			errs = append(errs, err)
 		}
 
-		if transformer.Property != "" {
+		if transformer.Property.IsRestrictive() {
 			propertyTransformers = append(propertyTransformers, transformer)
 		} else {
 			typeTransformers = append(typeTransformers, transformer)
@@ -356,7 +399,7 @@ func (config *Configuration) TransformTypeProperties(name astmodel.TypeName, obj
 
 // MakeLocalPackageReference creates a local package reference based on the configured destination location
 func (config *Configuration) MakeLocalPackageReference(group string, version string) astmodel.LocalPackageReference {
-	return astmodel.MakeLocalPackageReference(config.LocalPathPrefix(), group, version)
+	return astmodel.MakeLocalPackageReference(config.LocalPathPrefix(), group, astmodel.GeneratorVersion, version)
 }
 
 func getModulePathFromModFile(modFilePath string) (string, error) {
@@ -398,4 +441,18 @@ type SchemaOverride struct {
 
 	// A suffix to add on to the group name
 	Suffix string `yaml:"suffix"`
+
+	// We don't use this now
+	ResourceConfig []ResourceConfig `yaml:"resourceConfig"`
+
+	// We don't use this now
+	PostProcessor string `yaml:"postProcessor"`
+}
+
+type ResourceConfig struct {
+	Type string `yaml:"type"`
+
+	// TODO: Not sure that this datatype should be string, but we don't use it right now so keeping it as
+	// TODO: string for simplicity
+	Scopes string `yaml:"scopes"`
 }

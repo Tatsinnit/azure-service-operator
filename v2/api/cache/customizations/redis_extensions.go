@@ -14,30 +14,32 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	"k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/conversion"
 
-	redis "github.com/Azure/azure-service-operator/v2/api/cache/v1alpha1api20201201storage"
+	redis "github.com/Azure/azure-service-operator/v2/api/cache/v1beta20201201storage"
 	"github.com/Azure/azure-service-operator/v2/internal/genericarmclient"
 	. "github.com/Azure/azure-service-operator/v2/internal/logging"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
-	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/extensions"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/secrets"
 )
 
-var _ extensions.SecretsRetriever = &RedisExtension{}
+var _ genruntime.KubernetesExporter = &RedisExtension{}
 
-func (ext *RedisExtension) RetrieveSecrets(
+func (ext *RedisExtension) ExportKubernetesResources(
 	ctx context.Context,
 	obj genruntime.MetaObject,
 	armClient *genericarmclient.GenericClient,
-	log logr.Logger) ([]*v1.Secret, error) {
+	log logr.Logger) ([]client.Object, error) {
 
+	// This has to be the current hub storage version. It will need to be updated
+	// if the hub storage version changes.
 	typedObj, ok := obj.(*redis.Redis)
 	if !ok {
-		return nil, errors.Errorf("cannot run on unknown resource type %T", obj)
+		return nil, errors.Errorf("cannot run on unknown resource type %T, expected *redis.Redis", obj)
 	}
 
-	// Type assert that we are the hub type. This should fail to compile if
+	// Type assert that we are the hub type. This will fail to compile if
 	// the hub type has been changed but this extension has not
 	var _ conversion.Hub = typedObj
 
@@ -47,7 +49,7 @@ func (ext *RedisExtension) RetrieveSecrets(
 		return nil, nil
 	}
 
-	id, err := genruntime.GetAndParseResourceID(obj)
+	id, err := genruntime.GetAndParseResourceID(typedObj)
 	if err != nil {
 		return nil, err
 	}
@@ -58,10 +60,14 @@ func (ext *RedisExtension) RetrieveSecrets(
 		subscription := armClient.SubscriptionID()
 		// Using armClient.ClientOptions() here ensures we share the same HTTP connection, so this is not opening a new
 		// connection each time through
-		redisClient := armredis.NewClient(subscription, armClient.Creds(), armClient.ClientOptions())
+		var redisClient *armredis.Client
+		redisClient, err = armredis.NewClient(subscription, armClient.Creds(), armClient.ClientOptions())
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to create new new RedisClient")
+		}
 
 		var resp armredis.ClientListKeysResponse
-		resp, err = redisClient.ListKeys(ctx, id.ResourceGroupName, obj.AzureName(), nil)
+		resp, err = redisClient.ListKeys(ctx, id.ResourceGroupName, typedObj.AzureName(), nil)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed listing keys")
 		}
@@ -72,7 +78,7 @@ func (ext *RedisExtension) RetrieveSecrets(
 		return nil, err
 	}
 
-	return secretSlice, nil
+	return secrets.SliceToClientObjectSlice(secretSlice), nil
 }
 
 func secretsSpecified(obj *redis.Redis) (bool, bool) {
@@ -104,14 +110,14 @@ func secretsToWrite(obj *redis.Redis, accessKeys armredis.AccessKeys) ([]*v1.Sec
 		return nil, errors.Errorf("unexpected nil operatorspec")
 	}
 
-	collector := secrets.NewSecretCollector(obj.Namespace)
-	collector.AddSecretValue(operatorSpecSecrets.PrimaryKey, to.String(accessKeys.PrimaryKey))
-	collector.AddSecretValue(operatorSpecSecrets.SecondaryKey, to.String(accessKeys.SecondaryKey))
-	collector.AddSecretValue(operatorSpecSecrets.HostName, to.String(obj.Status.HostName))
-	collector.AddSecretValue(operatorSpecSecrets.Port, intPtrToString(obj.Status.Port))
-	collector.AddSecretValue(operatorSpecSecrets.SSLPort, intPtrToString(obj.Status.SslPort))
+	collector := secrets.NewCollector(obj.Namespace)
+	collector.AddValue(operatorSpecSecrets.PrimaryKey, to.String(accessKeys.PrimaryKey))
+	collector.AddValue(operatorSpecSecrets.SecondaryKey, to.String(accessKeys.SecondaryKey))
+	collector.AddValue(operatorSpecSecrets.HostName, to.String(obj.Status.HostName))
+	collector.AddValue(operatorSpecSecrets.Port, intPtrToString(obj.Status.Port))
+	collector.AddValue(operatorSpecSecrets.SSLPort, intPtrToString(obj.Status.SslPort))
 
-	return collector.Secrets(), nil
+	return collector.Values()
 }
 
 func intPtrToString(i *int) string {

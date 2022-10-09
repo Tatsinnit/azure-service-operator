@@ -13,15 +13,15 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	cache "github.com/Azure/azure-service-operator/v2/api/cache/v1alpha1api20201201"
-	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1alpha1api20200601"
+	cache "github.com/Azure/azure-service-operator/v2/api/cache/v1beta20201201"
+	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
 
-//nolint:tparallel
 func Test_Cache_Redis_CRUD(t *testing.T) {
 	t.Parallel()
+
 	tc := globalTestContext.ForTest(t)
 
 	rg := tc.CreateTestResourceGroupAndWait()
@@ -37,7 +37,7 @@ func Test_Cache_Redis_CRUD(t *testing.T) {
 
 	// Perform a simple patch
 	old := redis1.DeepCopy()
-	enabled := cache.RedisCreatePropertiesPublicNetworkAccessEnabled
+	enabled := cache.RedisCreateProperties_PublicNetworkAccess_Enabled
 	redis1.Spec.PublicNetworkAccess = &enabled
 	tc.PatchResourceAndWait(old, redis1)
 	tc.Expect(redis1.Status.PublicNetworkAccess).ToNot(BeNil())
@@ -47,21 +47,25 @@ func Test_Cache_Redis_CRUD(t *testing.T) {
 	// same time seems to wreak havoc (or at least make things take a
 	// lot longer), so test firewall rules synchronously first -
 	// they're quick when not clobbering links.
-	tc.T.Run("Redis firewall rule CRUD", func(t *testing.T) {
-		Redis_FirewallRule_CRUD(tc.Subtest(t), redis1)
-	})
+	tc.RunSubtests(
+		testcommon.Subtest{
+			Name: "Redis firewall rule CRUD",
+			Test: func(tc *testcommon.KubePerTestContext) {
+				Redis_FirewallRule_CRUD(tc, redis1)
+			},
+		})
 
 	tc.RunParallelSubtests(
 		testcommon.Subtest{
 			Name: "Redis linked server CRUD",
-			Test: func(testContext *testcommon.KubePerTestContext) {
-				Redis_LinkedServer_CRUD(testContext, rg, redis1, redis2)
+			Test: func(tc *testcommon.KubePerTestContext) {
+				Redis_LinkedServer_CRUD(tc, rg, redis1, redis2)
 			},
 		},
 		testcommon.Subtest{
 			Name: "Redis patch schedule CRUD",
-			Test: func(testContext *testcommon.KubePerTestContext) {
-				Redis_PatchSchedule_CRUD(testContext, redis1)
+			Test: func(tc *testcommon.KubePerTestContext) {
+				Redis_PatchSchedule_CRUD(tc, redis1)
 			},
 		},
 	)
@@ -69,23 +73,25 @@ func Test_Cache_Redis_CRUD(t *testing.T) {
 	tc.DeleteResourcesAndWait(redis1, redis2)
 
 	// Ensure that the resource was really deleted in Azure
-	exists, retryAfter, err := tc.AzureClient.HeadByID(tc.Ctx, armId, string(cache.RedisSpecAPIVersion20201201))
+	exists, retryAfter, err := tc.AzureClient.HeadByID(tc.Ctx, armId, string(cache.APIVersion_Value))
 	tc.Expect(err).ToNot(HaveOccurred())
 	tc.Expect(retryAfter).To(BeZero())
 	tc.Expect(exists).To(BeFalse())
 }
 
 func makeRedis(tc *testcommon.KubePerTestContext, rg *resources.ResourceGroup, prefix string) *cache.Redis {
-	tls12 := cache.RedisCreatePropertiesMinimumTlsVersion12
+	tls12 := cache.RedisCreateProperties_MinimumTlsVersion_12
+	family := cache.Sku_Family_P
+	sku := cache.Sku_Name_Premium
 	return &cache.Redis{
 		ObjectMeta: tc.MakeObjectMeta(prefix),
 		Spec: cache.Redis_Spec{
 			Location: tc.AzureRegion,
 			Owner:    testcommon.AsOwner(rg),
-			Sku: cache.Sku{
-				Family:   "P",
-				Name:     "Premium",
-				Capacity: 1,
+			Sku: &cache.Sku{
+				Family:   &family,
+				Name:     &sku,
+				Capacity: to.IntPtr(1),
 			},
 			EnableNonSslPort:  to.BoolPtr(false),
 			MinimumTlsVersion: &tls12,
@@ -98,16 +104,17 @@ func makeRedis(tc *testcommon.KubePerTestContext, rg *resources.ResourceGroup, p
 	}
 }
 
-func Redis_LinkedServer_CRUD(tc *testcommon.KubePerTestContext, rg *resources.ResourceGroup, redis1, redis2 *cache.Redis) {
+func Redis_LinkedServer_CRUD(tc *testcommon.KubePerTestContext, _ *resources.ResourceGroup, redis1, redis2 *cache.Redis) {
 	// Interesting - the link needs to have the same name as the
 	// secondary server.
+	serverRole := cache.RedisLinkedServerCreateProperties_ServerRole_Secondary
 	linkedServer := cache.RedisLinkedServer{
 		ObjectMeta: tc.MakeObjectMetaWithName(redis2.ObjectMeta.Name),
-		Spec: cache.RedisLinkedServers_Spec{
+		Spec: cache.Redis_LinkedServer_Spec{
 			Owner:                     testcommon.AsOwner(redis1),
 			LinkedRedisCacheLocation:  tc.AzureRegion,
 			LinkedRedisCacheReference: tc.MakeReferenceFromResource(redis2),
-			ServerRole:                cache.RedisLinkedServerCreatePropertiesServerRoleSecondary,
+			ServerRole:                &serverRole,
 		},
 	}
 
@@ -119,35 +126,39 @@ func Redis_LinkedServer_CRUD(tc *testcommon.KubePerTestContext, rg *resources.Re
 }
 
 func Redis_PatchSchedule_CRUD(tc *testcommon.KubePerTestContext, redis *cache.Redis) {
+	monday := cache.ScheduleEntry_DayOfWeek_Monday
 	schedule := cache.RedisPatchSchedule{
 		ObjectMeta: tc.MakeObjectMeta("patchsched"),
-		Spec: cache.RedisPatchSchedules_Spec{
+		Spec: cache.Redis_PatchSchedule_Spec{
 			Owner: testcommon.AsOwner(redis),
 			ScheduleEntries: []cache.ScheduleEntry{{
-				DayOfWeek:         "Monday",
+				DayOfWeek:         &monday,
 				MaintenanceWindow: to.StringPtr("PT6H"),
-				StartHourUtc:      6,
+				StartHourUtc:      to.IntPtr(6),
 			}},
 		},
 	}
 	tc.CreateResourceAndWait(&schedule)
 	tc.Expect(schedule.Status.Id).ToNot(BeNil())
 
+	wednesday := cache.ScheduleEntry_DayOfWeek_Wednesday
 	old := schedule.DeepCopy()
 	schedule.Spec.ScheduleEntries = append(schedule.Spec.ScheduleEntries, cache.ScheduleEntry{
-		DayOfWeek:         "Wednesday",
+		DayOfWeek:         &wednesday,
 		MaintenanceWindow: to.StringPtr("PT6H30S"),
-		StartHourUtc:      7,
+		StartHourUtc:      to.IntPtr(7),
 	})
 	tc.PatchResourceAndWait(old, &schedule)
-	tc.Expect(schedule.Status.ScheduleEntries).To(Equal([]cache.ScheduleEntry_Status{{
-		DayOfWeek:         "Monday",
+	statusMonday := cache.ScheduleEntry_DayOfWeek_STATUS_Monday
+	statusWednesday := cache.ScheduleEntry_DayOfWeek_STATUS_Wednesday
+	tc.Expect(schedule.Status.ScheduleEntries).To(Equal([]cache.ScheduleEntry_STATUS{{
+		DayOfWeek:         &statusMonday,
 		MaintenanceWindow: to.StringPtr("PT6H"),
-		StartHourUtc:      6,
+		StartHourUtc:      to.IntPtr(6),
 	}, {
-		DayOfWeek:         "Wednesday",
+		DayOfWeek:         &statusWednesday,
 		MaintenanceWindow: to.StringPtr("PT6H30S"),
-		StartHourUtc:      7,
+		StartHourUtc:      to.IntPtr(7),
 	}}))
 	// The patch schedule is always named default in Azure whatever we
 	// call it in k8s, and can't be deleted once it's created.
@@ -157,10 +168,10 @@ func Redis_FirewallRule_CRUD(tc *testcommon.KubePerTestContext, redis *cache.Red
 	// The RP doesn't like rules with hyphens in the name.
 	rule := cache.RedisFirewallRule{
 		ObjectMeta: tc.MakeObjectMetaWithName(tc.NoSpaceNamer.GenerateName("fwrule")),
-		Spec: cache.RedisFirewallRules_Spec{
+		Spec: cache.Redis_FirewallRule_Spec{
 			Owner:   testcommon.AsOwner(redis),
-			StartIP: "1.2.3.4",
-			EndIP:   "1.2.3.4",
+			StartIP: to.StringPtr("1.2.3.4"),
+			EndIP:   to.StringPtr("1.2.3.4"),
 		},
 	}
 
@@ -168,7 +179,7 @@ func Redis_FirewallRule_CRUD(tc *testcommon.KubePerTestContext, redis *cache.Red
 	defer tc.DeleteResourceAndWait(&rule)
 
 	old := rule.DeepCopy()
-	rule.Spec.EndIP = "1.2.3.5"
+	rule.Spec.EndIP = to.StringPtr("1.2.3.5")
 	tc.PatchResourceAndWait(old, &rule)
 	tc.Expect(rule.Status.EndIP).ToNot(BeNil())
 	tc.Expect(*rule.Status.EndIP).To(Equal("1.2.3.5"))

@@ -14,7 +14,7 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	network "github.com/Azure/azure-service-operator/v2/api/network/v1alpha1api20201101"
+	network "github.com/Azure/azure-service-operator/v2/api/network/v1beta20201101"
 	"github.com/Azure/azure-service-operator/v2/internal/genericarmclient"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
@@ -30,7 +30,8 @@ func Test_Networking_LoadBalancer_CRUD(t *testing.T) {
 	rg := tc.CreateTestResourceGroupAndWait()
 
 	// Public IP Address
-	sku := network.PublicIPAddressSkuNameStandard
+	sku := network.PublicIPAddressSku_Name_Standard
+	allocationMethod := network.PublicIPAddressPropertiesFormat_PublicIPAllocationMethod_Static
 	publicIPAddress := &network.PublicIPAddress{
 		TypeMeta: metav1.TypeMeta{
 			Kind: reflect.TypeOf(network.PublicIPAddress{}).Name(),
@@ -42,17 +43,17 @@ func Test_Networking_LoadBalancer_CRUD(t *testing.T) {
 			Sku: &network.PublicIPAddressSku{
 				Name: &sku,
 			},
-			PublicIPAllocationMethod: network.PublicIPAddressPropertiesFormatPublicIPAllocationMethodStatic,
+			PublicIPAllocationMethod: &allocationMethod,
 		},
 	}
 
 	tc.CreateResourceAndWait(publicIPAddress)
 
 	// LoadBalancer
-	loadBalancerSku := network.LoadBalancerSkuNameStandard
+	loadBalancerSku := network.LoadBalancerSku_Name_Standard
 	lbName := tc.Namer.GenerateName("loadbalancer")
 	lbFrontendName := "LoadBalancerFrontend"
-	protocol := network.InboundNatPoolPropertiesFormatProtocolTcp
+	protocol := network.InboundNatPoolPropertiesFormat_Protocol_Tcp
 
 	// TODO: This is still really awkward
 	frontendIPConfigurationARMID, err := genericarmclient.MakeResourceGroupScopeARMID(
@@ -69,26 +70,26 @@ func Test_Networking_LoadBalancer_CRUD(t *testing.T) {
 
 	loadBalancer := &network.LoadBalancer{
 		ObjectMeta: tc.MakeObjectMetaWithName(lbName),
-		Spec: network.LoadBalancers_Spec{
+		Spec: network.LoadBalancer_Spec{
 			Location: tc.AzureRegion,
 			Owner:    testcommon.AsOwner(rg),
 			Sku: &network.LoadBalancerSku{
 				Name: &loadBalancerSku,
 			},
-			FrontendIPConfigurations: []network.LoadBalancers_Spec_Properties_FrontendIPConfigurations{
+			FrontendIPConfigurations: []network.LoadBalancer_Properties_FrontendIPConfigurations_Spec{
 				{
-					Name: lbFrontendName,
+					Name: &lbFrontendName,
 					PublicIPAddress: &network.SubResource{
 						Reference: tc.MakeReferenceFromResource(publicIPAddress),
 					},
 				},
 			},
 			// TODO: The below stuff isn't really necessary for LB CRUD but is required for VMSS...
-			InboundNatPools: []network.LoadBalancers_Spec_Properties_InboundNatPools{
+			InboundNatPools: []network.LoadBalancer_Properties_InboundNatPools_Spec{
 				{
-					Name: "MyFancyNatPool",
+					Name: to.StringPtr("MyFancyNatPool"),
 					FrontendIPConfiguration: &network.SubResource{
-						Reference: genruntime.ResourceReference{
+						Reference: &genruntime.ResourceReference{
 							ARMID: frontendIPConfigurationARMID,
 						},
 					},
@@ -110,7 +111,7 @@ func Test_Networking_LoadBalancer_CRUD(t *testing.T) {
 	tc.DeleteResourceAndWait(loadBalancer)
 
 	// Ensure that the resource was really deleted in Azure
-	exists, retryAfter, err := tc.AzureClient.HeadByID(ctx, armId, string(network.LoadBalancersSpecAPIVersion20201101))
+	exists, retryAfter, err := tc.AzureClient.HeadByID(ctx, armId, string(network.APIVersion_Value))
 	g.Expect(err).ToNot(HaveOccurred())
 	g.Expect(retryAfter).To(BeZero())
 	g.Expect(exists).To(BeFalse())

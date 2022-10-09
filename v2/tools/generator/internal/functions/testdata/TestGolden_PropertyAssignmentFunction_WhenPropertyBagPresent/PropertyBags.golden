@@ -4,24 +4,24 @@
 package v20200101
 
 import (
-	person "github.com/Azure/azure-service-operator/testing/person/v20211231"
+	v20211231 "github.com/Azure/azure-service-operator/testing/person/v20211231"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 	"github.com/pkg/errors"
 )
 
 type Person struct {
-	//FamilyName: Shared name of the family
-	FamilyName string `json:"familyName"`
+	// FamilyName: Shared name of the family
+	FamilyName string `json:"familyName,omitempty"`
 
-	//FullName: As would be used to address mail
-	FullName string `json:"fullName"`
+	// FullName: As would be used to address mail
+	FullName string `json:"fullName,omitempty"`
 
-	//KnownAs: How the person is generally known
-	KnownAs string `json:"knownAs"`
+	// KnownAs: How the person is generally known
+	KnownAs string `json:"knownAs,omitempty"`
 }
 
-// AssignPropertiesFromPerson populates our Person from the provided source Person
-func (person *Person) AssignPropertiesFromPerson(source *person.Person) error {
+// AssignProperties_From_Person populates our Person from the provided source Person
+func (person *Person) AssignProperties_From_Person(source *v20211231.Person) error {
 	// Clone the existing property bag
 	propertyBag := genruntime.NewPropertyBag(source.PropertyBag)
 
@@ -58,8 +58,8 @@ func (person *Person) AssignPropertiesFromPerson(source *person.Person) error {
 	return nil
 }
 
-// AssignPropertiesToPerson populates the provided destination Person from our Person
-func (person *Person) AssignPropertiesToPerson(destination *person.Person) error {
+// AssignProperties_To_Person populates the provided destination Person from our Person
+func (person *Person) AssignProperties_To_Person(destination *v20211231.Person) error {
 	// Create a new property bag
 	propertyBag := genruntime.NewPropertyBag()
 

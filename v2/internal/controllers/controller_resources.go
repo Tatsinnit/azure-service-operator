@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"k8s.io/apimachinery/pkg/conversion"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
-
-	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
+	ctrlconversion "sigs.k8s.io/controller-runtime/pkg/conversion"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -25,33 +27,197 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1alpha1api20200601"
+	mysql "github.com/Azure/azure-service-operator/v2/api/dbformysql/v1beta1"
+	networkstorage "github.com/Azure/azure-service-operator/v2/api/network/v1beta20201101storage"
+	resourcesalpha "github.com/Azure/azure-service-operator/v2/api/resources/v1alpha1api20200601"
+	resourcesbeta "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
 	. "github.com/Azure/azure-service-operator/v2/internal/logging"
+	"github.com/Azure/azure-service-operator/v2/internal/reconcilers/arm"
+	mysqlreconciler "github.com/Azure/azure-service-operator/v2/internal/reconcilers/mysql"
 	"github.com/Azure/azure-service-operator/v2/internal/reflecthelpers"
+	"github.com/Azure/azure-service-operator/v2/internal/resolver"
+	"github.com/Azure/azure-service-operator/v2/internal/util/kubeclient"
+	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
+	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/registration"
 )
 
-func GetKnownStorageTypes() []registration.StorageType {
-	knownTypes := getKnownStorageTypes()
+func GetKnownStorageTypes(
+	mgr ctrl.Manager,
+	armClientFactory arm.ARMClientFactory,
+	kubeClient kubeclient.Client,
+	positiveConditions *conditions.PositiveConditionBuilder,
+	options Options) ([]*registration.StorageType, error) {
 
-	knownTypes = append(
-		knownTypes,
-		registration.MakeStorageType(new(resources.ResourceGroup)))
+	resourceResolver := resolver.NewResolver(kubeClient)
+	knownStorageTypes, err := getGeneratedStorageTypes(mgr, armClientFactory, kubeClient, resourceResolver, positiveConditions, options)
+	if err != nil {
+		return nil, err
+	}
 
-	return knownTypes
+	knownStorageTypes = append(
+		knownStorageTypes,
+		&registration.StorageType{
+			Obj: &mysql.User{},
+			Reconciler: mysqlreconciler.NewMySQLUserReconciler(
+				kubeClient,
+				resourceResolver,
+				positiveConditions,
+				options.Config),
+			Indexes: []registration.Index{
+				{
+					Key:  ".spec.localUser.password",
+					Func: indexMySQLUserPassword,
+				},
+			},
+			Watches: []registration.Watch{
+				{
+					Src:              &source.Kind{Type: &corev1.Secret{}},
+					MakeEventHandler: watchSecretsFactory([]string{".spec.localUser.password"}, &mysql.UserList{}),
+				},
+			},
+		})
+
+	for _, t := range knownStorageTypes {
+		err := augmentWithControllerName(t)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return knownStorageTypes, nil
+}
+
+func getGeneratedStorageTypes(
+	mgr ctrl.Manager,
+	armClientFactory arm.ARMClientFactory,
+	kubeClient kubeclient.Client,
+	resourceResolver *resolver.Resolver,
+	positiveConditions *conditions.PositiveConditionBuilder,
+	options Options) ([]*registration.StorageType, error) {
+	knownStorageTypes := getKnownStorageTypes()
+
+	knownStorageTypes = append(
+		knownStorageTypes,
+		registration.NewStorageType(&resourcesbeta.ResourceGroup{}))
+
+	// Verify we're using the hub version of VirtualNetworksSubnet in the loop below
+	var _ ctrlconversion.Hub = &networkstorage.VirtualNetworksSubnet{}
+
+	// TODO: Modifying this list would be easier if it were a map
+	for _, t := range knownStorageTypes {
+		if _, ok := t.Obj.(*networkstorage.VirtualNetworksSubnet); ok {
+			t.Indexes = append(t.Indexes, registration.Index{
+				Key:  ".metadata.ownerReferences[0]",
+				Func: indexOwner,
+			})
+		}
+		if _, ok := t.Obj.(*networkstorage.RouteTablesRoute); ok {
+			t.Indexes = append(t.Indexes, registration.Index{
+				Key:  ".metadata.ownerReferences[0]",
+				Func: indexOwner,
+			})
+		}
+	}
+
+	err := resourceResolver.IndexStorageTypes(mgr.GetScheme(), knownStorageTypes)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed add storage types to resource resolver")
+	}
+
+	var extensions map[schema.GroupVersionKind]genruntime.ResourceExtension
+	extensions, err = GetResourceExtensions(mgr.GetScheme())
+	if err != nil {
+		return nil, errors.Wrap(err, "failed getting extensions")
+	}
+
+	for _, t := range knownStorageTypes {
+		// Use the provided GVK to construct a new runtime object of the desired concrete type.
+		var gvk schema.GroupVersionKind
+		gvk, err = apiutil.GVKForObject(t.Obj, mgr.GetScheme())
+		if err != nil {
+			return nil, errors.Wrapf(err, "creating GVK for obj %T", t.Obj)
+		}
+		extension := extensions[gvk]
+
+		augmentWithARMReconciler(
+			armClientFactory,
+			kubeClient,
+			resourceResolver,
+			positiveConditions,
+			options,
+			extension,
+			t)
+	}
+
+	return knownStorageTypes, nil
+}
+
+func augmentWithARMReconciler(
+	armClientFactory arm.ARMClientFactory,
+	kubeClient kubeclient.Client,
+	resourceResolver *resolver.Resolver,
+	positiveConditions *conditions.PositiveConditionBuilder,
+	options Options,
+	extension genruntime.ResourceExtension,
+	t *registration.StorageType) {
+	t.Reconciler = arm.NewAzureDeploymentReconciler(
+		armClientFactory,
+		kubeClient,
+		resourceResolver,
+		positiveConditions,
+		options.Config,
+		extension)
+}
+
+func augmentWithControllerName(t *registration.StorageType) error {
+	controllerName, err := getControllerName(t.Obj)
+	if err != nil {
+		return errors.Wrapf(err, "failed to get controller name for obj %T", t.Obj)
+	}
+
+	t.Name = controllerName
+
+	return nil
+}
+
+func getControllerName(obj client.Object) (string, error) {
+	v, err := conversion.EnforcePtr(obj)
+	if err != nil {
+		return "", errors.Wrap(err, "t.Obj was expected to be ptr but was not")
+	}
+
+	typ := v.Type()
+	return fmt.Sprintf("%sController", typ.Name()), nil
+}
+
+func indexOwner(rawObj client.Object) []string {
+	owners := rawObj.GetOwnerReferences()
+	if len(owners) == 0 {
+		return nil
+	}
+
+	// Only works for 1 owner now but that's fine
+	return []string{string(owners[0].UID)}
 }
 
 func GetKnownTypes() []client.Object {
 	knownTypes := getKnownTypes()
 
-	knownTypes = append(knownTypes, new(resources.ResourceGroup))
+	knownTypes = append(
+		knownTypes,
+		&resourcesalpha.ResourceGroup{},
+		&resourcesbeta.ResourceGroup{},
+		&mysql.User{})
 
 	return knownTypes
 }
 
 func CreateScheme() *runtime.Scheme {
 	scheme := createScheme()
-	_ = resources.AddToScheme(scheme)
+	_ = resourcesalpha.AddToScheme(scheme)
+	_ = resourcesbeta.AddToScheme(scheme)
+	_ = mysql.AddToScheme(scheme)
 
 	return scheme
 }
@@ -117,7 +283,7 @@ func watchSecrets(c client.Client, log logr.Logger, keys []string, objList clien
 				continue
 			}
 
-			err := c.List(ctx, matchingResources, client.MatchingFields{key: o.GetName()})
+			err := c.List(ctx, matchingResources, client.MatchingFields{key: o.GetName()}, client.InNamespace(o.GetNamespace()))
 			if err != nil {
 				// According to https://github.com/kubernetes/kubernetes/issues/51046, APIServer itself
 				// doesn't actually support this. In our envtest tests, since we use a real client that

@@ -18,25 +18,48 @@ import (
 // this is shared between tests because
 // instantiating it requires HTTP calls
 var cachedCreds azcore.TokenCredential
-var cachedSubID string
+var cachedIds AzureIDs
 
-func getCreds() (azcore.TokenCredential, string, error) {
+const TestBillingIDVar = "TEST_BILLING_ID"
+
+type AzureIDs struct {
+	subscriptionID   string
+	tenantID         string
+	billingInvoiceID string
+}
+
+func getCreds() (azcore.TokenCredential, AzureIDs, error) {
 
 	if cachedCreds != nil {
-		return cachedCreds, cachedSubID, nil
+		return cachedCreds, cachedIds, nil
 	}
 
 	creds, err := azidentity.NewDefaultAzureCredential(nil)
 	if err != nil {
-		return nil, "", errors.Wrapf(err, "creating default credential")
+		return nil, AzureIDs{}, errors.Wrapf(err, "creating default credential")
 	}
 
 	subscriptionID := os.Getenv(config.SubscriptionIDVar)
 	if subscriptionID == "" {
-		return nil, "", errors.Errorf("required environment variable %q was not supplied", config.SubscriptionIDVar)
+		return nil, AzureIDs{}, errors.Errorf("required environment variable %q was not supplied", config.SubscriptionIDVar)
+	}
+
+	tenantID := os.Getenv(config.TenantIDVar)
+	if tenantID == "" {
+		return nil, AzureIDs{}, errors.Errorf("required environment variable %q was not supplied", config.TenantIDVar)
+	}
+
+	// This is test specific and doesn't have a corresponding config entry. It's also optional as it's only required for
+	// a small number of tests. Those tests will check for it explicitly
+	billingInvoiceId := os.Getenv(TestBillingIDVar)
+
+	ids := AzureIDs{
+		subscriptionID:   subscriptionID,
+		tenantID:         tenantID,
+		billingInvoiceID: billingInvoiceId,
 	}
 
 	cachedCreds = creds
-	cachedSubID = subscriptionID
-	return creds, subscriptionID, nil
+	cachedIds = ids
+	return creds, ids, nil
 }

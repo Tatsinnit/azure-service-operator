@@ -11,8 +11,10 @@ import (
 	"strings"
 
 	"github.com/dave/dst"
+	"golang.org/x/exp/slices"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
+	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/readonly"
 )
 
 // PropertyName is a semantic type
@@ -46,7 +48,7 @@ type PropertyDefinition struct {
 
 	isSecret bool
 
-	tags map[string][]string
+	tags readonly.Map[string, []string] // Note: have to be careful about not mutating inner []string
 }
 
 func (property *PropertyDefinition) AddFlattenedFrom(name PropertyName) *PropertyDefinition {
@@ -73,54 +75,36 @@ var _ fmt.Stringer = &PropertyDefinition{}
 // name is the name for the new property (mandatory)
 // propertyType is the type for the new property (mandatory)
 func NewPropertyDefinition(propertyName PropertyName, jsonName string, propertyType Type) *PropertyDefinition {
-	tags := make(map[string][]string)
-	tags["json"] = []string{jsonName}
-
 	return &PropertyDefinition{
 		propertyName:  propertyName,
 		propertyType:  propertyType,
 		description:   "",
 		flattenedFrom: []PropertyName{propertyName},
-		tags:          tags,
+		tags: readonly.CreateMap(map[string][]string{
+			"json": {jsonName, "omitempty"},
+		}),
 	}
 }
 
 // WithName returns a new PropertyDefinition with the given name
 func (property *PropertyDefinition) WithName(name PropertyName) *PropertyDefinition {
-	result := *property
+	result := property.copy()
 	result.propertyName = name
-	return &result
+	return result
 }
 
 // WithName returns a new PropertyDefinition with the JSON name
 func (property *PropertyDefinition) WithJsonName(jsonName string) *PropertyDefinition {
-	result := *property
+	result := property.copy()
 	// TODO post-alpha: replace result.tags with structured types
-	if jsonName != result.tags["json"][0] {
+	jsonTag, _ := result.tags.Get("json")
+	if jsonName != jsonTag[0] {
 		// copy tags and update
-		newTags := cloneMapOfStringToSliceOfString(result.tags)
-		jsonTagValues := cloneSliceOfString(newTags["json"])
+		jsonTagValues := slices.Clone(jsonTag)
 		jsonTagValues[0] = jsonName
-		newTags["json"] = jsonTagValues
-
-		result.tags = newTags
+		result.tags = result.tags.With("json", jsonTagValues)
 	}
 
-	return &result
-}
-
-func cloneMapOfStringToSliceOfString(m map[string][]string) map[string][]string {
-	result := make(map[string][]string)
-	for k, v := range m {
-		result[k] = v
-	}
-
-	return result
-}
-
-func cloneSliceOfString(s []string) []string {
-	result := make([]string, len(s))
-	copy(result, s)
 	return result
 }
 
@@ -134,28 +118,15 @@ func (property *PropertyDefinition) PropertyType() Type {
 	return property.propertyType
 }
 
-// WithKubebuilderRequiredValidation returns a new PropertyDefinition with the given Kubebuilder required annotation.
-// Note that this does not in any way change the underlying type that this PropertyDefinition points to, unlike
-// MakeRequired and MakeOptional.
-func (property *PropertyDefinition) WithKubebuilderRequiredValidation(required bool) *PropertyDefinition {
-	if required == property.hasKubebuilderRequiredValidation {
-		return property
-	}
-
-	result := *property
-	result.hasKubebuilderRequiredValidation = required
-	return &result
-}
-
 // SetFlatten sets if the property should be flattened or not
 func (property *PropertyDefinition) SetFlatten(flatten bool) *PropertyDefinition {
 	if flatten == property.flatten {
 		return property
 	}
 
-	result := *property
+	result := property.copy()
 	result.flatten = flatten
-	return &result
+	return result
 }
 
 // WithIsSecret returns a new PropertyDefinition with IsSecret set to the specified value
@@ -207,29 +178,36 @@ func (property *PropertyDefinition) HasName(name PropertyName) bool {
 
 // WithTag adds the given tag to the field
 func (property *PropertyDefinition) WithTag(key string, value string) *PropertyDefinition {
-	// Check if exists
-	for _, v := range property.tags[key] {
-		if v == value {
+	values, ok := property.tags.Get(key)
+	if ok {
+		if slices.Contains(values, value) {
 			return property
+		} else {
+			result := property.copy()
+			result.tags = result.tags.With(key, append(slices.Clone(values), value))
+			return result
 		}
+	} else {
+		result := property.copy()
+		result.tags = result.tags.With(key, []string{value})
+		return result
 	}
-
-	result := property.copy()
-	result.tags[key] = append(result.tags[key], value)
-
-	return result
 }
 
 // WithoutTag removes the given tag (or value of tag) from the field. If value is empty, remove the entire tag.
 // if value is not empty, remove just that value.
 func (property *PropertyDefinition) WithoutTag(key string, value string) *PropertyDefinition {
-	result := property.copy()
-
 	if value != "" {
 		// Find the value and remove it
 		// TODO: Do we want a generic helper that does this?
-		var tagsWithoutValue []string
-		for _, item := range result.tags[key] {
+		values, ok := property.tags.Get(key)
+		if !ok {
+			return property
+		}
+
+		result := property.copy()
+		tagsWithoutValue := make([]string, 0, len(values))
+		for _, item := range values {
 			if item == value {
 				continue
 			}
@@ -237,31 +215,27 @@ func (property *PropertyDefinition) WithoutTag(key string, value string) *Proper
 		}
 
 		if len(tagsWithoutValue) == 0 {
-			delete(result.tags, key)
+			result.tags = result.tags.Without(key)
 		} else {
-			result.tags[key] = tagsWithoutValue
+			result.tags = result.tags.With(key, tagsWithoutValue)
 		}
+		return result
 	} else {
-		delete(result.tags, key)
+		result := property.copy()
+		result.tags = result.tags.Without(key)
+		return result
 	}
-
-	return result
 }
 
 // HasTag returns true if the property has the specified tag
 func (property *PropertyDefinition) HasTag(key string) bool {
-	_, ok := property.tags[key]
-	return ok
+	return property.tags.ContainsKey(key)
 }
 
 // HasTagValue returns true if the property has the specified tag value
 func (property *PropertyDefinition) HasTagValue(key string, value string) bool {
-	if values, ok := property.tags[key]; ok {
-		for _, item := range values {
-			if item == value {
-				return true
-			}
-		}
+	if values, ok := property.tags.Get(key); ok {
+		return slices.Contains(values, value)
 	}
 
 	return false
@@ -269,8 +243,11 @@ func (property *PropertyDefinition) HasTagValue(key string, value string) bool {
 
 // Tag returns the tag values of a given tag key
 func (property *PropertyDefinition) Tag(key string) ([]string, bool) {
-	result, ok := property.tags[key]
-	return result, ok
+	if result, ok := property.tags.Get(key); ok {
+		return slices.Clone(result), true
+	}
+
+	return nil, false
 }
 
 // JSONName returns the JSON name of the property, or false if there is no json name
@@ -283,70 +260,94 @@ func (property *PropertyDefinition) JSONName() (string, bool) {
 	return jsonTag[0], true
 }
 
-func (property *PropertyDefinition) hasJsonOmitEmpty() bool {
-	return property.HasTagValue("json", "omitempty")
-}
-
-func (property *PropertyDefinition) withJsonOmitEmpty() *PropertyDefinition {
-	return property.WithTag("json", "omitempty")
-}
-
-func (property *PropertyDefinition) withoutJsonOmitEmpty() *PropertyDefinition {
-	return property.WithoutTag("json", "omitempty")
-}
-
 // MakeRequired returns a new PropertyDefinition that is marked as required
 func (property *PropertyDefinition) MakeRequired() *PropertyDefinition {
-	if !property.hasOptionalType() && property.HasKubebuilderRequiredValidation() && !property.hasJsonOmitEmpty() {
+	if property.IsRequired() {
 		return property
 	}
-	result := property.copy()
 
-	if property.hasOptionalType() {
-		// Need to remove the optionality
-		ot := property.propertyType.(*OptionalType)
-		result.propertyType = ot.BaseType()
+	if !isTypeOptional(property.PropertyType()) {
+		panic(fmt.Sprintf(
+			"property %s with non-optional type %T cannot be marked kubebuilder:validation:Required.",
+			property.PropertyName(),
+			property.PropertyType()))
 	}
 
+	result := property.copy()
 	result.hasKubebuilderRequiredValidation = true
-	result = result.withoutJsonOmitEmpty()
 
 	return result
 }
 
 // MakeOptional returns a new PropertyDefinition that has an optional value
 func (property *PropertyDefinition) MakeOptional() *PropertyDefinition {
-	if isTypeOptional(property.propertyType) && !property.HasKubebuilderRequiredValidation() && property.hasJsonOmitEmpty() {
+	if !property.IsRequired() {
 		// No change required
 		return property
 	}
 
 	result := property.copy()
-
-	// Note that this function uses isTypeOptional while MakeRequired uses property.hasOptionalType
-	// because in this direction we care if the type behaves optionally already (Map, Array included),
-	// whereas in the MakeRequired direction we only care if the type is specifically *astmodel.Optional
-	if !isTypeOptional(property.propertyType) {
-		// Need to make the type optional
-
-		// we must check if the type is validated to preserve the validation invariant
-		// that all validations are *directly* under either a named type or a property
-		if vType, ok := result.propertyType.(*ValidatedType); ok {
-			result.propertyType = NewValidatedType(NewOptionalType(vType.ElementType()), vType.validations)
-		} else {
-			result.propertyType = NewOptionalType(result.propertyType)
-		}
-	}
-
 	result.hasKubebuilderRequiredValidation = false
-	result = result.withJsonOmitEmpty()
 
 	return result
 }
 
-// HasKubebuilderRequiredValidation returns true if the property is required;
+// MakeTypeRequired makes this properties Type required (non-optional). Note that this does
+// NOT impact the kubebuilder:validation:Required annotation. For that, see MakeRequired.
+func (property *PropertyDefinition) MakeTypeRequired() *PropertyDefinition {
+	if !canTypeBeMadeRequired(property.propertyType) {
+		return property
+	}
+
+	result := property.copy()
+	result.propertyType = makePropertyTypeRequired(property.PropertyType())
+
+	return result
+}
+
+// MakeTypeOptional makes this properties Type optional. Note that this does
+// NOT impact the kubebuilder:validation:Required annotation. For that, see MakeOptional.
+func (property *PropertyDefinition) MakeTypeOptional() *PropertyDefinition {
+	if isTypeOptional(property.propertyType) {
+		return property
+	}
+
+	result := property.copy()
+	result.propertyType = makePropertyTypeOptional(property.PropertyType())
+
+	return result
+}
+
+func makePropertyTypeRequired(t Type) Type {
+	switch typ := t.(type) {
+	case *OptionalType:
+		return typ.Element()
+	case *ValidatedType:
+		return typ.WithType(makePropertyTypeRequired(typ.ElementType()))
+	case MetaType:
+		// We didn't use a visitor here for two reasons: Reason 1 is that visitor has an err case that we don't want.
+		// Reason 2 is that visitor by default visits types inside Maps and Lists, which we also do not want. We could
+		// have overridden those visit methods but this is cleaner than that and fails in a safe way if new types
+		// are ever added.
+		panic(fmt.Sprintf("cannot make %T required", t))
+	}
+
+	return t
+}
+
+func makePropertyTypeOptional(t Type) Type {
+	// we must check if the type is validated to preserve the validation invariant
+	// that all validations are *directly* under either a named type or a property
+	if vType, ok := t.(*ValidatedType); ok {
+		return NewValidatedType(NewOptionalType(vType.ElementType()), vType.validations)
+	} else {
+		return NewOptionalType(t)
+	}
+}
+
+// IsRequired returns true if the property is required;
 // returns false otherwise.
-func (property *PropertyDefinition) HasKubebuilderRequiredValidation() bool {
+func (property *PropertyDefinition) IsRequired() bool {
 	return property.hasKubebuilderRequiredValidation
 }
 
@@ -360,26 +361,17 @@ func (property *PropertyDefinition) IsSecret() bool {
 	return property.isSecret
 }
 
-// hasOptionalType returns true if the type of this property is an optional reference to a value
-// (and might therefore be nil).
-func (property *PropertyDefinition) hasOptionalType() bool {
-	_, ok := property.propertyType.(*OptionalType)
-	return ok
-}
-
 func (property *PropertyDefinition) renderedTags() string {
-	var orderedKeys []string
-	for key := range property.tags {
-		orderedKeys = append(orderedKeys, key)
-	}
+	orderedKeys := property.tags.Keys()
 
 	sort.Slice(orderedKeys, func(i, j int) bool {
 		return orderedKeys[i] < orderedKeys[j]
 	})
 
-	var tags []string
+	tags := make([]string, 0, len(orderedKeys))
 	for _, key := range orderedKeys {
-		tagString := strings.Join(property.tags[key], ",")
+		values, _ := property.tags.Get(key)
+		tagString := strings.Join(values, ",")
 		tags = append(tags, fmt.Sprintf("%s:%q", key, tagString))
 	}
 
@@ -400,7 +392,7 @@ func (property *PropertyDefinition) AsField(codeGenerationContext *CodeGeneratio
 	}
 
 	var doc dst.Decorations
-	if property.HasKubebuilderRequiredValidation() {
+	if property.IsRequired() {
 		AddValidationComments(&doc, []KubeBuilderValidation{MakeRequiredValidation()})
 	}
 
@@ -445,26 +437,10 @@ func (property *PropertyDefinition) AsField(codeGenerationContext *CodeGeneratio
 }
 
 func (property *PropertyDefinition) tagsEqual(f *PropertyDefinition) bool {
-	if len(property.tags) != len(f.tags) {
-		return false
-	}
-
-	for key, value := range property.tags {
-		otherValue, ok := f.tags[key]
-		if !ok || len(value) != len(otherValue) {
-			return false
-		}
-		// Comparison here takes ordering into account because for tags like
-		// json, ordering matters - `json:"foo,omitempty"` is different than
-		// `json:"omitempty,foo`
-		for i := 0; i < len(value); i++ {
-			if value[i] != otherValue[i] {
-				return false
-			}
-		}
-	}
-
-	return true
+	// Comparison here takes ordering into account because for tags like
+	// json, ordering matters - `json:"foo,omitempty"` is different than
+	// `json:"omitempty,foo`
+	return property.tags.Equals(f.tags, slices.Equal[string])
 }
 
 // Equals tests to see if the specified PropertyDefinition specifies the same property
@@ -481,13 +457,6 @@ func (property *PropertyDefinition) Equals(o *PropertyDefinition, overrides Equa
 
 func (property *PropertyDefinition) copy() *PropertyDefinition {
 	result := *property
-
-	// Copy ptr fields
-	result.tags = make(map[string][]string, len(property.tags))
-	for key, value := range property.tags {
-		result.tags[key] = append([]string(nil), value...)
-	}
-
 	return &result
 }
 

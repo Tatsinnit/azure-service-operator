@@ -61,10 +61,7 @@ func (v *ValidatorBuilder) AddValidation(kind ValidationKind, f *ResourceFunctio
 // as well as helper functions that allow additional handcrafted validations to be injected by
 // implementing the genruntime.Validator interface.
 func (v *ValidatorBuilder) ToInterfaceImplementation() *astmodel.InterfaceImplementation {
-	group, version, ok := v.resourceName.PackageReference.GroupVersion()
-	if !ok {
-		panic(fmt.Sprintf("unexpected external package reference for resource name %s", v.resourceName))
-	}
+	group, version := v.resourceName.PackageReference.GroupVersion()
 
 	// e.g. group = "microsoft.network.azure.com"
 	// e.g. resource = "backendaddresspools"
@@ -87,7 +84,7 @@ func (v *ValidatorBuilder) ToInterfaceImplementation() *astmodel.InterfaceImplem
 	annotation := fmt.Sprintf(
 		"+kubebuilder:webhook:path=%s,mutating=false,sideEffects=None,"+
 			"matchPolicy=Exact,failurePolicy=fail,groups=%s,resources=%s,"+
-			"verbs=create;update,versions=%s,name=%s,admissionReviewVersions=v1beta1",
+			"verbs=create;update,versions=%s,name=%s,admissionReviewVersions=v1",
 		path,
 		group,
 		resource,
@@ -259,7 +256,7 @@ func (v *ValidatorBuilder) validateBody(codeGenerationContext *astmodel.CodeGene
 		Body: &dst.BlockStmt{
 			List: []dst.Stmt{
 				astbuilder.ShortDeclaration("err", astbuilder.CallFunc(validationIdent, args...)),
-				astbuilder.CheckErrorAndSingleStatement(astbuilder.AppendSlice(dst.NewIdent(errsIdent), dst.NewIdent("err"))),
+				astbuilder.CheckErrorAndSingleStatement(astbuilder.AppendItemToSlice(dst.NewIdent(errsIdent), dst.NewIdent("err"))),
 			},
 		},
 	}
@@ -342,7 +339,7 @@ func (v *ValidatorBuilder) makeLocalValidationFuncDetails(kind ValidationKind, c
 //		<receiver>.<validationFunc2>,
 //	}
 func (v *ValidatorBuilder) localValidationFuncBody(kind ValidationKind, codeGenerationContext *astmodel.CodeGenerationContext, receiver astmodel.TypeName) []dst.Stmt {
-	var elements []dst.Expr
+	elements := make([]dst.Expr, 0, len(v.validations[kind]))
 	for _, validationFunc := range v.validations[kind] {
 		elements = append(elements, v.makeLocalValidationElement(kind, validationFunc, codeGenerationContext, receiver))
 	}
@@ -373,8 +370,8 @@ func (v *ValidatorBuilder) makeLocalValidationElement(
 	kind ValidationKind,
 	validation *ResourceFunction,
 	codeGenerationContext *astmodel.CodeGenerationContext,
-	receiver astmodel.TypeName) dst.Expr {
-
+	receiver astmodel.TypeName,
+) dst.Expr {
 	receiverIdent := v.idFactory.CreateReceiver(receiver.Name())
 
 	if kind == ValidationKindUpdate {

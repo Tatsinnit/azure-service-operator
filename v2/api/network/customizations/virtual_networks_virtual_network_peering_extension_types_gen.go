@@ -4,8 +4,10 @@
 package customizations
 
 import (
-	network "github.com/Azure/azure-service-operator/v2/api/network/v1alpha1api20201101"
-	"github.com/Azure/azure-service-operator/v2/api/network/v1alpha1api20201101storage"
+	alpha20201101 "github.com/Azure/azure-service-operator/v2/api/network/v1alpha1api20201101"
+	alpha20201101s "github.com/Azure/azure-service-operator/v2/api/network/v1alpha1api20201101storage"
+	v20201101 "github.com/Azure/azure-service-operator/v2/api/network/v1beta20201101"
+	v20201101s "github.com/Azure/azure-service-operator/v2/api/network/v1beta20201101storage"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
 
@@ -15,6 +17,8 @@ type VirtualNetworksVirtualNetworkPeeringExtension struct {
 // GetExtendedResources Returns the KubernetesResource slice for Resource versions
 func (extension *VirtualNetworksVirtualNetworkPeeringExtension) GetExtendedResources() []genruntime.KubernetesResource {
 	return []genruntime.KubernetesResource{
-		&network.VirtualNetworksVirtualNetworkPeering{},
-		&v1alpha1api20201101storage.VirtualNetworksVirtualNetworkPeering{}}
+		&alpha20201101.VirtualNetworksVirtualNetworkPeering{},
+		&alpha20201101s.VirtualNetworksVirtualNetworkPeering{},
+		&v20201101.VirtualNetworksVirtualNetworkPeering{},
+		&v20201101s.VirtualNetworksVirtualNetworkPeering{}}
 }

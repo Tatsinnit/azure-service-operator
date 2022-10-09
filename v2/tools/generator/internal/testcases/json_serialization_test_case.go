@@ -21,11 +21,12 @@ import (
 // JSONSerializationTestCase represents a test that the object can be losslessly serialized to
 // JSON and back again
 type JSONSerializationTestCase struct {
-	testName  string
-	subject   astmodel.TypeName
-	container astmodel.PropertyContainer
-	isOneOf   bool
-	idFactory astmodel.IdentifierFactory
+	testName           string
+	subject            astmodel.TypeName
+	container          astmodel.PropertyContainer
+	isOneOf            bool
+	idFactory          astmodel.IdentifierFactory
+	minSuccessfulTests int
 }
 
 var _ astmodel.TestCase = &JSONSerializationTestCase{}
@@ -35,14 +36,16 @@ func NewJSONSerializationTestCase(
 	name astmodel.TypeName,
 	container astmodel.PropertyContainer,
 	isOneOf bool,
-	idFactory astmodel.IdentifierFactory) *JSONSerializationTestCase {
+	idFactory astmodel.IdentifierFactory,
+) *JSONSerializationTestCase {
 	testName := fmt.Sprintf("%s_WhenSerializedToJson_DeserializesAsEqual", name.Name())
 	return &JSONSerializationTestCase{
-		testName:  testName,
-		subject:   name,
-		isOneOf:   isOneOf,
-		container: container,
-		idFactory: idFactory,
+		testName:           testName,
+		subject:            name,
+		isOneOf:            isOneOf,
+		container:          container,
+		idFactory:          idFactory,
+		minSuccessfulTests: 100,
 	}
 }
 
@@ -61,11 +64,20 @@ func (o *JSONSerializationTestCase) References() astmodel.TypeNameSet {
 // subject is the name of the type under test
 // codeGenerationContext contains reference material to use when generating
 func (o *JSONSerializationTestCase) AsFuncs(name astmodel.TypeName, genContext *astmodel.CodeGenerationContext) []dst.Decl {
-	var errs []error
-	properties := o.container.Properties()
+	properties := o.container.Properties().Copy()
+
+	// Special handling for large objects with more than 50 properties - we skip testing primitive properties
+	// Gopter can't test structs with >50 generators due to a Go Runtime limitation.
+	// See https://github.com/golang/go/issues/54669 for more information
+	haveLargeObject := len(properties) > 50
 
 	// Find all the simple generators (those with no external dependencies)
 	simpleGenerators := o.createGenerators(properties, genContext, o.createIndependentGenerator)
+
+	if haveLargeObject {
+		simpleGenerators = nil
+		klog.V(3).Infof("Skipping tests for primitive properties on large object %s", name)
+	}
 
 	// Find all the complex generators (dependent on other generators we'll be generating elsewhere)
 	relatedGenerators := o.createGenerators(properties, genContext, o.createRelatedGenerator)
@@ -84,6 +96,7 @@ func (o *JSONSerializationTestCase) AsFuncs(name astmodel.TypeName, genContext *
 	o.removeByPackage(properties, astmodel.GenRuntimeConditionsReference)
 
 	// Write errors for any properties we don't handle
+	errs := make([]error, 0, len(properties))
 	for _, p := range properties {
 		errs = append(errs, errors.Errorf("no generator created for %s (%s)", p.PropertyName(), p.PropertyType()))
 	}
@@ -137,11 +150,11 @@ func (o *JSONSerializationTestCase) RequiredImports() *astmodel.PackageImportSet
 	result.AddImportOfReference(astmodel.PrettyReference)
 
 	// Merge references required for properties
-	for _, prop := range o.container.Properties() {
+	o.container.Properties().ForEach(func(prop *astmodel.PropertyDefinition) {
 		for _, ref := range prop.PropertyType().RequiredPackageReferences().AsSlice() {
 			result.AddImportOfReference(ref)
 		}
-	}
+	})
 
 	// We're not currently creating generators for types in this package, so leave it out
 	result.Remove(astmodel.NewPackageImport(astmodel.GenRuntimeReference))
@@ -159,6 +172,11 @@ func (o *JSONSerializationTestCase) Equals(other astmodel.TestCase, overrides as
 	return o.testName == otherTC.testName &&
 		o.subject.Equals(otherTC.subject, overrides) &&
 		o.container == otherTC.container
+}
+
+// SetMinSuccessfulTests configures the minimum number of successful tests required for this test case
+func (o *JSONSerializationTestCase) SetMinSuccessfulTests(minSuccessfulTests int) {
+	o.minSuccessfulTests = minSuccessfulTests
 }
 
 // createTestRunner generates the AST for the test runner itself
@@ -190,7 +208,14 @@ func (o *JSONSerializationTestCase) createTestRunner(codegenContext *astmodel.Co
 		dst.NewIdent(parametersLocal),
 		"MaxSize",
 		token.ASSIGN,
-		astbuilder.IntLiteral(10))
+		astbuilder.IntLiteral(3))
+
+	// parameters.MinSuccessfulTests := n
+	configureMinSuccessfulTests := astbuilder.QualifiedAssignment(
+		dst.NewIdent(parametersLocal),
+		"MinSuccessfulTests",
+		token.ASSIGN,
+		astbuilder.IntLiteral(o.minSuccessfulTests))
 
 	// properties := gopter.NewProperties(parameters)
 	defineProperties := astbuilder.ShortDeclaration(
@@ -231,6 +256,7 @@ func (o *JSONSerializationTestCase) createTestRunner(codegenContext *astmodel.Co
 		o.testName,
 		declareParallel,
 		defineParameters,
+		configureMinSuccessfulTests,
 		configureMaxSize,
 		defineProperties,
 		defineTestCase,
@@ -557,8 +583,8 @@ func (o *JSONSerializationTestCase) createGeneratorMethod(ctx *astmodel.CodeGene
 
 // createGeneratorsFactoryMethod generates the AST for a method creating gopter generators
 func (o *JSONSerializationTestCase) createGeneratorsFactoryMethod(
-	methodName string, generators []dst.Stmt, ctx *astmodel.CodeGenerationContext) dst.Decl {
-
+	methodName string, generators []dst.Stmt, ctx *astmodel.CodeGenerationContext,
+) dst.Decl {
 	gopterPackage := ctx.MustGetImportedPackageName(astmodel.GopterReference)
 
 	mapType := &dst.MapType{
@@ -584,15 +610,15 @@ func (o *JSONSerializationTestCase) createGeneratorsFactoryMethod(
 func (o *JSONSerializationTestCase) createGenerators(
 	properties map[astmodel.PropertyName]*astmodel.PropertyDefinition,
 	genContext *astmodel.CodeGenerationContext,
-	factory func(name string, propertyType astmodel.Type, genContext *astmodel.CodeGenerationContext) dst.Expr) []dst.Stmt {
-
+	factory func(name string, propertyType astmodel.Type, genContext *astmodel.CodeGenerationContext) dst.Expr,
+) []dst.Stmt {
 	gensIdent := dst.NewIdent("gens")
 
 	var handled []astmodel.PropertyName
 	var result []dst.Stmt
 
 	// Sort Properties into alphabetical order to ensure we always generate the same code
-	var toGenerate []astmodel.PropertyName
+	toGenerate := make([]astmodel.PropertyName, 0, len(properties))
 	for name := range properties {
 		toGenerate = append(toGenerate, name)
 	}
@@ -619,12 +645,13 @@ func (o *JSONSerializationTestCase) createGenerators(
 	return result
 }
 
+// createIndependentGenerator creates an independent generator for a property whose type is
 // is directly supported by a Gopter generator, returning nil if the property type isn't supported.
 func (o *JSONSerializationTestCase) createIndependentGenerator(
 	name string,
 	propertyType astmodel.Type,
-	genContext *astmodel.CodeGenerationContext) dst.Expr {
-
+	genContext *astmodel.CodeGenerationContext,
+) dst.Expr {
 	genPackage := genContext.MustGetImportedPackageName(astmodel.GopterGenReference)
 
 	// Handle simple primitive properties
@@ -683,12 +710,13 @@ func (o *JSONSerializationTestCase) createIndependentGenerator(
 	return nil
 }
 
+// createRelatedGenerator creates a generator for a property whose type is
 // defined within the current package, returning nil if the property type isn't supported.
 func (o *JSONSerializationTestCase) createRelatedGenerator(
 	name string,
 	propertyType astmodel.Type,
-	genContext *astmodel.CodeGenerationContext) dst.Expr {
-
+	genContext *astmodel.CodeGenerationContext,
+) dst.Expr {
 	genPackageName := genContext.MustGetImportedPackageName(astmodel.GopterGenReference)
 
 	switch t := propertyType.(type) {
@@ -770,8 +798,8 @@ func (o *JSONSerializationTestCase) createRelatedGenerator(
 
 func (o *JSONSerializationTestCase) removeByPackage(
 	properties map[astmodel.PropertyName]*astmodel.PropertyDefinition,
-	ref astmodel.PackageReference) {
-
+	ref astmodel.PackageReference,
+) {
 	// Work out which properties need to be removed because their types come from the specified package
 	var toRemove []astmodel.PropertyName
 	for name, prop := range properties {
@@ -823,8 +851,9 @@ func (o *JSONSerializationTestCase) Subject() *dst.Ident {
 }
 
 func (o *JSONSerializationTestCase) createEnumGenerator(enumName string, genPackageName string, enum *astmodel.EnumType) dst.Expr {
-	var values []dst.Expr
-	for _, o := range enum.Options() {
+	opts := enum.Options()
+	values := make([]dst.Expr, 0, len(opts))
+	for _, o := range opts {
 		id := astmodel.GetEnumValueId(enumName, o)
 		values = append(values, dst.NewIdent(id))
 	}

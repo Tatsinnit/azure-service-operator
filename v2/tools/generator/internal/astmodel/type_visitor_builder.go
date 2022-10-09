@@ -10,11 +10,24 @@ import "fmt"
 // TypeVisitorBuilder provides a flexible way to create a TypeVisitor. Fields should be initialized
 // with funcs matching one of the following forms:
 //
-// func(this *TypeVisitor, it TypeName, ctx interface{}) (Type, error)
-// func(it TypeName) (Type, error)
-// func(it TypeName) Type
+// func(this *TypeVisitor, it <sometype>, ctx interface{}) (Type, error)
+// func(it <sometype>) (Type, error)
+// func(it <sometype>) Type
 //
-// These examples assume TypeName but can be generalized across any of the supported types.
+// o  Must always return Type, and optionally an error
+// o  <sometype> must match the type for the field being initialized
+//
+// Some examples:
+//
+// VisitTypeName = func(it TypeName) Type                                             // Works
+// VisitTypeName = func(this TypeVisitor, it TypeName, ctx interface{}) (Type, error) // Works
+// VisitTypeName = func(it *ObjectType) Type                                          // Fails - parameter is not a TypeName
+// VisitTypeName = func(it TypeName) TypeName                                         // Fails - return type is not Type
+//
+// VisitObjectType = func(it *ObjectType) Type                                                // Works
+// VisitObjectType = func(this TypeVisitor, it *ObjectType, ctx interface{}) (Type, error)    // Works
+// VisitObjectType = func(it TypeName) Type                                                   // Fails - parameter is not an *ObjectType
+// VisitObjectType = func(this TypeVisitor, it TypeName, ctx interface{}) (ObjectType, error) // Fails -return is not Type
 //
 type TypeVisitorBuilder struct {
 	VisitTypeName      interface{}
@@ -33,8 +46,11 @@ type TypeVisitorBuilder struct {
 }
 
 func (b TypeVisitorBuilder) Build() TypeVisitor {
+	visitTypeNameIsIdentity, visitTypeName := b.buildVisitTypeName()
 	return TypeVisitor{
-		visitTypeName:      b.buildVisitTypeName(),
+		visitTypeNameIsIdentity: visitTypeNameIsIdentity,
+		visitTypeName:           visitTypeName,
+
 		visitOneOfType:     b.buildVisitOneOfType(),
 		visitAllOfType:     b.buildVisitAllOfType(),
 		visitArrayType:     b.buildVisitArrayType(),
@@ -53,20 +69,24 @@ func (b TypeVisitorBuilder) Build() TypeVisitor {
 // buildVisitTypeName returns a function to use in the TypeVisitor
 // If the field VisitTypeName is nil, we return an identity visitor. Otherwise we attempt to
 // convert the func found in the field, triggering a panic if no suitable func is found.
-func (b *TypeVisitorBuilder) buildVisitTypeName() func(*TypeVisitor, TypeName, interface{}) (Type, error) {
+//
+// The boolean result indicates if this visitor is the identity visitor,
+// which allows it to be skipped in many cases. (See TypeVisitor.Visit & uses
+// of the field visitTypeNameIsIdentity for details).
+func (b *TypeVisitorBuilder) buildVisitTypeName() (bool, func(*TypeVisitor, TypeName, interface{}) (Type, error)) {
 	if b.VisitTypeName == nil {
-		return IdentityVisitOfTypeName
+		return true, IdentityVisitOfTypeName
 	}
 
 	switch v := b.VisitTypeName.(type) {
 	case func(*TypeVisitor, TypeName, interface{}) (Type, error):
-		return v
+		return false, v
 	case func(TypeName) (Type, error):
-		return func(_ *TypeVisitor, it TypeName, _ interface{}) (Type, error) {
+		return false, func(_ *TypeVisitor, it TypeName, _ interface{}) (Type, error) {
 			return v(it)
 		}
 	case func(TypeName) Type:
-		return func(_ *TypeVisitor, it TypeName, _ interface{}) (Type, error) {
+		return false, func(_ *TypeVisitor, it TypeName, _ interface{}) (Type, error) {
 			return v(it), nil
 		}
 	}

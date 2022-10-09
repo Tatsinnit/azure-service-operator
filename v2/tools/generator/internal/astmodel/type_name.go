@@ -45,6 +45,11 @@ func (typeName TypeName) WithName(name string) TypeName {
 	return MakeTypeName(typeName.PackageReference, name)
 }
 
+// WithPackageReference returns a new TypeName in a different package but with the same name
+func (typeName TypeName) WithPackageReference(ref PackageReference) TypeName {
+	return MakeTypeName(ref, typeName.name)
+}
+
 // A TypeName can be used as a Type,
 // it is simply a reference to the name.
 var _ Type = TypeName{}
@@ -156,7 +161,7 @@ var typeNamePluralToSingularOverrides = map[string]string{
 var typeNameSingularToPluralOverrides map[string]string
 
 // Singular returns a TypeName with the name singularized.
-func (typeName TypeName) Singular() TypeName {
+func (typeName TypeName) Singular(idFactory IdentifierFactory) TypeName {
 	// work around bug in flect: https://github.com/Azure/azure-service-operator/issues/1454
 	name := typeName.name
 	for plural, single := range typeNamePluralToSingularOverrides {
@@ -166,7 +171,10 @@ func (typeName TypeName) Singular() TypeName {
 		}
 	}
 
-	return MakeTypeName(typeName.PackageReference, flect.Singularize(typeName.name))
+	// Flect isn't consistent about what case it returns. If it's just removing an 's', it will maintain
+	// case, but if it's performing a more complicated transformation the result will be all lower case.
+	singular := idFactory.CreateIdentifier(flect.Singularize(typeName.name), Exported)
+	return MakeTypeName(typeName.PackageReference, singular)
 }
 
 // Plural returns a TypeName with the name pluralized.
@@ -193,28 +201,49 @@ func (typeName TypeName) Plural() TypeName {
 // WriteDebugDescription adds a description of the current type to the passed builder
 // builder receives the full description, including nested types
 // definitions is a dictionary for resolving named types
-func (typeName TypeName) WriteDebugDescription(builder *strings.Builder, definitions TypeDefinitionSet) {
-	if typeName.PackageReference == nil {
-		builder.WriteString("<nilRef>")
-	} else {
-		builder.WriteString(typeName.PackageReference.String())
-	}
-	builder.WriteString("/")
-	builder.WriteString(typeName.name)
-
-	if typeName.PackageReference != nil {
-		if !IsExternalPackageReference(typeName.PackageReference) {
-			builder.WriteString(":")
-			if definition, ok := definitions[typeName]; ok {
-				definition.Type().WriteDebugDescription(builder, definitions)
-			} else {
-				builder.WriteString("NOTDEFINED")
-			}
+func (typeName TypeName) WriteDebugDescription(builder *strings.Builder, currentPackage PackageReference) {
+	if typeName.PackageReference != nil && !typeName.PackageReference.Equals(currentPackage) {
+		// Reference to a different package, so qualify the output.
+		// External packages are just qualified by name, other packages by full path
+		if IsExternalPackageReference(typeName.PackageReference) {
+			builder.WriteString(typeName.PackageReference.PackageName())
+		} else {
+			builder.WriteString(typeName.PackageReference.String())
 		}
+
+		builder.WriteString(".")
 	}
+
+	builder.WriteString(typeName.name)
 }
 
 // IsEmpty is a predicate that returns true if the TypeName is empty, false otherwise
 func (typeName TypeName) IsEmpty() bool {
 	return typeName == EmptyTypeName
+}
+
+const (
+	// SpecSuffix is the suffix used for all Spec types
+	SpecSuffix = "_Spec"
+	// StatusSuffix is the suffix used for all Status types
+	StatusSuffix = "_STATUS"
+	// ARMSuffix is the suffix used for all ARM types
+	ARMSuffix = "_ARM"
+)
+
+// IsSpec returns true if the type name specifies a spec
+// Sometimes we build type names by adding a suffix after _Spec, so we need to use a contains check
+func (typeName TypeName) IsSpec() bool {
+	return strings.Contains(typeName.Name(), SpecSuffix)
+}
+
+// IsStatus returns true if the type name specifies a status
+// Sometimes we build type names by adding a suffix after _STATUS, so we need to use a contains check
+func (typeName TypeName) IsStatus() bool {
+	return strings.Contains(typeName.Name(), StatusSuffix)
+}
+
+// CreateARMTypeName creates an ARM object type name
+func CreateARMTypeName(name TypeName) TypeName {
+	return MakeTypeName(name.PackageReference, name.Name()+ARMSuffix)
 }

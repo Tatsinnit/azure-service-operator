@@ -9,9 +9,9 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"reflect"
 	"time"
 
-	"github.com/benbjohnson/clock"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	"golang.org/x/time/rate"
@@ -27,18 +27,26 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/Azure/azure-service-operator/v2/internal/config"
 	. "github.com/Azure/azure-service-operator/v2/internal/logging"
-	"github.com/Azure/azure-service-operator/v2/internal/reconcilers/arm"
+	"github.com/Azure/azure-service-operator/v2/internal/reconcilers"
 	"github.com/Azure/azure-service-operator/v2/internal/util/kubeclient"
 	"github.com/Azure/azure-service-operator/v2/internal/util/lockedrand"
+	"github.com/Azure/azure-service-operator/v2/internal/util/randextensions"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/registration"
 )
+
+const GenericControllerFinalizer = "serviceoperator.azure.com/finalizer"
+
+// NamespaceAnnotation defines the annotation name to use when marking
+// a resource with the namespace of the managing operator.
+const NamespaceAnnotation = "serviceoperator.azure.com/operator-namespace"
 
 type (
 	LoggerFactory func(genruntime.MetaObject) logr.Logger
@@ -48,11 +56,12 @@ type (
 type GenericReconciler struct {
 	Reconciler           genruntime.Reconciler
 	LoggerFactory        LoggerFactory
-	KubeClient           *kubeclient.Client
+	KubeClient           kubeclient.Client
 	Recorder             record.EventRecorder
-	Name                 string
 	Config               config.Values
+	Rand                 *rand.Rand
 	GVK                  schema.GroupVersionKind
+	PositiveConditions   *conditions.PositiveConditionBuilder
 	RequeueDelayOverride time.Duration
 }
 
@@ -65,13 +74,6 @@ type Options struct {
 	RequeueDelay  time.Duration
 	Config        config.Values
 	LoggerFactory func(obj metav1.Object) logr.Logger
-}
-
-func (options *Options) setDefaults() {
-	// default logger to the controller-runtime logger
-	if options.Log == nil {
-		options.Log = ctrl.Log
-	}
 }
 
 func RegisterWebhooks(mgr ctrl.Manager, objs []client.Object) error {
@@ -97,23 +99,17 @@ func registerWebhook(mgr ctrl.Manager, obj client.Object) error {
 
 func RegisterAll(
 	mgr ctrl.Manager,
-	clientFactory arm.ARMClientFactory,
-	objs []registration.StorageType,
-	extensions map[schema.GroupVersionKind]genruntime.ResourceExtension,
+	fieldIndexer client.FieldIndexer,
+	kubeClient kubeclient.Client,
+	positiveConditions *conditions.PositiveConditionBuilder,
+	objs []*registration.StorageType,
 	options Options) error {
-
-	options.setDefaults()
-
-	reconciledResourceLookup, err := MakeResourceGVKLookup(mgr, objs)
-	if err != nil {
-		return err
-	}
 
 	// pre-register any indexes we need
 	for _, obj := range objs {
 		for _, indexer := range obj.Indexes {
 			options.Log.V(Info).Info("Registering indexer for type", "type", fmt.Sprintf("%T", obj.Obj), "key", indexer.Key)
-			err = mgr.GetFieldIndexer().IndexField(context.Background(), obj.Obj, indexer.Key, indexer.Func)
+			err := fieldIndexer.IndexField(context.Background(), obj.Obj, indexer.Key, indexer.Func)
 			if err != nil {
 				return errors.Wrapf(err, "failed to register indexer for %T, Key: %q", obj.Obj, indexer.Key)
 			}
@@ -124,7 +120,7 @@ func RegisterAll(
 	for _, obj := range objs {
 		// TODO: Consider pulling some of the construction of things out of register (gvk, etc), so that we can pass in just
 		// TODO: the applicable extensions rather than a map of all of them
-		if err := register(mgr, reconciledResourceLookup, clientFactory, obj, extensions, options); err != nil {
+		if err := register(mgr, kubeClient, positiveConditions, obj, options); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -134,19 +130,10 @@ func RegisterAll(
 
 func register(
 	mgr ctrl.Manager,
-	reconciledResourceLookup map[schema.GroupKind]schema.GroupVersionKind,
-	clientFactory arm.ARMClientFactory,
-	info registration.StorageType,
-	extensions map[schema.GroupVersionKind]genruntime.ResourceExtension,
+	kubeClient kubeclient.Client,
+	positiveConditions *conditions.PositiveConditionBuilder,
+	info *registration.StorageType,
 	options Options) error {
-
-	v, err := conversion.EnforcePtr(info.Obj)
-	if err != nil {
-		return errors.Wrap(err, "info.Obj was expected to be ptr but was not")
-	}
-
-	t := v.Type()
-	controllerName := fmt.Sprintf("%sController", t.Name())
 
 	// Use the provided GVK to construct a new runtime object of the desired concrete type.
 	gvk, err := apiutil.GVKForObject(info.Obj, mgr.GetScheme())
@@ -154,45 +141,30 @@ func register(
 		return errors.Wrapf(err, "creating GVK for obj %T", info)
 	}
 
-	options.Log.V(Status).Info("Registering", "GVK", gvk)
-	kubeClient := kubeclient.NewClient(mgr.GetClient(), mgr.GetScheme())
-	extension := extensions[gvk]
-
 	loggerFactory := func(mo genruntime.MetaObject) logr.Logger {
 		result := options.Log
 		if options.LoggerFactory != nil {
-			if factoryResult := options.LoggerFactory(mo); factoryResult != nil {
+			if factoryResult := options.LoggerFactory(mo); factoryResult != (logr.Logger{}) && factoryResult != logr.Discard() {
 				result = factoryResult
 			}
 		}
 
-		return result.WithName(controllerName)
+		return result.WithName(info.Name)
 	}
+	eventRecorder := mgr.GetEventRecorderFor(info.Name)
 
-	eventRecorder := mgr.GetEventRecorderFor(controllerName)
-
-	// Make the ARM reconciler
-	// TODO: In the future when we support other reconciler's we may need to construct
-	// TODO: this further up the stack and pass it in
-	innerReconciler := arm.NewAzureDeploymentReconciler(
-		clientFactory,
-		eventRecorder,
-		kubeClient,
-		genruntime.NewResolver(kubeClient, reconciledResourceLookup),
-		conditions.NewPositiveConditionBuilder(clock.New()),
-		options.Config,
-		//nolint:gosec // do not want cryptographic randomness here
-		rand.New(lockedrand.NewSource(time.Now().UnixNano())),
-		extension)
+	options.Log.V(Status).Info("Registering", "GVK", gvk)
 
 	reconciler := &GenericReconciler{
-		Reconciler:           innerReconciler,
-		KubeClient:           kubeClient,
-		Name:                 t.Name(),
-		Config:               options.Config,
-		LoggerFactory:        loggerFactory,
-		Recorder:             eventRecorder,
-		GVK:                  gvk,
+		Reconciler:         info.Reconciler,
+		KubeClient:         kubeClient,
+		Config:             options.Config,
+		LoggerFactory:      loggerFactory,
+		Recorder:           eventRecorder,
+		GVK:                gvk,
+		PositiveConditions: positiveConditions,
+		//nolint:gosec // do not want cryptographic randomness here
+		Rand:                 rand.New(lockedrand.NewSource(time.Now().UnixNano())),
 		RequeueDelayOverride: options.RequeueDelay,
 	}
 
@@ -200,7 +172,7 @@ func register(
 	// to learn more look at https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/predicate#GenerationChangedPredicate
 	filter := predicate.Or(
 		predicate.GenerationChangedPredicate{},
-		arm.ARMReconcilerAnnotationChangedPredicate(options.Log.WithName(controllerName)))
+		reconcilers.ARMReconcilerAnnotationChangedPredicate(options.Log.WithName(info.Name)))
 
 	builder := ctrl.NewControllerManagedBy(mgr).
 		// Note: These predicates prevent status updates from triggering a reconcile.
@@ -209,7 +181,7 @@ func register(
 		WithOptions(options.Options)
 
 	for _, watch := range info.Watches {
-		builder = builder.Watches(watch.Src, watch.MakeEventHandler(mgr.GetClient(), options.Log.WithName(controllerName)))
+		builder = builder.Watches(watch.Src, watch.MakeEventHandler(kubeClient, options.Log.WithName(info.Name)))
 	}
 
 	err = builder.Complete(reconciler)
@@ -220,85 +192,74 @@ func register(
 	return nil
 }
 
-// MakeResourceGVKLookup creates a map of schema.GroupKind to schema.GroupVersionKind. This can be used to look up
-// the version of a GroupKind that is being reconciled.
-func MakeResourceGVKLookup(mgr ctrl.Manager, objs []registration.StorageType) (map[schema.GroupKind]schema.GroupVersionKind, error) {
-	result := make(map[schema.GroupKind]schema.GroupVersionKind)
-
-	for _, obj := range objs {
-		gvk, err := apiutil.GVKForObject(obj.Obj, mgr.GetScheme())
-		if err != nil {
-			return nil, errors.Wrapf(err, "creating GVK for obj %T", obj)
-		}
-		groupKind := schema.GroupKind{Group: gvk.Group, Kind: gvk.Kind}
-		if existing, ok := result[groupKind]; ok {
-			return nil, errors.Errorf("somehow group: %q, kind: %q was already registered with version %q", gvk.Group, gvk.Kind, existing.Version)
-		}
-		result[groupKind] = gvk
-	}
-
-	return result, nil
-}
-
-// NamespaceAnnotation defines the annotation name to use when marking
-// a resource with the namespace of the managing operator.
-const NamespaceAnnotation = "serviceoperator.azure.com/operator-namespace"
-
 // Reconcile will take state in K8s and apply it to Azure
 func (gr *GenericReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	obj, err := gr.KubeClient.GetObjectOrDefault(ctx, req.NamespacedName, gr.GVK)
+	metaObj, err := gr.getObjectToReconcile(ctx, req)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-
-	if obj == nil {
+	if metaObj == nil {
 		// This means that the resource doesn't exist
 		return ctrl.Result{}, nil
 	}
 
-	// Always operate on a copy rather than the object from the client, as per
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-api-machinery/controllers.md, which says:
-	// Never mutate original objects! Caches are shared across controllers, this means that if you mutate your "copy"
-	// (actually a reference or shallow copy) of an object, you'll mess up other controllers (not just your own).
-	obj = obj.DeepCopyObject().(client.Object)
+	originalObj := metaObj.DeepCopyObject().(genruntime.MetaObject)
 
-	// The Go type for the Kubernetes object must understand how to
-	// convert itself to/from the corresponding Azure types.
-	metaObj, ok := obj.(genruntime.MetaObject)
-	if !ok {
-		return ctrl.Result{}, errors.Errorf("object is not a genruntime.MetaObject, found type: %T", obj)
-	}
-
-	log := gr.LoggerFactory(metaObj).WithValues("name", req.Name, "namespace", req.Namespace, "azureName", metaObj.AzureName())
-	log.V(Verbose).Info(
-		"Reconcile invoked",
-		"kind", fmt.Sprintf("%T", obj),
-		"resourceVersion", obj.GetResourceVersion(),
-		"generation", obj.GetGeneration())
+	log := gr.LoggerFactory(metaObj).WithValues("name", req.Name, "namespace", req.Namespace)
+	reconcilers.LogObj(log, Verbose, "Reconcile invoked", metaObj)
 
 	// Ensure the resource is tagged with the operator's namespace.
-	annotations := metaObj.GetAnnotations()
-	reconcilerNamespace := annotations[NamespaceAnnotation]
-	if reconcilerNamespace != gr.Config.PodNamespace && reconcilerNamespace != "" {
-		// We don't want to get into a fight with another operator -
-		// so if we see another operator already has this object leave
-		// it alone. This will do the right thing in the case of two
-		// operators trying to manage the same namespace. It makes
-		// moving objects between namespaces or changing which
-		// operator owns a namespace fiddlier (since you'd need to
-		// remove the annotation) but those operations are likely to
-		// be rare.
-		message := fmt.Sprintf("Operators in %q and %q are both configured to manage this resource", gr.Config.PodNamespace, reconcilerNamespace)
-		gr.Recorder.Event(obj, corev1.EventTypeWarning, "Overlap", message)
-		return ctrl.Result{}, nil
-	} else if reconcilerNamespace == "" && gr.Config.PodNamespace != "" {
-		genruntime.AddAnnotation(metaObj, NamespaceAnnotation, gr.Config.PodNamespace)
-		return ctrl.Result{Requeue: true}, gr.KubeClient.Client.Update(ctx, obj)
+	ownershipResult, err := gr.takeOwnership(ctx, metaObj)
+	if err != nil {
+		return ctrl.Result{}, errors.Wrapf(err, "failed to take ownership of %s", metaObj.GetName())
+	}
+	if ownershipResult != nil {
+		return *ownershipResult, nil
 	}
 
-	result, err := gr.Reconciler.Reconcile(ctx, log, metaObj)
+	var result ctrl.Result
+	if !metaObj.GetDeletionTimestamp().IsZero() {
+		result, err = gr.delete(ctx, log, metaObj)
+	} else {
+		result, err = gr.createOrUpdate(ctx, log, metaObj)
+	}
+
 	if err != nil {
-		return ctrl.Result{}, err
+		var severity conditions.ConditionSeverity
+		severity, err = gr.writeReadyConditionErrorOrDefault(ctx, log, metaObj, err)
+		if err != nil {
+			// NotFound is a superfluous error as per https://github.com/kubernetes-sigs/controller-runtime/issues/377
+			// The correct handling is just to ignore it and we will get an event shortly with the updated version to patch
+			// We must also ignore conflict here because updating a resource that
+			// doesn't exist returns conflict unfortunately: https://github.com/kubernetes/kubernetes/issues/89985. This is OK
+			// to ignore because a conflict means either the resource has been deleted (in which case there's nothing to do) or
+			// it has been updated, in which case there's going to be a new event triggered for it and we can count this
+			// round of reconciliation as a success and wait for the next event.
+			return ctrl.Result{}, kubeclient.IgnoreNotFoundAndConflict(err)
+		}
+		if severity == conditions.ConditionSeverityError {
+			// Severity error is fatal, return fast and block requeue
+			return ctrl.Result{}, nil
+		}
+	}
+
+	if (result == ctrl.Result{}) {
+		// If result is a success, ensure that we requeue for monitoring state in Azure
+		conditions.SetCondition(metaObj, gr.PositiveConditions.Ready.Succeeded(metaObj.GetGeneration()))
+		result = gr.makeSuccessResult()
+	}
+
+	// Write the object
+	err = gr.CommitUpdate(ctx, log, originalObj, metaObj)
+	if err != nil {
+		// NotFound is a superfluous error as per https://github.com/kubernetes-sigs/controller-runtime/issues/377
+		// The correct handling is just to ignore it and we will get an event shortly with the updated version to patch
+		// We must also ignore conflict here because updating a resource that
+		// doesn't exist returns conflict unfortunately: https://github.com/kubernetes/kubernetes/issues/89985. This is OK
+		// to ignore because a conflict means either the resource has been deleted (in which case there's nothing to do) or
+		// it has been updated, in which case there's going to be a new event triggered for it and we can count this
+		// round of reconciliation as a success and wait for the next event.
+		return ctrl.Result{}, kubeclient.IgnoreNotFoundAndConflict(err)
 	}
 
 	// If we have a requeue delay override, set it for all situations where
@@ -313,6 +274,119 @@ func (gr *GenericReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	return result, nil
 }
 
+func (gr *GenericReconciler) getObjectToReconcile(ctx context.Context, req ctrl.Request) (genruntime.MetaObject, error) {
+	obj, err := gr.KubeClient.GetObjectOrDefault(ctx, req.NamespacedName, gr.GVK)
+	if err != nil {
+		return nil, err
+	}
+
+	if obj == nil {
+		// This means that the resource doesn't exist
+		return nil, nil
+	}
+
+	// Always operate on a copy rather than the object from the client, as per
+	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-api-machinery/controllers.md, which says:
+	// Never mutate original objects! Caches are shared across controllers, this means that if you mutate your "copy"
+	// (actually a reference or shallow copy) of an object, you'll mess up other controllers (not just your own).
+	obj = obj.DeepCopyObject().(client.Object)
+
+	// The Go type for the Kubernetes object must understand how to
+	// convert itself to/from the corresponding Azure types.
+	metaObj, ok := obj.(genruntime.MetaObject)
+	if !ok {
+		return nil, errors.Errorf("object is not a genruntime.MetaObject, found type: %T", obj)
+	}
+
+	return metaObj, nil
+}
+
+func (gr *GenericReconciler) claimResource(ctx context.Context, log logr.Logger, metaObj genruntime.MetaObject) error {
+	if !gr.needToAddFinalizer(metaObj) {
+		// TODO: This means that if a user messes with some reconciler-specific registration stuff (like owner),
+		// TODO: but doesn't remove the finalizer, we won't re-add the reconciler specific stuff. Possibly we should
+		// TODO: always re-add that stuff too (it's idempotent)... but then ideally we would avoid a call to Commit
+		// TODO: unless it was actually needed?
+		return nil
+	}
+
+	// Claim the resource
+	err := gr.Reconciler.Claim(ctx, log, gr.Recorder, metaObj)
+	if err != nil {
+		log.Error(err, "Error claiming resource")
+		return kubeclient.IgnoreNotFoundAndConflict(err)
+	}
+
+	// Adding the finalizer should happen in a reconcile loop prior to the PUT being sent to Azure to avoid situations where
+	// we issue a PUT to Azure but the commit of the resource into etcd fails, causing us to have an unset
+	// finalizer and have started resource creation in Azure.
+	log.V(Info).Info("adding finalizer")
+	controllerutil.AddFinalizer(metaObj, GenericControllerFinalizer)
+
+	err = gr.KubeClient.CommitObject(ctx, metaObj)
+	if err != nil {
+		log.Error(err, "Error adding finalizer")
+		return kubeclient.IgnoreNotFoundAndConflict(err)
+	}
+
+	return nil
+}
+
+func (gr *GenericReconciler) needToAddFinalizer(metaObj genruntime.MetaObject) bool {
+	unsetFinalizer := !controllerutil.ContainsFinalizer(metaObj, GenericControllerFinalizer)
+	return unsetFinalizer
+}
+
+func (gr *GenericReconciler) createOrUpdate(ctx context.Context, log logr.Logger, metaObj genruntime.MetaObject) (ctrl.Result, error) {
+	// Claim the resource
+	err := gr.claimResource(ctx, log, metaObj)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Check the reconcile policy to ensure we're allowed to issue a CreateOrUpdate
+	reconcilePolicy := reconcilers.GetReconcilePolicy(metaObj, log)
+	if !reconcilePolicy.AllowsModify() {
+		return ctrl.Result{}, gr.handleSkipReconcile(ctx, log, metaObj)
+	}
+
+	conditions.SetCondition(metaObj, gr.PositiveConditions.Ready.Reconciling(metaObj.GetGeneration()))
+
+	return gr.Reconciler.CreateOrUpdate(ctx, log, gr.Recorder, metaObj)
+}
+
+func (gr *GenericReconciler) delete(ctx context.Context, log logr.Logger, metaObj genruntime.MetaObject) (ctrl.Result, error) {
+	// Check the reconcile policy to ensure we're allowed to issue a delete
+	reconcilePolicy := reconcilers.GetReconcilePolicy(metaObj, log)
+	if !reconcilePolicy.AllowsDelete() {
+		log.V(Info).Info("Bypassing delete of resource due to policy", "policy", reconcilePolicy)
+		controllerutil.RemoveFinalizer(metaObj, GenericControllerFinalizer)
+		log.V(Status).Info("Deleted resource")
+		return ctrl.Result{}, nil
+	}
+
+	// Check if we actually need to issue a delete
+	hasFinalizer := controllerutil.ContainsFinalizer(metaObj, GenericControllerFinalizer)
+	if !hasFinalizer {
+		log.Info("Deleted resource")
+		return ctrl.Result{}, nil
+	}
+
+	result, err := gr.Reconciler.Delete(ctx, log, gr.Recorder, metaObj)
+	// If the Delete call had no error and isn't asking us to requeue, then it succeeded and we can remove
+	// the finalizer
+	if (result == ctrl.Result{} && err == nil) {
+		log.V(Info).Info("Delete succeeded, removing finalizer")
+		controllerutil.RemoveFinalizer(metaObj, GenericControllerFinalizer)
+	}
+
+	// TODO: can't set this before the delete call right now due to how ARM resources determine if they need to issue a first delete.
+	// TODO: Once I merge a fix to use the async operation for delete polling this can move up to above the Delete call in theory
+	conditions.SetCondition(metaObj, gr.PositiveConditions.Ready.Deleting(metaObj.GetGeneration()))
+
+	return result, err
+}
+
 // NewRateLimiter creates a new workqueue.Ratelimiter for use controlling the speed of reconciliation.
 // It throttles individual requests exponentially and also controls for multiple requests.
 func NewRateLimiter(minBackoff time.Duration, maxBackoff time.Duration) workqueue.RateLimiter {
@@ -323,4 +397,103 @@ func NewRateLimiter(minBackoff time.Duration, maxBackoff time.Duration) workqueu
 		// 10 rps, 100 bucket (spike) size. This is across all requests (not per item)
 		&workqueue.BucketRateLimiter{Limiter: rate.NewLimiter(rate.Limit(10), 100)},
 	)
+}
+
+func (gr *GenericReconciler) makeSuccessResult() ctrl.Result {
+	result := ctrl.Result{}
+	// This has a RequeueAfter because we want to force a re-sync at some point in the future in order to catch
+	// potential drift from the state in Azure. Note that we cannot use mgr.Options.SyncPeriod for this because we filter
+	// our events by predicate.GenerationChangedPredicate and the generation will not have changed.
+	if gr.Config.SyncPeriod != nil {
+		result.RequeueAfter = randextensions.Jitter(gr.Rand, *gr.Config.SyncPeriod, 0.1)
+	}
+	return result
+}
+
+func (gr *GenericReconciler) WriteReadyConditionError(ctx context.Context, log logr.Logger, obj genruntime.MetaObject, err *conditions.ReadyConditionImpactingError) (conditions.ConditionSeverity, error) {
+	conditions.SetCondition(obj, gr.PositiveConditions.Ready.ReadyCondition(
+		err.Severity,
+		obj.GetGeneration(),
+		err.Reason,
+		err.Error()))
+	commitErr := gr.CommitUpdate(ctx, log, nil, obj)
+	if commitErr != nil {
+		return conditions.ConditionSeverityNone, errors.Wrap(commitErr, "updating resource error")
+	}
+
+	if err.Severity == conditions.ConditionSeverityError {
+		// This is a bit weird, but fatal errors shouldn't trigger a fresh reconcile, so
+		// returning nil results in reconcile "succeeding" meaning an event won't be
+		// queued to reconcile again.
+		return conditions.ConditionSeverityError, nil
+	}
+
+	return err.Severity, err
+}
+
+// takeOwnership marks this resource as owned by this operator. It returns a ctrl.Result ptr to indicate if the result
+// should be returned or not. If the result is nil, ownership does not need to be taken
+func (gr *GenericReconciler) takeOwnership(ctx context.Context, metaObj genruntime.MetaObject) (*ctrl.Result, error) {
+	// Ensure the resource is tagged with the operator's namespace.
+	annotations := metaObj.GetAnnotations()
+	reconcilerNamespace := annotations[NamespaceAnnotation]
+	if reconcilerNamespace != gr.Config.PodNamespace && reconcilerNamespace != "" {
+		// We don't want to get into a fight with another operator -
+		// so if we see another operator already has this object leave
+		// it alone. This will do the right thing in the case of two
+		// operators trying to manage the same namespace. It makes
+		// moving objects between namespaces or changing which
+		// operator owns a namespace fiddlier (since you'd need to
+		// remove the annotation) but those operations are likely to
+		// be rare.
+		message := fmt.Sprintf("Operators in %q and %q are both configured to manage this resource", gr.Config.PodNamespace, reconcilerNamespace)
+		gr.Recorder.Event(metaObj, corev1.EventTypeWarning, "Overlap", message)
+		return &ctrl.Result{}, nil
+	} else if reconcilerNamespace == "" && gr.Config.PodNamespace != "" {
+		genruntime.AddAnnotation(metaObj, NamespaceAnnotation, gr.Config.PodNamespace)
+		return &ctrl.Result{Requeue: true}, gr.KubeClient.Update(ctx, metaObj)
+	}
+
+	return nil, nil
+}
+
+func (gr *GenericReconciler) CommitUpdate(ctx context.Context, log logr.Logger, original genruntime.MetaObject, obj genruntime.MetaObject) error {
+	if reflect.DeepEqual(original, obj) {
+		log.V(Debug).Info("Didn't commit obj as there was no change")
+		return nil
+	}
+
+	err := gr.KubeClient.CommitObject(ctx, obj)
+	if err != nil {
+		return err
+	}
+	reconcilers.LogObj(log, Debug, "updated resource in etcd", obj)
+	return nil
+}
+
+func (gr *GenericReconciler) handleSkipReconcile(ctx context.Context, log logr.Logger, obj genruntime.MetaObject) error {
+	reconcilePolicy := reconcilers.GetReconcilePolicy(obj, log) // TODO: Pull this whole method up here
+	log.V(Status).Info(
+		"Skipping creation of resource due to policy",
+		reconcilers.ReconcilePolicyAnnotation, reconcilePolicy)
+
+	err := gr.Reconciler.UpdateStatus(ctx, log, gr.Recorder, obj)
+	if err != nil {
+		return err
+	}
+	conditions.SetCondition(obj, gr.PositiveConditions.Ready.Succeeded(obj.GetGeneration()))
+
+	return nil
+}
+
+func (gr *GenericReconciler) writeReadyConditionErrorOrDefault(ctx context.Context, log logr.Logger, metaObj genruntime.MetaObject, err error) (conditions.ConditionSeverity, error) {
+	readyErr, ok := conditions.AsReadyConditionImpactingError(err)
+	if !ok {
+		// An unknown error, we wrap it as a ready condition error so that the user will always see something, even if
+		// the error is generic
+		readyErr = conditions.NewReadyConditionImpactingError(err, conditions.ConditionSeverityWarning, conditions.ReasonFailed)
+	}
+
+	log.Error(readyErr, "Encountered error impacting Ready condition")
+	return gr.WriteReadyConditionError(ctx, log, metaObj, readyErr)
 }

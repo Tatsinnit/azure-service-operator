@@ -28,7 +28,8 @@ type GoJSONSchema struct {
 func MakeGoJSONSchema(
 	schema *gojsonschema.SubSchema,
 	makeLocalPackageReference func(groupName, version string) astmodel.LocalPackageReference,
-	idFactory astmodel.IdentifierFactory) Schema {
+	idFactory astmodel.IdentifierFactory,
+) Schema {
 	return GoJSONSchema{
 		schema,
 		makeLocalPackageReference,
@@ -97,7 +98,7 @@ func (schema GoJSONSchema) oneOf() []Schema {
 }
 
 func (schema GoJSONSchema) properties() map[string]Schema {
-	result := make(map[string]Schema)
+	result := make(map[string]Schema, len(schema.inner.PropertiesChildren))
 	for _, prop := range schema.inner.PropertiesChildren {
 		result[prop.Property] = schema.withInner(prop)
 	}
@@ -192,6 +193,12 @@ func (schema GoJSONSchema) additionalPropertiesSchema() Schema {
 		return nil
 	}
 
+	r, ok := result.(bool)
+	if ok && r {
+		// AdditionalProperties are allowed but no schema was given
+		return nil
+	}
+
 	return schema.withInner(result.(*gojsonschema.SubSchema))
 }
 
@@ -241,7 +248,7 @@ func (schema GoJSONSchema) refTypeName() (astmodel.TypeName, error) {
 	return astmodel.MakeTypeName(
 		schema.makeLocalPackageReference(
 			schema.idFactory.CreateGroupName(group),
-			astmodel.CreateLocalPackageNameFromVersion(version)),
+			version),
 		schema.idFactory.CreateIdentifier(name, astmodel.Exported)), nil
 }
 

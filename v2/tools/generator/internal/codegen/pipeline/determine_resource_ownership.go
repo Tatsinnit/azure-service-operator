@@ -17,16 +17,24 @@ import (
 
 const resourcesPropertyName = astmodel.PropertyName("Resources")
 
-func DetermineResourceOwnership(configuration *config.Configuration) *Stage {
+const DetermineResourceOwnershipStageId = "determineResourceOwnership"
+
+func DetermineResourceOwnership(
+	configuration *config.Configuration,
+	idFactory astmodel.IdentifierFactory,
+) *Stage {
 	return NewLegacyStage(
-		"determineResourceOwnership",
+		DetermineResourceOwnershipStageId,
 		"Determine ARM resource relationships",
 		func(ctx context.Context, definitions astmodel.TypeDefinitionSet) (astmodel.TypeDefinitionSet, error) {
-			return determineOwnership(definitions, configuration)
+			return determineOwnership(definitions, configuration, idFactory)
 		})
 }
 
-func determineOwnership(definitions astmodel.TypeDefinitionSet, configuration *config.Configuration) (astmodel.TypeDefinitionSet, error) {
+func determineOwnership(
+	definitions astmodel.TypeDefinitionSet,
+	configuration *config.Configuration,
+	idFactory astmodel.IdentifierFactory) (astmodel.TypeDefinitionSet, error) {
 	updatedDefs := make(astmodel.TypeDefinitionSet)
 
 	resources := astmodel.FindResourceDefinitions(definitions)
@@ -53,7 +61,7 @@ func determineOwnership(definitions astmodel.TypeDefinitionSet, configuration *c
 			return nil, err
 		}
 
-		err = updateChildResourceDefinitionsWithOwner(definitions, childResourceTypeNames, def.Name(), updatedDefs)
+		err = updateChildResourceDefinitionsWithOwner(definitions, childResourceTypeNames, def.Name(), updatedDefs, idFactory)
 		if err != nil {
 			return nil, err
 		}
@@ -72,8 +80,8 @@ func extractChildResourcePropertyTypeDef(
 	definitions astmodel.TypeDefinitionSet,
 	resourceName astmodel.TypeName,
 	resourceSpecName astmodel.TypeName,
-	specType *astmodel.ObjectType) (*astmodel.TypeDefinition, error) {
-
+	specType *astmodel.ObjectType,
+) (*astmodel.TypeDefinition, error) {
 	// We're looking for a magical "Resources" property - if we don't find
 	// one just move on
 	resourcesProp, ok := specType.Property(resourcesPropertyName)
@@ -111,11 +119,14 @@ func extractChildResourcePropertyTypeDef(
 
 func resolveResourcesTypeNames(
 	resourcesPropertyName astmodel.TypeName,
-	resourcesPropertyType *astmodel.ObjectType) ([]astmodel.TypeName, error) {
-	var results []astmodel.TypeName
+	resourcesPropertyType *astmodel.ObjectType,
+) ([]astmodel.TypeName, error) {
+	props := resourcesPropertyType.Properties().Copy()
+	results := make([]astmodel.TypeName, 0, len(props))
 
 	// Each property type is a subresource type
-	for _, prop := range resourcesPropertyType.Properties() {
+	//!!
+	for _, prop := range props {
 		optionalType, ok := prop.PropertyType().(*astmodel.OptionalType)
 		if !ok {
 			return nil, errors.Errorf(
@@ -158,14 +169,15 @@ func extractChildResourceTypeNames(resourcesPropertyTypeDef astmodel.TypeDefinit
 }
 
 // this is the name we expect to see on "child resources" in the ARM JSON schema
-const ChildResourceNameSuffix = "ChildResource"
+const ChildResourceNameSuffix = "_ChildResource"
 
 func updateChildResourceDefinitionsWithOwner(
 	definitions astmodel.TypeDefinitionSet,
 	childResourceTypeNames []astmodel.TypeName,
 	owningResourceName astmodel.TypeName,
-	updatedDefs astmodel.TypeDefinitionSet) error {
-
+	updatedDefs astmodel.TypeDefinitionSet,
+	idFactory astmodel.IdentifierFactory,
+) error {
 	for _, typeName := range childResourceTypeNames {
 		// If the typename ends in ChildResource, remove that
 		if strings.HasSuffix(typeName.Name(), ChildResourceNameSuffix) {
@@ -177,6 +189,9 @@ func updateChildResourceDefinitionsWithOwner(
 		if typeName.Name() == "ExtensionsChild" {
 			typeName = astmodel.MakeTypeName(typeName.PackageReference, strings.TrimSuffix(typeName.Name(), "Child"))
 		}
+
+		// Use the singular form of the name
+		typeName = typeName.Singular(idFactory)
 
 		// Confirm the type really exists
 		childResourceDef, ok := definitions[typeName]
@@ -209,8 +224,8 @@ func updateChildResourceDefinitionsWithOwner(
 func setDefaultOwner(
 	configuration *config.Configuration,
 	definitions astmodel.TypeDefinitionSet,
-	updatedDefs astmodel.TypeDefinitionSet) {
-
+	updatedDefs astmodel.TypeDefinitionSet,
+) {
 	// Go over all of the resource types and flag any that don't have an owner as having resource group as their owner
 	for _, def := range definitions {
 		// Check if we've already modified this type - we need to use the already modified value
@@ -223,7 +238,7 @@ func setDefaultOwner(
 			continue
 		}
 
-		if resourceType.Owner() == nil && resourceType.Kind() == astmodel.ResourceKindNormal {
+		if resourceType.Owner() == nil && resourceType.Scope() == astmodel.ResourceScopeResourceGroup {
 			ownerTypeName := astmodel.MakeTypeName(
 				// Note that the version doesn't really matter here -- it's removed later. We just need to refer to the logical
 				// resource group really

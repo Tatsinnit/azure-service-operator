@@ -16,14 +16,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1alpha1api20200601"
+	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
 	"github.com/Azure/azure-service-operator/v2/internal/config"
 	"github.com/Azure/azure-service-operator/v2/internal/controllers"
-	"github.com/Azure/azure-service-operator/v2/internal/reconcilers/arm"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 )
 
-const finalizerName = arm.GenericControllerFinalizer
+const finalizerName = controllers.GenericControllerFinalizer
 
 func TestTargetNamespaces(t *testing.T) {
 	t.Parallel()
@@ -34,7 +33,9 @@ func TestTargetNamespaces(t *testing.T) {
 		TargetNamespaces: []string{"default", "watched"},
 	})
 
-	createNamespaces(tc, "watched", "unwatched")
+	err := tc.CreateTestNamespaces("watched", "unwatched")
+	tc.Expect(err).ToNot(HaveOccurred())
+
 	standardSpec := resources.ResourceGroupSpec{
 		Location: tc.AzureRegion,
 		Tags:     testcommon.CreateTestResourceGroupDefaultTags(),
@@ -75,7 +76,7 @@ func TestTargetNamespaces(t *testing.T) {
 		},
 		Spec: standardSpec,
 	}
-	_, err := tc.CreateResourceGroup(&rgUnwatched)
+	_, err = tc.CreateResourceGroup(&rgUnwatched)
 	tc.Expect(err).ToNot(HaveOccurred())
 
 	// We can tell that the resource isn't being reconciled if it
@@ -143,16 +144,6 @@ func hasFinalizer(o metav1.Object, finalizer string) bool {
 		}
 	}
 	return false
-}
-
-func createNamespaces(tc *testcommon.KubePerTestContext, names ...string) {
-	for _, name := range names {
-		tc.CreateResourceUntracked(&corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: name,
-			},
-		})
-	}
 }
 
 func TestOperatorNamespacePreventsReconciling(t *testing.T) {

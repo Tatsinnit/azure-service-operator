@@ -11,9 +11,10 @@ import (
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/kr/pretty"
 	. "github.com/onsi/gomega"
-	"k8s.io/api/core/v1"
 
-	mysql "github.com/Azure/azure-service-operator/v2/api/dbformysql/v1alpha1api20210501"
+	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
+
+	mysql "github.com/Azure/azure-service-operator/v2/api/dbformysql/v1beta20210501"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
@@ -23,39 +24,11 @@ func Test_DBForMySQL_FlexibleServer_CRUD(t *testing.T) {
 	tc := globalTestContext.ForTest(t)
 
 	rg := tc.CreateTestResourceGroupAndWait()
-
+	secretName := "mysqlsecret"
 	adminPasswordKey := "adminPassword"
-	secret := &v1.Secret{
-		ObjectMeta: tc.MakeObjectMeta("mysqlsecret"),
-		StringData: map[string]string{
-			adminPasswordKey: tc.Namer.GeneratePassword(),
-		},
-	}
+	adminPasswordSecretRef := createPasswordSecret(secretName, adminPasswordKey, tc)
 
-	tc.CreateResource(secret)
-
-	version := mysql.ServerPropertiesVersion8021
-	secretRef := genruntime.SecretReference{
-		Name: secret.Name,
-		Key:  adminPasswordKey,
-	}
-	flexibleServer := &mysql.FlexibleServer{
-		ObjectMeta: tc.MakeObjectMeta("mysql"),
-		Spec: mysql.FlexibleServers_Spec{
-			Location: tc.AzureRegion,
-			Owner:    testcommon.AsOwner(rg),
-			Version:  &version,
-			Sku: &mysql.Sku{
-				Name: "Standard_D4ds_v4",
-				Tier: mysql.SkuTierGeneralPurpose,
-			},
-			AdministratorLogin:         to.StringPtr("myadmin"),
-			AdministratorLoginPassword: &secretRef,
-			Storage: &mysql.Storage{
-				StorageSizeGB: to.IntPtr(128),
-			},
-		},
-	}
+	flexibleServer, fqdnSecret := newFlexibleServer(tc, rg, adminPasswordSecretRef)
 
 	tc.CreateResourceAndWait(flexibleServer)
 
@@ -63,9 +36,12 @@ func Test_DBForMySQL_FlexibleServer_CRUD(t *testing.T) {
 	tc.Expect(flexibleServer.Status.Id).ToNot(BeNil())
 	armId := *flexibleServer.Status.Id
 
+	// It should have the expected secret data written
+	tc.ExpectSecretHasKeys(fqdnSecret, "fqdn")
+
 	// Perform a simple patch
 	old := flexibleServer.DeepCopy()
-	disabled := mysql.BackupGeoRedundantBackupDisabled
+	disabled := mysql.Backup_GeoRedundantBackup_Disabled
 	flexibleServer.Spec.Backup = &mysql.Backup{
 		BackupRetentionDays: to.IntPtr(5),
 		GeoRedundantBackup:  &disabled,
@@ -78,14 +54,14 @@ func Test_DBForMySQL_FlexibleServer_CRUD(t *testing.T) {
 	tc.RunParallelSubtests(
 		testcommon.Subtest{
 			Name: "MySQL Flexible servers database CRUD",
-			Test: func(testContext *testcommon.KubePerTestContext) {
-				MySQLFlexibleServer_Database_CRUD(testContext, flexibleServer)
+			Test: func(tc *testcommon.KubePerTestContext) {
+				MySQLFlexibleServer_Database_CRUD(tc, flexibleServer)
 			},
 		},
 		testcommon.Subtest{
 			Name: "MySQL Flexible servers firewall CRUD",
-			Test: func(testContext *testcommon.KubePerTestContext) {
-				MySQLFlexibleServer_FirewallRule_CRUD(testContext, flexibleServer)
+			Test: func(tc *testcommon.KubePerTestContext) {
+				MySQLFlexibleServer_FirewallRule_CRUD(tc, flexibleServer)
 			},
 		},
 	)
@@ -93,10 +69,42 @@ func Test_DBForMySQL_FlexibleServer_CRUD(t *testing.T) {
 	tc.DeleteResourceAndWait(flexibleServer)
 
 	// Ensure that the resource was really deleted in Azure
-	exists, retryAfter, err := tc.AzureClient.HeadByID(tc.Ctx, armId, string(mysql.FlexibleServersDatabasesSpecAPIVersion20210501))
+	exists, retryAfter, err := tc.AzureClient.HeadByID(tc.Ctx, armId, string(mysql.APIVersion_Value))
 	tc.Expect(err).ToNot(HaveOccurred())
 	tc.Expect(retryAfter).To(BeZero())
 	tc.Expect(exists).To(BeFalse())
+}
+
+func newFlexibleServer(tc *testcommon.KubePerTestContext, rg *resources.ResourceGroup, adminPasswordSecretRef genruntime.SecretReference) (*mysql.FlexibleServer, string) {
+	//location := tc.AzureRegion Capacity crunch in West US 2 makes this not work when live
+	location := "westcentralus"
+	version := mysql.ServerProperties_Version_8021
+	tier := mysql.Sku_Tier_GeneralPurpose
+	fqdnSecret := "fqdnsecret"
+	flexibleServer := &mysql.FlexibleServer{
+		ObjectMeta: tc.MakeObjectMeta("mysql"),
+		Spec: mysql.FlexibleServer_Spec{
+			Location: &location,
+			Owner:    testcommon.AsOwner(rg),
+			Version:  &version,
+			Sku: &mysql.Sku{
+				Name: to.StringPtr("Standard_D4ds_v4"),
+				Tier: &tier,
+			},
+			AdministratorLogin:         to.StringPtr("myadmin"),
+			AdministratorLoginPassword: &adminPasswordSecretRef,
+			Storage: &mysql.Storage{
+				StorageSizeGB: to.IntPtr(128),
+			},
+			OperatorSpec: &mysql.FlexibleServerOperatorSpec{
+				Secrets: &mysql.FlexibleServerOperatorSecrets{
+					FullyQualifiedDomainName: &genruntime.SecretDestination{Name: fqdnSecret, Key: "fqdn"},
+				},
+			},
+		},
+	}
+
+	return flexibleServer, fqdnSecret
 }
 
 func MySQLFlexibleServer_Database_CRUD(tc *testcommon.KubePerTestContext, flexibleServer *mysql.FlexibleServer) {
@@ -104,7 +112,7 @@ func MySQLFlexibleServer_Database_CRUD(tc *testcommon.KubePerTestContext, flexib
 	// although it doesn't give nice errors to point this out
 	database := &mysql.FlexibleServersDatabase{
 		ObjectMeta: tc.MakeObjectMetaWithName(tc.NoSpaceNamer.GenerateName("db")),
-		Spec: mysql.FlexibleServersDatabases_Spec{
+		Spec: mysql.FlexibleServers_Database_Spec{
 			Owner:   testcommon.AsOwner(flexibleServer),
 			Charset: to.StringPtr("utf8mb4"),
 		},
@@ -118,10 +126,10 @@ func MySQLFlexibleServer_Database_CRUD(tc *testcommon.KubePerTestContext, flexib
 func MySQLFlexibleServer_FirewallRule_CRUD(tc *testcommon.KubePerTestContext, flexibleServer *mysql.FlexibleServer) {
 	rule := &mysql.FlexibleServersFirewallRule{
 		ObjectMeta: tc.MakeObjectMeta("fwrule"),
-		Spec: mysql.FlexibleServersFirewallRules_Spec{
+		Spec: mysql.FlexibleServers_FirewallRule_Spec{
 			Owner:          testcommon.AsOwner(flexibleServer),
-			StartIpAddress: "1.2.3.4",
-			EndIpAddress:   "1.2.3.4",
+			StartIpAddress: to.StringPtr("1.2.3.4"),
+			EndIpAddress:   to.StringPtr("1.2.3.4"),
 		},
 	}
 
@@ -129,7 +137,7 @@ func MySQLFlexibleServer_FirewallRule_CRUD(tc *testcommon.KubePerTestContext, fl
 	defer tc.DeleteResourceAndWait(rule)
 
 	old := rule.DeepCopy()
-	rule.Spec.EndIpAddress = "1.2.3.5"
+	rule.Spec.EndIpAddress = to.StringPtr("1.2.3.5")
 	tc.PatchResourceAndWait(old, rule)
 	tc.Expect(rule.Status.EndIpAddress).To(Equal(to.StringPtr("1.2.3.5")))
 

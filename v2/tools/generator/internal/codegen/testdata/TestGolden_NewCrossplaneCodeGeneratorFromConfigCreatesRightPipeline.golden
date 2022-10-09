@@ -6,21 +6,24 @@ allof-anyof-objects                                Convert allOf and oneOf to ob
 flattenResources                                   Flatten nested resource types
 augmentSpecWithStatus                              Merge information from Status into Spec
 stripUnreferenced                                  Strip unreferenced types
+removeAliases                                      Remove type aliases
+pluralizeNames                                     Improve resource pluralization
 nameTypes                                          Name inner types for CRD
 propertyRewrites                                   Modify property types using configured transforms
 removeResourceScope                                Remove scope from all resources
 makeStatusPropertiesOptional                       Force all status properties to be optional
 removeStatusPropertyValidation                     Remove validation from all status properties
+transformValidatedFloats                           Transform validated 'spec' float type values to validated integer types for compatibility with controller-gen
 unrollRecursiveTypes                               Unroll directly recursive types since they are not supported by controller-gen
 determineResourceOwnership                         Determine ARM resource relationships
 removeAliases                                      Remove type aliases
 collapseCrossGroupReferences                       Find and remove cross group references
-pluralizeNames                                     Improve resource pluralization
 stripUnreferenced                                  Strip unreferenced types
 assertTypesStructureValid                          Verify that all local TypeNames refer to a type
 filterTypes                                        Apply export filters to reduce the number of generated types
 removeTypeProperty                                 Remove the ARM type property and instead augment the ResourceType with it
 removeAPIVersionProperty                           Remove the ARM API version property and instead augment the ResourceType with it
+add-api-version-enums                              Add enums for API Versions in each package
 verifyNoErroredTypes                               Verify there are no ErroredType's containing errors
 stripUnreferenced                                  Strip unreferenced types
 replaceAnyTypeWithJSON                             Replace properties using interface{} with arbitrary JSON
@@ -37,3 +40,4 @@ rogueCheck                                         Check for rogue definitions u
 deleteGenerated                                    Delete generated code from .
 exportPackages                                     Export packages to "."
 reportResourceVersions                             Generate a report listing all the resources generated
+reportResourceStructure                            Reports the structure of resources in each package

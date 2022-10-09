@@ -25,7 +25,7 @@ import (
 const ExportPackagesStageID = "exportPackages"
 
 // ExportPackages creates a Stage to export our generated code as a set of packages
-func ExportPackages(outputPath string) *Stage {
+func ExportPackages(outputPath string, emitDocFiles bool) *Stage {
 	description := fmt.Sprintf("Export packages to %q", outputPath)
 	stage := NewLegacyStage(
 		ExportPackagesStageID,
@@ -36,7 +36,7 @@ func ExportPackages(outputPath string) *Stage {
 				return nil, errors.Wrapf(err, "failed to assign generated definitions to packages")
 			}
 
-			err = writeFiles(ctx, packages, outputPath)
+			err = writeFiles(ctx, packages, outputPath, emitDocFiles)
 			if err != nil {
 				return nil, errors.Wrapf(err, "unable to write files into %q", outputPath)
 			}
@@ -55,12 +55,7 @@ func CreatePackagesForDefinitions(definitions astmodel.TypeDefinitionSet) (map[a
 	for _, def := range definitions {
 		name := def.Name()
 		ref := name.PackageReference
-		group, version, ok := ref.GroupVersion()
-		if !ok {
-			klog.Errorf("Definition %s from external package %s skipped", name.Name(), ref)
-			continue
-		}
-
+		group, version := ref.GroupVersion()
 		if pkg, ok := packages[ref]; ok {
 			pkg.AddDefinition(def)
 		} else {
@@ -73,8 +68,8 @@ func CreatePackagesForDefinitions(definitions astmodel.TypeDefinitionSet) (map[a
 	return packages, nil
 }
 
-func writeFiles(ctx context.Context, packages map[astmodel.PackageReference]*astmodel.PackageDefinition, outputPath string) error {
-	var pkgs []*astmodel.PackageDefinition
+func writeFiles(ctx context.Context, packages map[astmodel.PackageReference]*astmodel.PackageDefinition, outputPath string, emitDocFiles bool) error {
+	pkgs := make([]*astmodel.PackageDefinition, 0, len(packages))
 	for _, pkg := range packages {
 		pkgs = append(pkgs, pkg)
 	}
@@ -114,7 +109,7 @@ func writeFiles(ctx context.Context, packages map[astmodel.PackageReference]*ast
 				outputDir := filepath.Join(outputPath, pkg.GroupName, pkg.PackageName)
 				if _, err := os.Stat(outputDir); os.IsNotExist(err) {
 					klog.V(5).Infof("Creating directory %q\n", outputDir)
-					err = os.MkdirAll(outputDir, 0700)
+					err = os.MkdirAll(outputDir, 0o700)
 					if err != nil {
 						select { // try to write to errs, ignore if buffer full
 						case errs <- errors.Wrapf(err, "unable to create directory %q", outputDir):
@@ -124,7 +119,7 @@ func writeFiles(ctx context.Context, packages map[astmodel.PackageReference]*ast
 					}
 				}
 
-				count, err := pkg.EmitDefinitions(outputDir, packages)
+				count, err := pkg.EmitDefinitions(outputDir, packages, emitDocFiles)
 				if err != nil {
 					select { // try to write to errs, ignore if buffer full
 					case errs <- errors.Wrapf(err, "error writing definitions into %q", outputDir):
@@ -149,7 +144,7 @@ func writeFiles(ctx context.Context, packages map[astmodel.PackageReference]*ast
 
 	// collect all errors, if any
 	close(errs)
-	var totalErrs []error
+	totalErrs := make([]error, 0, len(errs))
 	for err := range errs {
 		totalErrs = append(totalErrs, err)
 	}

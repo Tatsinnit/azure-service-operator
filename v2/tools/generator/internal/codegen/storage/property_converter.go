@@ -8,10 +8,9 @@ package storage
 import (
 	"fmt"
 
-	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
-	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/interfaces"
-
 	"github.com/pkg/errors"
+
+	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
 
 // PropertyConverter is used to convert the properties of object definitions as required for storage variants
@@ -63,7 +62,7 @@ func (p *PropertyConverter) ConvertProperty(property *astmodel.PropertyDefinitio
 	return nil, fmt.Errorf(
 		"failed to find a conversion for property %s (%s)",
 		property.PropertyName(),
-		astmodel.DebugDescription(property.PropertyType(), p.definitions))
+		astmodel.DebugDescription(property.PropertyType()))
 }
 
 // stripAllValidations removes all validations
@@ -139,7 +138,7 @@ type propertyConversion = func(property *astmodel.PropertyDefinition) (*astmodel
 func (p *PropertyConverter) preserveKubernetesResourceStorageProperties(
 	prop *astmodel.PropertyDefinition) (*astmodel.PropertyDefinition, error) {
 
-	if interfaces.IsKubernetesResourceProperty(prop.PropertyName()) {
+	if astmodel.IsKubernetesResourceProperty(prop.PropertyName()) {
 		// Keep these unchanged
 		return prop, nil
 	}
@@ -180,6 +179,7 @@ func (p *PropertyConverter) defaultPropertyConversion(
 
 	newProperty := property.WithType(propertyType).
 		MakeOptional().
+		MakeTypeOptional().
 		WithDescription("")
 
 	return newProperty, nil

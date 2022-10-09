@@ -12,6 +12,8 @@ import (
 
 	"github.com/pkg/errors"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
+
+	"github.com/Azure/azure-service-operator/v2/internal/set"
 )
 
 // KnownResourceReference is a resource reference to a known type.
@@ -19,7 +21,7 @@ import (
 type KnownResourceReference struct {
 	// This is the name of the Kubernetes resource to reference.
 	// +kubebuilder:validation:Required
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
 
 	// References across namespaces are not supported.
 
@@ -33,15 +35,15 @@ type KnownResourceReference struct {
 type ArbitraryOwnerReference struct {
 	// This is the name of the Kubernetes resource to reference.
 	// +kubebuilder:validation:Required
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
 
 	// +kubebuilder:validation:Required
 	// Group is the Kubernetes group of the resource.
-	Group string `json:"group"`
+	Group string `json:"group,omitempty"`
 
 	// +kubebuilder:validation:Required
 	// Kind is the Kubernetes kind of the resource.
-	Kind string `json:"kind"`
+	Kind string `json:"kind,omitempty"`
 
 	// Ownership across namespaces is not supported.
 }
@@ -61,19 +63,21 @@ type ResourceReference struct {
 	// Note: Version is not required here because references are all about linking one Kubernetes
 	// resource to another, and Kubernetes resources are uniquely identified by group, kind, (optionally namespace) and
 	// name - the versions are just giving a different view on the same resource
+	// Here are some test patterns for it: https://regex101.com/r/K7l3sv/1
 
-	// TODO: The below regex may be overly restrictive
-	// +kubebuilder:validation:Pattern="(?i)^/subscriptions/([^/]+)(/resourcegroups/([^/]+))?/providers/([^/]+)/([^/]+/[^/]+)(/([^/]+/[^/]+))*$"
+	// +kubebuilder:validation:Pattern="(?i)(^(/subscriptions/([^/]+)(/resourcegroups/([^/]+))?)?/providers/([^/]+)/([^/]+/[^/]+)(/([^/]+/[^/]+))*$|^/subscriptions/([^/]+)(/resourcegroups/([^/]+))?$)"
 	// ARMID is a string of the form /subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/{resourceProviderNamespace}/{resourceType}/{resourceName}.
 	// The /resourcegroups/{resourceGroupName} bit is optional as some resources are scoped at the subscription level
 	// ARMID is mutually exclusive with Group, Kind, Namespace and Name.
 	ARMID string `json:"armId,omitempty"`
 }
 
+// IsDirectARMReference returns true if this ResourceReference is referring to an ARMID directly.
 func (ref ResourceReference) IsDirectARMReference() bool {
 	return ref.ARMID != "" && ref.Name == "" && ref.Group == "" && ref.Kind == ""
 }
 
+// IsKubernetesReference returns true if this ResourceReference is referring to a Kubernetes resource.
 func (ref ResourceReference) IsKubernetesReference() bool {
 	return ref.ARMID == "" && ref.Name != "" && ref.Group != "" && ref.Kind != ""
 }
@@ -109,8 +113,8 @@ func (ref ResourceReference) Validate() error {
 	return nil
 }
 
-// ToNamespacedRef creates a NamespacedResourceReference from this reference.
-func (ref ResourceReference) ToNamespacedRef(namespace string) NamespacedResourceReference {
+// AsNamespacedRef creates a NamespacedResourceReference from this reference.
+func (ref ResourceReference) AsNamespacedRef(namespace string) NamespacedResourceReference {
 	// If this is a direct ARM reference, don't append a namespace as it reads weird
 	if ref.IsDirectARMReference() {
 		return NamespacedResourceReference{
@@ -159,8 +163,8 @@ func (ref ResourceReference) Copy() ResourceReference {
 }
 
 // ValidateResourceReferences calls Validate on each ResourceReference
-func ValidateResourceReferences(refs map[ResourceReference]struct{}) error {
-	var errs []error
+func ValidateResourceReferences(refs set.Set[ResourceReference]) error {
+	errs := make([]error, 0, len(refs))
 	for ref := range refs {
 		errs = append(errs, ref.Validate())
 	}

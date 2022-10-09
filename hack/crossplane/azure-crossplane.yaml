@@ -1,88 +1,126 @@
-schemaUrl: 'https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json'
+schemaUrls:
+  - 'https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json'
 schemaUrlRewrite:
   from: 'https://schema.management.azure.com/schemas/'
   to: '../../v2/specs/azure-resource-manager-schemas/schemas/'
 destinationGoModuleFile: go.mod
 # These two paths are relative to the module path above.
 typesOutputPath: apis
+
+supportedResourcesReport:
+  # Path is relative to the module path, above
+  outputPath: apis/resources.md
+  introduction: |
+    These are the Crossplane resources committed to our **main** branch, grouped by the originating ARM service.
+    (Newly supported resources will appear in this list prior to inclusion in any ASO release.)
+
 pipeline: crossplane
 typeFilters:
   - action: prune
     group: definitions
     name: Expression
     because: expression is an ARM template construct which doesn't belong in CRDs
+
   - action: include
     group: common
     matchRequired: false # only triggers for Status types
+
   - action: include
-    version: v*api20201101
+    version: v*20201101
     group: network
     because: Including network for Crossplane
+
   - action: include
-    version: v*api20200601
+    version: v*20200601
     group: cache
     because: Including cache for Crossplane
+
   - action: include
-    version: v*api20201101preview
+    version: v*20201101preview
     group: sql
     because: Including sql
+
   - action: include
     group: sql
     version: '*v1'
     because: Including sql v1 common types
     matchRequired: false # only triggers for Status types
+
   - action: include
     group: sql
     version: '*v2'
     because: Including sql v2 common types
     matchRequired: false # only triggers for Status types
+
   - action: prune
     version: '*preview'
     because: preview SDK versions are excluded by default
+
   - action: prune
     group: network
     version: '*'
     because: Pruning all networking api versions since we don't use them anyway
+
   - action: prune
     group: compute
     version: '*'
     because: Pruning all compute api versions since we don't use them anyway
+
+  - action: prune
+    group: solutions
+    because: There seems to be some issue with embedded JSON objects, specifically "CreateUiDefinition"
+
   - action: prune
     group: kusto
     because: Some types use OneOf in a way we don't currently handle correctly.
+
   - action: prune
     group: timeseriesinsights
     because: Some types use OneOf to model inheritance, which we don't currently support.
+
   - action: prune
     group: databoxedge
     because: Some types use OneOf to model inheritance, which we don't currently support.
+
   - action: prune
     group: datashare
     because: Some types use OneOf to model inheritance, which we don't currently support.
+
   - action: prune
     group: apimanagement
     because: Some types use OneOf to model inheritance, which we don't currently support.
+
   - action: prune
     group: automation
     because: Some types use OneOf to model inheritance, which we don't currently support.
+
   - action: prune
     group: machinelearningservices
-    name: WorkspacesService*
+    name: Workspaces_Service*
     because: Some types use OneOf to model inheritance, which we don't currently support.
+
   - action: prune
     group: resources
     name: DeploymentScript*
     because: Some types use OneOf to model inheritance, which we don't currently support.
+
+  - action: prune
+    group: web
+    because: Some types (SitesSlotsConfig) use OneOf in a way we don't currently handle. Exclude the whole set for now.
+
+  - action: prune
+    group: hdinsight
+    name: Clusters;Clusters_Extensions
+    because: Uses one-of in a way we don't support
+
   - action: prune
     group: resources
     name: Tags
     because: This type is defined recursively.
+
   - action: prune
     group: compute.extensions
     because: All other extensions should be removed
-  - action: prune
-    group: costmanagement
-    because: QueryFilter is a self-referential, infinitely recursive type. We can't easily unroll it and controller-gen doesn't support recursive types
 
 # Exclusions for packages that currently produce types including AnyType.
 # TODO: get rid of these, either by chasing the teams generating
@@ -133,7 +171,7 @@ typeTransformers:
     property: Copy
     ifType:
       group: deploymenttemplate
-      version: v1alpha1api20190401
+      version: "2019-04-01"
       name: ResourceCopy
       optional: true
     remove: true
@@ -142,7 +180,7 @@ typeTransformers:
     property: Copy
     ifType:
       group: definitions
-      version: v1alpha1api
+      version: "*"
       name: ResourceCopy
       optional: true
     remove: true
@@ -331,9 +369,12 @@ objectModelConfiguration:
     2020-11-01-preview:
       Server:
         $export: true
-      ServersDatabase:
+        $supportedFrom: "-"
+      Servers_Database:
         $export: true
+        $supportedFrom: "-"
   cache:
     2020-06-01:
       Redis: 
         $export: true
+        $supportedFrom: "-"

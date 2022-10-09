@@ -8,9 +8,9 @@ package codegen
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/pkg/errors"
-	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/klog/v2"
 
 	"github.com/Azure/azure-service-operator/v2/internal/version"
@@ -24,6 +24,7 @@ import (
 type CodeGenerator struct {
 	configuration *config.Configuration
 	pipeline      []*pipeline.Stage
+	debugReporter *debugReporter
 }
 
 // NewCodeGeneratorFromConfigFile produces a new Generator with the given configuration file
@@ -46,8 +47,8 @@ func NewCodeGeneratorFromConfigFile(configurationFile string) (*CodeGenerator, e
 func NewTargetedCodeGeneratorFromConfig(
 	configuration *config.Configuration,
 	idFactory astmodel.IdentifierFactory,
-	target pipeline.Target) (*CodeGenerator, error) {
-
+	target pipeline.Target,
+) (*CodeGenerator, error) {
 	result, err := NewCodeGeneratorFromConfig(configuration, idFactory)
 	if err != nil {
 		return nil, errors.Wrapf(err, "creating pipeline targeting %s", target)
@@ -63,18 +64,14 @@ func NewTargetedCodeGeneratorFromConfig(
 
 	result.pipeline = stages
 
-	err = result.verifyPipeline()
-	if err != nil {
-		return nil, err
-	}
-
 	return result, nil
 }
 
 // NewCodeGeneratorFromConfig produces a new code generator with the given configuration all available stages
 func NewCodeGeneratorFromConfig(
 	configuration *config.Configuration,
-	idFactory astmodel.IdentifierFactory) (*CodeGenerator, error) {
+	idFactory astmodel.IdentifierFactory,
+) (*CodeGenerator, error) {
 	result := &CodeGenerator{
 		configuration: configuration,
 		pipeline:      createAllPipelineStages(idFactory, configuration),
@@ -85,7 +82,6 @@ func NewCodeGeneratorFromConfig(
 
 func createAllPipelineStages(idFactory astmodel.IdentifierFactory, configuration *config.Configuration) []*pipeline.Stage {
 	return []*pipeline.Stage{
-
 		pipeline.LoadSchemaIntoTypes(idFactory, configuration, pipeline.DefaultSchemaLoader),
 
 		// Import status info from Swagger:
@@ -103,37 +99,41 @@ func createAllPipelineStages(idFactory astmodel.IdentifierFactory, configuration
 
 		pipeline.StripUnreferencedTypeDefinitions(),
 
+		// Strip out redundant type aliases
+		pipeline.RemoveTypeAliases(),
+
+		// De-pluralize resource types
+		pipeline.ImproveResourcePluralization(idFactory),
+
 		// Name all anonymous object, enum, and validated types (required by controller-gen):
 		pipeline.NameTypesForCRD(idFactory),
 
 		// Apply property type rewrites from the config file
-		// Must come after NameTypesForCRD ('nameTypes)' and ConvertAllOfAndOneOfToObjects ('allof-anyof-objects') so
+		// Must come after NameTypesForCRD ('nameTypes') and ConvertAllOfAndOneOfToObjects ('allof-anyof-objects') so
 		// that objects are all expanded
 		pipeline.ApplyPropertyRewrites(configuration),
+
 		pipeline.RemoveResourceScope(),
 
 		pipeline.MakeStatusPropertiesOptional(),
 		pipeline.RemoveStatusValidations(),
+		pipeline.TransformValidatedFloats(),
 		pipeline.UnrollRecursiveTypes(),
 
 		// Figure out resource owners:
-		pipeline.DetermineResourceOwnership(configuration),
+		pipeline.DetermineResourceOwnership(configuration, idFactory),
 
-		// Strip out redundant type aliases:
+		// Strip out redundant type aliases
 		pipeline.RemoveTypeAliases(),
 
 		// Collapse cross group references
 		pipeline.CollapseCrossGroupReferences(),
 
-		// De-pluralize resource types
-		// (Must come after type aliases are resolved)
-		pipeline.ImproveResourcePluralization(),
-
 		pipeline.StripUnreferencedTypeDefinitions(),
 
 		pipeline.AssertTypesCollectionValid(),
 
-		pipeline.RemoveEmbeddedResources().UsedFor(pipeline.ARMTarget), // TODO: For now only used for ARM,
+		pipeline.RemoveEmbeddedResources(configuration).UsedFor(pipeline.ARMTarget),
 
 		// Apply export filters before generating
 		// ARM types for resources etc:
@@ -142,6 +142,7 @@ func createAllPipelineStages(idFactory astmodel.IdentifierFactory, configuration
 		// TODO: These should be removed if/when we move to Swagger as the single source of truth
 		pipeline.RemoveTypeProperty(),
 		pipeline.RemoveAPIVersionProperty(),
+		pipeline.AddAPIVersionEnums(),
 
 		pipeline.VerifyNoErroredTypes(),
 
@@ -152,9 +153,13 @@ func createAllPipelineStages(idFactory astmodel.IdentifierFactory, configuration
 		pipeline.AddCrossResourceReferences(configuration, idFactory).UsedFor(pipeline.ARMTarget),
 		pipeline.AddSecrets(configuration).UsedFor(pipeline.ARMTarget),
 
+		pipeline.CreateTypesForBackwardCompatibility("v2.0.0-alpha", configuration.ObjectModelConfiguration).UsedFor(pipeline.ARMTarget),
+
 		pipeline.ReportOnTypesAndVersions(configuration).UsedFor(pipeline.ARMTarget), // TODO: For now only used for ARM
 
 		pipeline.CreateARMTypes(idFactory).UsedFor(pipeline.ARMTarget),
+		pipeline.PruneResourcesWithLifecycleOwnedByParent(configuration).UsedFor(pipeline.ARMTarget),
+		pipeline.MakeOneOfDiscriminantRequired().UsedFor(pipeline.ARMTarget),
 		pipeline.ApplyARMConversionInterface(idFactory).UsedFor(pipeline.ARMTarget),
 		pipeline.ApplyKubernetesResourceInterface(idFactory).UsedFor(pipeline.ARMTarget),
 
@@ -170,6 +175,7 @@ func createAllPipelineStages(idFactory astmodel.IdentifierFactory, configuration
 		// To be added when needed
 		// pipeline.AddOperatorStatus(idFactory).UsedFor(pipeline.ARMTarget),
 
+		pipeline.AddKubernetesExporter(idFactory).UsedFor(pipeline.ARMTarget),
 		pipeline.ApplyDefaulterAndValidatorInterfaces(idFactory).UsedFor(pipeline.ARMTarget),
 
 		pipeline.AddCrossplaneOwnerProperties(idFactory).UsedFor(pipeline.CrossplaneTarget),
@@ -180,9 +186,9 @@ func createAllPipelineStages(idFactory astmodel.IdentifierFactory, configuration
 
 		// Create Storage types
 		// TODO: For now only used for ARM
-		pipeline.CreateConversionGraph(configuration).UsedFor(pipeline.ARMTarget),
 		pipeline.InjectOriginalVersionFunction(idFactory).UsedFor(pipeline.ARMTarget),
 		pipeline.CreateStorageTypes().UsedFor(pipeline.ARMTarget),
+		pipeline.CreateConversionGraph(configuration, astmodel.GeneratorVersion).UsedFor(pipeline.ARMTarget),
 		pipeline.InjectOriginalVersionProperty().UsedFor(pipeline.ARMTarget),
 		pipeline.InjectPropertyAssignmentFunctions(configuration, idFactory).UsedFor(pipeline.ARMTarget),
 		pipeline.ImplementConvertibleSpecInterface(idFactory).UsedFor(pipeline.ARMTarget),
@@ -211,11 +217,12 @@ func createAllPipelineStages(idFactory astmodel.IdentifierFactory, configuration
 		pipeline.DetectSkippingProperties().UsedFor(pipeline.ARMTarget),
 
 		pipeline.DeleteGeneratedCode(configuration.FullTypesOutputPath()),
-		pipeline.ExportPackages(configuration.FullTypesOutputPath()),
+		pipeline.ExportPackages(configuration.FullTypesOutputPath(), configuration.EmitDocFiles),
 
 		pipeline.ExportControllerResourceRegistrations(idFactory, configuration.FullTypesRegistrationOutputFilePath()).UsedFor(pipeline.ARMTarget),
 
 		pipeline.ReportResourceVersions(configuration),
+		pipeline.ReportResourceStructure(configuration),
 	}
 }
 
@@ -223,27 +230,59 @@ func createAllPipelineStages(idFactory astmodel.IdentifierFactory, configuration
 func (generator *CodeGenerator) Generate(ctx context.Context) error {
 	klog.V(1).Infof("Generator version: %s", version.BuildVersion)
 
+	if generator.debugReporter != nil {
+		// Generate a diagram containing our stages
+		outputFolder := generator.debugReporter.outputFolder
+		diagram := pipeline.NewPipelineDiagram(outputFolder)
+		err := diagram.WriteDiagram(generator.pipeline)
+		if err != nil {
+			return errors.Wrapf(err, "failed to generate diagram")
+		}
+	}
+
 	state := pipeline.NewState()
 	for i, stage := range generator.pipeline {
-		klog.V(0).Infof("%d/%d: %s", i+1, len(generator.pipeline), stage.Description())
-		// Defensive copy (in case the pipeline modifies its inputs) so that we can compare types in vs out
-		stateOut, err := stage.Run(ctx, state)
+		klog.V(0).Infof(
+			"%d/%d: %s",
+			i+1, // Computers count from 0, people from 1
+			len(generator.pipeline),
+			stage.Description())
+
+		start := time.Now()
+
+		newState, err := stage.Run(ctx, state)
 		if err != nil {
 			return errors.Wrapf(err, "failed during pipeline stage %d/%d: %s", i+1, len(generator.pipeline), stage.Description())
 		}
 
-		defsAdded := stateOut.Definitions().Except(state.Definitions())
-		defsRemoved := state.Definitions().Except(stateOut.Definitions())
-
-		if len(defsAdded) > 0 && len(defsRemoved) > 0 {
-			klog.V(1).Infof("Added %d, removed %d type definitions", len(defsAdded), len(defsRemoved))
-		} else if len(defsAdded) > 0 {
-			klog.V(1).Infof("Added %d type definitions", len(defsAdded))
-		} else if len(defsRemoved) > 0 {
-			klog.V(1).Infof("Removed %d type definitions", len(defsRemoved))
+		// Fail fast if something goes awry
+		if len(newState.Definitions()) == 0 {
+			return errors.Errorf("all type definitions removed by stage %s", stage.Id())
 		}
 
-		state = stateOut
+		generator.logStateChange(state, newState)
+
+		if generator.debugReporter != nil {
+			err := generator.debugReporter.ReportStage(i, stage.Description(), newState)
+			if err != nil {
+				return errors.Wrapf(err, "failed to generate debug report for stage %d/%d: %s", i+1, len(generator.pipeline), stage.Description())
+			}
+		}
+
+		duration := time.Since(start).Round(time.Millisecond)
+		klog.V(0).Infof(
+			"%d/%d: %s, completed in %s",
+			i+1, // Computers count from 0, people from 1
+			len(generator.pipeline),
+			stage.Description(),
+			duration)
+
+		state = newState
+	}
+
+	if err := state.CheckFinalState(); err != nil {
+		klog.Info("Failed")
+		return err
 	}
 
 	klog.Info("Finished")
@@ -251,48 +290,17 @@ func (generator *CodeGenerator) Generate(ctx context.Context) error {
 	return nil
 }
 
-func (generator *CodeGenerator) verifyPipeline() error {
-	var errs []error
+func (generator *CodeGenerator) logStateChange(former *pipeline.State, later *pipeline.State) {
+	defsAdded := later.Definitions().Except(former.Definitions())
+	defsRemoved := former.Definitions().Except(later.Definitions())
 
-	// Set of stages that we've already seen, used to confirm prerequisites
-	stagesSeen := astmodel.MakeStringSet()
-
-	// Set of stages we expect to see, each associated with a slice containing the earlier stages that expected each
-	stagesExpected := make(map[string][]string)
-
-	for index, stage := range generator.pipeline {
-		klog.V(3).Infof("Checking requisites of %d/%d %s", index, len(generator.pipeline), stage.Id())
-		err := stage.CheckPrerequisites(stagesSeen)
-		if err != nil {
-			errs = append(errs, err)
-		}
-
-		for _, postreq := range stage.Postrequisites() {
-			if stagesSeen.Contains(postreq) {
-				klog.V(3).Infof("[✗] Postrequisite %s satisfied EARLY", postreq)
-				errs = append(errs, errors.Errorf("postrequisite %q of stage %q satisfied too early", postreq, stage.Id()))
-			} else {
-				klog.V(3).Infof("[?] Postrequisite %s expected", postreq)
-				stagesExpected[postreq] = append(stagesExpected[postreq], stage.Id())
-			}
-		}
-
-		stagesSeen.Add(stage.Id())
-
-		for _, req := range stagesExpected[stage.Id()] {
-			klog.V(3).Infof("[✓] Postrequisite of %s satisfied", req)
-		}
-
-		delete(stagesExpected, stage.Id())
+	if len(defsAdded) > 0 && len(defsRemoved) > 0 {
+		klog.V(1).Infof("Added %d, removed %d type definitions", len(defsAdded), len(defsRemoved))
+	} else if len(defsAdded) > 0 {
+		klog.V(1).Infof("Added %d type definitions", len(defsAdded))
+	} else if len(defsRemoved) > 0 {
+		klog.V(1).Infof("Removed %d type definitions", len(defsRemoved))
 	}
-
-	for required, requiredBy := range stagesExpected {
-		for _, stageId := range requiredBy {
-			errs = append(errs, errors.Errorf("postrequisite %q of stage %q not satisfied", required, stageId))
-		}
-	}
-
-	return kerrors.NewAggregate(errs)
 }
 
 // RemoveStages will remove all stages from the pipeline with the given ids.
@@ -304,8 +312,7 @@ func (generator *CodeGenerator) RemoveStages(stageIds ...string) {
 		stagesToRemove[s] = false
 	}
 
-	var stages []*pipeline.Stage
-
+	stages := make([]*pipeline.Stage, 0, len(generator.pipeline))
 	for _, stage := range generator.pipeline {
 		if _, ok := stagesToRemove[stage.Id()]; ok {
 			stagesToRemove[stage.Id()] = true
@@ -379,4 +386,11 @@ func (generator *CodeGenerator) IndexOfStage(id string) int {
 	}
 
 	return -1
+}
+
+// UseDebugMode configures the generator to use debug mode.
+// groupSpecifier indicates which groups to include (may include  wildcards).
+// outputFolder specifies where to write the debug output.
+func (generator *CodeGenerator) UseDebugMode(groupSpecifier string, outputFolder string) {
+	generator.debugReporter = newDebugReporter(groupSpecifier, outputFolder)
 }

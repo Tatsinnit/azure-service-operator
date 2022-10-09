@@ -89,8 +89,8 @@ func (c *armTypeCreator) createARMTypes() (astmodel.TypeDefinitionSet, error) {
 
 func (c *armTypeCreator) createARMResourceSpecDefinition(
 	resource *astmodel.ResourceType,
-	resourceSpecDef astmodel.TypeDefinition) (astmodel.TypeDefinition, error) {
-
+	resourceSpecDef astmodel.TypeDefinition,
+) (astmodel.TypeDefinition, error) {
 	emptyDef := astmodel.TypeDefinition{}
 
 	armTypeDef, err := c.createARMTypeDefinition(true, resourceSpecDef)
@@ -123,10 +123,10 @@ func (c *armTypeCreator) createARMResourceSpecDefinition(
 }
 
 func removeValidations(t *astmodel.ObjectType) (*astmodel.ObjectType, error) {
-	for _, p := range t.Properties() {
+	for _, p := range t.Properties().Copy() {
 
 		// set all properties as not-required
-		p = p.WithKubebuilderRequiredValidation(false)
+		p = p.MakeOptional()
 
 		// remove all validation types by promoting inner type
 		if validated, ok := p.PropertyType().(*astmodel.ValidatedType); ok {
@@ -238,12 +238,9 @@ func (c *armTypeCreator) createARMNameProperty(prop *astmodel.PropertyDefinition
 }
 
 func (c *armTypeCreator) createResourceReferenceProperty(prop *astmodel.PropertyDefinition, _ bool) (*astmodel.PropertyDefinition, error) {
-	if !astmodel.TypeEquals(prop.PropertyType(), astmodel.ResourceReferenceType) &&
-		!astmodel.TypeEquals(prop.PropertyType(), astmodel.NewOptionalType(astmodel.ResourceReferenceType)) {
+	if !astmodel.IsTypeResourceReference(prop.PropertyType()) {
 		return nil, nil
 	}
-
-	isRequired := astmodel.TypeEquals(prop.PropertyType(), astmodel.ResourceReferenceType)
 
 	// Extract expected property name
 	values, ok := prop.Tag(astmodel.ARMReferenceTag)
@@ -255,18 +252,20 @@ func (c *armTypeCreator) createResourceReferenceProperty(prop *astmodel.Property
 		return nil, errors.Errorf("ResourceReference %q tag len(values) != 1", astmodel.ARMReferenceTag)
 	}
 
+	var newPropType astmodel.Type
+	if astmodel.IsTypeResourceReferenceSlice(prop.PropertyType()) {
+		newPropType = astmodel.NewArrayType(astmodel.StringType)
+	} else if astmodel.IsTypeResourceReferenceMap(prop.PropertyType()) {
+		newPropType = astmodel.NewMapType(astmodel.StringType, astmodel.StringType)
+	} else {
+		newPropType = astmodel.StringType
+	}
+
 	armPropName := values[0]
 	newProp := astmodel.NewPropertyDefinition(
 		c.idFactory.CreatePropertyName(armPropName, astmodel.Exported),
 		c.idFactory.CreateIdentifier(armPropName, astmodel.NotExported),
-		astmodel.StringType)
-
-	if isRequired {
-		// We want to be required but don't need any kubebuidler annotations on this type because it's an ARM type
-		newProp = newProp.MakeRequired().WithKubebuilderRequiredValidation(false)
-	} else {
-		newProp = newProp.MakeOptional()
-	}
+		newPropType).MakeTypeOptional()
 
 	return newProp, nil
 }
@@ -291,7 +290,6 @@ func (c *armTypeCreator) createSecretReferenceProperty(prop *astmodel.PropertyDe
 
 func (c *armTypeCreator) createARMProperty(prop *astmodel.PropertyDefinition, _ bool) (*astmodel.PropertyDefinition, error) {
 	newType, err := c.createARMTypeIfNeeded(prop.PropertyType())
-
 	if err != nil {
 		return nil, err
 	}
@@ -310,7 +308,7 @@ func (c *armTypeCreator) convertObjectPropertiesForARM(t *astmodel.ObjectType, i
 
 	result := t.WithoutProperties()
 	var errs []error
-	for _, prop := range t.Properties() {
+	for _, prop := range t.Properties().Copy() {
 		for _, handler := range propertyHandlers {
 			newProp, err := handler(prop, isSpecType)
 			if err != nil {

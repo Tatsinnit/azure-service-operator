@@ -16,7 +16,8 @@ import (
 // Only one handler should be present, as we don't do any traversal below an invoked handler (but a handler is free to
 // do independent visiting with a different instance if it chooses)
 type configurationVisitor struct {
-	typeName       *astmodel.TypeName                                // Optional TypeName used to constrain the walk
+	ref            astmodel.PackageReference                         // Optional Package reference used to constrain the walk
+	typeName       string                                            // Optional TypeName used to constrain the walk
 	property       *astmodel.PropertyName                            // Optional PropertyName used to constrain the walk
 	handleGroup    func(groupConfig *GroupConfiguration) error       // Optional handler for visiting a group
 	handleVersion  func(versionConfig *VersionConfiguration) error   // Optional handler for visiting a version
@@ -24,64 +25,80 @@ type configurationVisitor struct {
 	handleProperty func(propertyConfig *PropertyConfiguration) error // Optional handler for visiting a property
 }
 
-// NewSinglePropertyConfigurationVisitor creates a ConfigurationVisitor to apply an action to the property specified.
+// newSinglePropertyConfigurationVisitor creates a ConfigurationVisitor to apply an action to the property specified.
 // typeName is the fully qualified name of the type expected to contain the property.
 // property is the name of the property to visit.
 // action is the action to apply to that property.
 // Returns (true, nil) if the property is found and the action successfully applied, (true, error) if the action returns
 // an error, and (false, nil) if the type or property does not exist.
-func NewSinglePropertyConfigurationVisitor(
+func newSinglePropertyConfigurationVisitor(
 	typeName astmodel.TypeName,
 	property astmodel.PropertyName,
 	action func(configuration *PropertyConfiguration) error) *configurationVisitor {
 	return &configurationVisitor{
-		typeName:       &typeName,
+		ref:            typeName.PackageReference,
+		typeName:       typeName.Name(),
 		property:       &property,
 		handleProperty: action,
 	}
 }
 
-// NewEveryPropertyConfigurationVisitor creates a ConfigurationVisitor to apply an action to every property
+// newEveryPropertyConfigurationVisitor creates a ConfigurationVisitor to apply an action to every property
 // configuration we have.
 // action is the action to apply to each property.
 // Returns nil if every call to action was successful (returned nil); otherwise returns an aggregated error containing
 // all the errors returned.
-func NewEveryPropertyConfigurationVisitor(
+func newEveryPropertyConfigurationVisitor(
 	action func(configuration *PropertyConfiguration) error) *configurationVisitor {
 	return &configurationVisitor{
 		handleProperty: action,
 	}
 }
 
-// NewSingleTypeConfigurationVisitor creates a ConfigurationVisitor to apply an action to the type specified.
+// newSingleTypeConfigurationVisitor creates a ConfigurationVisitor to apply an action to the type specified.
 // typeName is the fully qualified name of the type expected.
 // action is the action to apply to that type.
 // Returns (true, nil) if the type is found and the action successfully applied, (true, error) if the action returns
 // an error, and (false, nil) if the type does not exist.
-func NewSingleTypeConfigurationVisitor(
+func newSingleTypeConfigurationVisitor(
 	typeName astmodel.TypeName,
 	action func(configuration *TypeConfiguration) error) *configurationVisitor {
 	return &configurationVisitor{
-		typeName:   &typeName,
+		ref:        typeName.PackageReference,
+		typeName:   typeName.Name(),
 		handleType: action,
 	}
 }
 
-// NewEveryTypeConfigurationVisitor creates a ConfigurationVisitor to apply an action to every type configuration
+// newEveryTypeConfigurationVisitor creates a ConfigurationVisitor to apply an action to every type configuration
 // specified.
 // action is the action to apply to each type.
 // Returns nil if every call to action returned nil; otherwise returns an aggregated error containing all the errors returned.
-func NewEveryTypeConfigurationVisitor(
+func newEveryTypeConfigurationVisitor(
 	action func(configuration *TypeConfiguration) error) *configurationVisitor {
 	return &configurationVisitor{
 		handleType: action,
+	}
+}
+
+// newSingleVersionConfigurationVisitor creates a ConfigurationVisitor to apply an action to the version specified
+// typeName is the fully qualified name of the type expected.
+// action is the action to apply to that type.
+// Returns (true, nil) if the type is found and the action successfully applied, (true, error) if the action returns
+// an error, and (false, nil) if the type does not exist.
+func newSingleVersionConfigurationVisitor(
+	ref astmodel.PackageReference,
+	action func(configuration *VersionConfiguration) error) *configurationVisitor {
+	return &configurationVisitor{
+		ref:           ref,
+		handleVersion: action,
 	}
 }
 
 // Visit visits the specified ObjectModelConfiguration.
 func (v *configurationVisitor) Visit(omc *ObjectModelConfiguration) error {
-	if v.typeName != nil {
-		return omc.visitGroup(*v.typeName, v)
+	if v.ref != nil {
+		return omc.visitGroup(v.ref, v)
 	}
 
 	return omc.visitGroups(v)
@@ -95,8 +112,8 @@ func (v *configurationVisitor) visitGroup(groupConfig *GroupConfiguration) error
 		return v.handleGroup(groupConfig)
 	}
 
-	if v.typeName != nil {
-		return groupConfig.visitVersion(*v.typeName, v)
+	if v.ref != nil {
+		return groupConfig.visitVersion(v.ref, v)
 	}
 
 	return groupConfig.visitVersions(v)
@@ -110,8 +127,8 @@ func (v *configurationVisitor) visitVersion(versionConfig *VersionConfiguration)
 		return v.handleVersion(versionConfig)
 	}
 
-	if v.typeName != nil {
-		return versionConfig.visitType(*v.typeName, v)
+	if v.typeName != "" {
+		return versionConfig.visitType(v.typeName, v)
 	}
 
 	return versionConfig.visitTypes(v)

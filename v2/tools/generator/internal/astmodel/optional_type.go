@@ -48,16 +48,33 @@ func NewOptionalType(element Type) Type {
 	return &OptionalType{element}
 }
 
+func canTypeBeMadeRequired(t Type) bool {
+	switch typ := t.(type) {
+	case *ArrayType:
+		return false
+	case *MapType:
+		return false
+	case *OptionalType:
+		return true
+	case MetaType:
+		return canTypeBeMadeRequired(typ.Unwrap())
+	default:
+		return false
+	}
+}
+
 func isTypeOptional(t Type) bool {
 	// Arrays and Maps are already "optional" as far as Go is concerned,
 	// so don't wrap them. Optional is also obviously already optional.
-	switch t.(type) {
+	switch typ := t.(type) {
 	case *ArrayType:
 		return true
 	case *MapType:
 		return true
 	case *OptionalType:
 		return true
+	case MetaType:
+		return isTypeOptional(typ.Unwrap())
 	default:
 		return false
 	}
@@ -149,13 +166,12 @@ func (optional *OptionalType) Unwrap() Type {
 // WriteDebugDescription adds a description of the current type to the passed builder
 // builder receives the full description, including nested types
 // definitions is a dictionary for resolving named types
-func (optional *OptionalType) WriteDebugDescription(builder *strings.Builder, definitions TypeDefinitionSet) {
+func (optional *OptionalType) WriteDebugDescription(builder *strings.Builder, currentPackage PackageReference) {
 	if optional == nil {
 		builder.WriteString("<nilOptional>")
 		return
 	}
 
-	builder.WriteString("Optional[")
-	optional.element.WriteDebugDescription(builder, definitions)
-	builder.WriteString("]")
+	builder.WriteString("*")
+	optional.element.WriteDebugDescription(builder, currentPackage)
 }

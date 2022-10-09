@@ -12,6 +12,7 @@ import (
 	"github.com/pkg/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/Azure/azure-service-operator/v2/internal/set"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
 
@@ -41,11 +42,10 @@ func FindReferences(obj interface{}, t reflect.Type) (map[interface{}]struct{}, 
 	result := make(map[interface{}]struct{})
 
 	visitor := NewReflectVisitor()
-	visitor.VisitStruct = func(this *ReflectVisitor, it interface{}, ctx interface{}) error {
-		if reflect.TypeOf(it) == t {
-			val := reflect.ValueOf(it)
-			if val.CanInterface() {
-				result[val.Interface()] = struct{}{}
+	visitor.VisitStruct = func(this *ReflectVisitor, it reflect.Value, ctx interface{}) error {
+		if it.Type() == t {
+			if it.CanInterface() {
+				result[it.Interface()] = struct{}{}
 			}
 			return nil
 		}
@@ -62,30 +62,45 @@ func FindReferences(obj interface{}, t reflect.Type) (map[interface{}]struct{}, 
 }
 
 // FindResourceReferences finds all the genruntime.ResourceReference's on the provided object
-func FindResourceReferences(obj interface{}) (map[genruntime.ResourceReference]struct{}, error) {
+func FindResourceReferences(obj interface{}) (set.Set[genruntime.ResourceReference], error) {
 	untypedResult, err := FindReferences(obj, reflect.TypeOf(genruntime.ResourceReference{}))
 	if err != nil {
 		return nil, err
 	}
 
-	result := make(map[genruntime.ResourceReference]struct{})
+	result := set.Make[genruntime.ResourceReference]()
 	for k := range untypedResult {
-		result[k.(genruntime.ResourceReference)] = struct{}{}
+		result.Add(k.(genruntime.ResourceReference))
 	}
 
 	return result, nil
 }
 
 // FindSecretReferences finds all of the genruntime.SecretReference's on the provided object
-func FindSecretReferences(obj interface{}) (map[genruntime.SecretReference]struct{}, error) {
+func FindSecretReferences(obj interface{}) (set.Set[genruntime.SecretReference], error) {
 	untypedResult, err := FindReferences(obj, reflect.TypeOf(genruntime.SecretReference{}))
 	if err != nil {
 		return nil, err
 	}
 
-	result := make(map[genruntime.SecretReference]struct{})
+	result := set.Make[genruntime.SecretReference]()
 	for k := range untypedResult {
-		result[k.(genruntime.SecretReference)] = struct{}{}
+		result.Add(k.(genruntime.SecretReference))
+	}
+
+	return result, nil
+}
+
+// FindConfigMapReferences finds all the genruntime.ConfigMapReference's on the provided object
+func FindConfigMapReferences(obj interface{}) (set.Set[genruntime.ConfigMapReference], error) {
+	untypedResult, err := FindReferences(obj, reflect.TypeOf(genruntime.ConfigMapReference{}))
+	if err != nil {
+		return nil, err
+	}
+
+	result := set.Make[genruntime.ConfigMapReference]()
+	for k := range untypedResult {
+		result.Add(k.(genruntime.ConfigMapReference))
 	}
 
 	return result, nil
@@ -93,24 +108,9 @@ func FindSecretReferences(obj interface{}) (map[genruntime.SecretReference]struc
 
 // GetObjectListItems gets the list of items from an ObjectList
 func GetObjectListItems(listPtr client.ObjectList) ([]client.Object, error) {
-	val := reflect.ValueOf(listPtr)
-
-	if val.Kind() != reflect.Ptr {
-		return nil, errors.Errorf("provided list was not a pointer, was %s", val.Kind())
-	}
-
-	list := val.Elem()
-
-	if list.Kind() != reflect.Struct {
-		return nil, errors.Errorf("provided list was not a struct, was %s", val.Kind())
-	}
-
-	itemsField := list.FieldByName("Items")
-	if (itemsField == reflect.Value{}) {
-		return nil, errors.Errorf("provided list has no field \"Items\"")
-	}
-	if itemsField.Kind() != reflect.Slice {
-		return nil, errors.Errorf("provided list \"Items\" field was not of type slice")
+	itemsField, err := getItemsField(listPtr)
+	if err != nil {
+		return nil, err
 	}
 
 	var result []client.Object
@@ -133,4 +133,57 @@ func GetObjectListItems(listPtr client.ObjectList) ([]client.Object, error) {
 	}
 
 	return result, nil
+}
+
+// SetObjectListItems gets the list of items from an ObjectList
+func SetObjectListItems(listPtr client.ObjectList, items []client.Object) (returnErr error) {
+	itemsField, err := getItemsField(listPtr)
+	if err != nil {
+		return err
+	}
+
+	if !itemsField.CanSet() {
+		return errors.Errorf("cannot set items field of %T", listPtr)
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			returnErr = errors.Errorf("failed to set items field of %T: %s", listPtr, recovered)
+		}
+	}()
+
+	slice := reflect.MakeSlice(itemsField.Type(), 0, 0)
+	for _, item := range items {
+		val := reflect.ValueOf(item)
+
+		if val.Kind() == reflect.Ptr {
+			val = val.Elem()
+		}
+		slice = reflect.Append(slice, val)
+	}
+
+	itemsField.Set(slice)
+	return nil
+}
+
+func getItemsField(listPtr client.ObjectList) (reflect.Value, error) {
+	val := reflect.ValueOf(listPtr)
+	if val.Kind() != reflect.Ptr {
+		return reflect.Value{}, errors.Errorf("provided list was not a pointer, was %s", val.Kind())
+	}
+
+	list := val.Elem()
+
+	if list.Kind() != reflect.Struct {
+		return reflect.Value{}, errors.Errorf("provided list was not a struct, was %s", val.Kind())
+	}
+
+	itemsField := list.FieldByName("Items")
+	if (itemsField == reflect.Value{}) {
+		return reflect.Value{}, errors.Errorf("provided list has no field \"Items\"")
+	}
+	if itemsField.Kind() != reflect.Slice {
+		return reflect.Value{}, errors.Errorf("provided list \"Items\" field was not of type slice")
+	}
+
+	return itemsField, nil
 }
