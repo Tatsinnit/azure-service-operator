@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	v1 "k8s.io/api/core/v1"
@@ -113,7 +114,10 @@ func (r *azureDeploymentReconcilerInstance) MakeReadyConditionImpactingErrorFrom
 	if !isCloudErr {
 		// This shouldn't happen, as all errors from ARM should be in one of the shapes that CloudError supports. In case
 		// we've somehow gotten one that isn't formatted correctly, create a sensible default error
-		return conditions.NewReadyConditionImpactingError(azureErr, conditions.ConditionSeverityWarning, core.UnknownErrorCode)
+		return conditions.NewReadyConditionImpactingError(
+			azureErr,
+			conditions.ConditionSeverityWarning,
+			conditions.MakeReason(core.UnknownErrorCode))
 	}
 
 	apiVersion, verr := r.GetAPIVersion()
@@ -145,7 +149,8 @@ func (r *azureDeploymentReconcilerInstance) MakeReadyConditionImpactingErrorFrom
 
 	// Stick errorDetails.Message into an error so that it will be displayed as the message on the condition
 	err = errors.Wrapf(cloudError, details.Message)
-	result := conditions.NewReadyConditionImpactingError(err, severity, details.Code)
+	reason := conditions.MakeReason(details.Code)
+	result := conditions.NewReadyConditionImpactingError(err, severity, reason)
 
 	return result
 }
@@ -173,7 +178,7 @@ func (r *azureDeploymentReconcilerInstance) DetermineCreateOrUpdateAction() (Cre
 	ready := genruntime.GetReadyCondition(r.Obj)
 	_, _, hasPollerResumeToken := GetPollerResumeToken(r.Obj)
 
-	if ready != nil && ready.Reason == conditions.ReasonDeleting {
+	if ready != nil && ready.Reason == conditions.ReasonDeleting.Name {
 		return CreateOrUpdateActionNoAction, NoAction, errors.Errorf("resource is currently deleting; it can not be applied")
 	}
 
@@ -199,8 +204,8 @@ func (r *azureDeploymentReconcilerInstance) StartDeleteOfResource(ctx context.Co
 	r.Log.V(Status).Info(msg)
 	r.Recorder.Event(r.Obj, v1.EventTypeNormal, string(DeleteActionBeginDelete), msg)
 
-	deleter := extensions.CreateDeleter(r.Extension, deleteResource, r.Log)
-	result, err := deleter(ctx, r.ResourceResolver, r.ARMClient, r.Obj)
+	deleter := extensions.CreateDeleter(r.Extension, deleteResource)
+	result, err := deleter(ctx, r.Log, r.ResourceResolver, r.ARMClient, r.Obj)
 	return result, err
 }
 
@@ -248,6 +253,14 @@ func (r *azureDeploymentReconcilerInstance) BeginCreateOrUpdateResource(ctx cont
 		return ctrl.Result{}, conditions.NewReadyConditionImpactingError(err, conditions.ConditionSeverityError, conditions.ReasonFailed)
 	}
 
+	resourceID := genruntime.GetResourceIDOrDefault(r.Obj)
+	if resourceID != "" {
+		err := checkSubscription(resourceID, r.ARMClient.SubscriptionID())
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	armResource, err := r.ConvertResourceToARMResource(ctx)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -282,6 +295,19 @@ func (r *azureDeploymentReconcilerInstance) BeginCreateOrUpdateResource(ctx cont
 
 	SetPollerResumeToken(r.Obj, pollerResp.ID, resumeToken)
 	return ctrl.Result{Requeue: true}, nil
+}
+
+func checkSubscription(resourceID string, clientSubID string) error {
+	parsedRID, err := arm.ParseResourceID(resourceID)
+	// Some resources like '/providers/Microsoft.Subscription/aliases' do not have subscriptionID, so we need to make sure subscriptionID exists before we check.
+	// TODO: we need a better way?
+	if err == nil {
+		if parsedRID.ResourceGroupName != "" && parsedRID.SubscriptionID != clientSubID {
+			err = errors.Errorf("SubscriptionID %q for %q resource does not match with Client Credential: %q", parsedRID.SubscriptionID, resourceID, clientSubID)
+			return conditions.NewReadyConditionImpactingError(err, conditions.ConditionSeverityError, conditions.ReasonSubscriptionMismatch)
+		}
+	}
+	return nil
 }
 
 func (r *azureDeploymentReconcilerInstance) handleCreatePollerFailed(err error) error {
@@ -596,34 +622,42 @@ func (r *azureDeploymentReconcilerInstance) GetAPIVersion() (string, error) {
 // have its behavior modified by resources implementing the genruntime.Deleter extension
 func deleteResource(
 	ctx context.Context,
-	resourceResolver *resolver.Resolver,
+	log logr.Logger,
+	_ *resolver.Resolver,
 	armClient *genericarmclient.GenericClient,
 	obj genruntime.ARMMetaObject) (ctrl.Result, error) {
 
 	// If we have no resourceID to begin with, the Azure resource was never created
 	resourceID := genruntime.GetResourceIDOrDefault(obj)
 	if resourceID == "" {
+		log.V(Status).Info("Not issuing delete as resource had no ResourceID annotation")
 		return ctrl.Result{}, nil
 	}
 
-	// Check that this objects owner still exists
-	// This is an optimization to avoid excess requests to Azure.
-	_, err := resourceResolver.ResolveResourceHierarchy(ctx, obj)
+	err := checkSubscription(resourceID, armClient.SubscriptionID())
 	if err != nil {
-		var typedErr *resolver.ReferenceNotFound
-		if errors.As(err, &typedErr) {
-			return ctrl.Result{}, nil
-		}
 		return ctrl.Result{}, err
 	}
+
+	// Optimizations or complications of this delete path should be undertaken with care.
+	// Be especially cautious of relying on the controller-runtime SharedInformer cache
+	// as a source of truth about if this resource or its parents have already been deleted, as
+	// the SharedInformer cache is not read-through and will return NotFound if it just hasn't been
+	// populated yet.
+	// Generally speaking the safest thing we can do is just issue the DELETE to Azure.
 
 	// retryAfter = ARM can tell us how long to wait for a DELETE
 	pollerResp, err := armClient.BeginDeleteByID(ctx, resourceID, obj.GetAPIVersion())
 	if err != nil {
+		if genericarmclient.IsNotFoundError(err) {
+			log.V(Info).Info("Successfully issued DELETE to Azure - resource was already gone")
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{}, errors.Wrapf(err, "deleting resource %q", resourceID)
 	}
+	log.V(Info).Info("Successfully issued DELETE to Azure")
 
-	// If we are done here it means the delete succeeded immediately. It can't have failed because if it did
+	// If we are done here it means delete succeeded immediately. It can't have failed because if it did
 	// we would have taken the err path above.
 	if pollerResp.Poller.Done() {
 		return ctrl.Result{}, nil

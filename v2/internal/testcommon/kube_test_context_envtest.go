@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -29,12 +30,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/Azure/azure-service-operator/v2/internal/config"
 	"github.com/Azure/azure-service-operator/v2/internal/controllers"
 	"github.com/Azure/azure-service-operator/v2/internal/genericarmclient"
 	"github.com/Azure/azure-service-operator/v2/internal/reconcilers/arm"
+	"github.com/Azure/azure-service-operator/v2/internal/util/interval"
 	"github.com/Azure/azure-service-operator/v2/internal/util/kubeclient"
+	"github.com/Azure/azure-service-operator/v2/internal/util/lockedrand"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/registration"
@@ -125,14 +129,14 @@ func createSharedEnvTest(cfg testConfig, namespaceResources *namespaceResources)
 		return nil, errors.Wrapf(err, "creating controller-runtime manager")
 	}
 
-	var clientFactory arm.ARMClientFactory = func(mo genruntime.ARMMetaObject) *genericarmclient.GenericClient {
+	var clientFactory arm.ARMClientFactory = func(_ context.Context, mo genruntime.ARMMetaObject) (*genericarmclient.GenericClient, string, error) {
 		result := namespaceResources.Lookup(mo.GetNamespace())
 		if result == nil {
 			panic(fmt.Sprintf("unable to locate ARM client for namespace %s; tests should only create resources in the namespace they are assigned or have declared via TargetNamespaces",
 				mo.GetNamespace()))
 		}
 
-		return result.armClient
+		return result.armClient, mo.GetNamespace(), nil
 	}
 
 	loggerFactory := func(obj metav1.Object) logr.Logger {
@@ -147,7 +151,7 @@ func createSharedEnvTest(cfg testConfig, namespaceResources *namespaceResources)
 	if cfg.OperatorMode.IncludesWatchers() {
 
 		var requeueDelay time.Duration
-		minBackoff := 5 * time.Second
+		minBackoff := 1 * time.Second
 		maxBackoff := 1 * time.Minute
 		if cfg.Replaying {
 			requeueDelay = 10 * time.Millisecond
@@ -163,7 +167,6 @@ func createSharedEnvTest(cfg testConfig, namespaceResources *namespaceResources)
 
 		options := controllers.Options{
 			LoggerFactory: loggerFactory,
-			RequeueDelay:  requeueDelay,
 			Config:        cfg.Values,
 			Options: controller.Options{
 				// Allow concurrent reconciliation in tests
@@ -172,8 +175,19 @@ func createSharedEnvTest(cfg testConfig, namespaceResources *namespaceResources)
 				// Use appropriate backoff for mode.
 				RateLimiter: controllers.NewRateLimiter(minBackoff, maxBackoff),
 
-				Log: ctrl.Log,
+				LogConstructor: func(request *reconcile.Request) logr.Logger {
+					return ctrl.Log
+				},
 			},
+			RequeueIntervalCalculator: interval.NewCalculator(
+				interval.CalculatorParameters{
+					//nolint:gosec // do not want cryptographic randomness here
+					Rand:                 rand.New(lockedrand.NewSource(time.Now().UnixNano())),
+					ErrorBaseDelay:       minBackoff,
+					ErrorMaxFastDelay:    maxBackoff,
+					ErrorMaxSlowDelay:    maxBackoff,
+					RequeueDelayOverride: requeueDelay,
+				}),
 		}
 		positiveConditions := conditions.NewPositiveConditionBuilder(clock.New())
 

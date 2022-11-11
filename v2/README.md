@@ -53,7 +53,7 @@ See the list of supported resources [here](https://azure.github.io/azure-service
    
    You can optionally use a service principal with a more restricted permission set 
    (for example contributor to just a Resource Group), but that will restrict what you can
-   do with ASO.
+   do with ASO. See [using reduced permissions](https://azure.github.io/azure-service-operator/introduction/authentication/#using-a-credential-for-aso-with-reduced-permissions) for more details.
 
    ```bash
    az ad sp create-for-rbac -n azure-service-operator --role contributor \
@@ -158,7 +158,7 @@ $ kubectl delete resourcegroups/aso-sample-rg
 # resourcegroup.resources.azure.com "aso-sample-rg" deleted
 ```
 
-For samples of additional resources, see the [resource samples directory](https://github.com/Azure/azure-service-operator/tree/main/v2/config/samples).
+For samples of additional resources, see the [resource samples directory](https://github.com/Azure/azure-service-operator/tree/main/v2/samples).
 
 ### Tearing it down
 **Warning: if you `kubectl delete` an Azure resource, it will delete the Azure resource. This can

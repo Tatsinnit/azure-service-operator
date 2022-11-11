@@ -22,6 +22,8 @@ import (
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
 )
 
+// Note: This file is very similar to to_azure_configmaps_test.go. The same cases should be covered there as well.
+
 // Note that this test uses a VM purely as an example resource which has a secret. The behavior will
 // be the same for any resource that uses the azure_generic_arm_reconciler
 func Test_MissingSecret_ReturnsError_ReconcilesSuccessfullyWhenSecretAdded(t *testing.T) {
@@ -45,7 +47,7 @@ func Test_MissingSecret_ReturnsError_ReconcilesSuccessfullyWhenSecretAdded(t *te
 
 	tc.CreateResourceAndWaitForState(vm, metav1.ConditionFalse, conditions.ConditionSeverityWarning)
 	// We expect the ready condition to include details of the error
-	tc.Expect(vm.Status.Conditions[0].Reason).To(Equal(conditions.ReasonSecretNotFound))
+	tc.Expect(vm.Status.Conditions[0].Reason).To(Equal(conditions.ReasonSecretNotFound.Name))
 	tc.Expect(vm.Status.Conditions[0].Message).To(
 		ContainSubstring("failed resolving secret references: %s/%s does not exist", tc.Namespace, secretRef.Name))
 
@@ -84,7 +86,7 @@ func Test_MissingSecretKey_ReturnsError(t *testing.T) {
 
 	tc.CreateResourceAndWaitForState(vm, metav1.ConditionFalse, conditions.ConditionSeverityWarning)
 	// We expect the ready condition to include details of the error
-	tc.Expect(vm.Status.Conditions[0].Reason).To(Equal(conditions.ReasonSecretNotFound))
+	tc.Expect(vm.Status.Conditions[0].Reason).To(Equal(conditions.ReasonSecretNotFound.Name))
 	tc.Expect(vm.Status.Conditions[0].Message).To(
 		ContainSubstring("Secret \"%s/%s\" does not contain key \"%s\"", tc.Namespace, secret.Name, secret.Key))
 
@@ -116,7 +118,7 @@ func Test_UserSecretInDifferentNamespace_SecretNotFound(t *testing.T) {
 
 	tc.CreateResourceAndWaitForState(vm, metav1.ConditionFalse, conditions.ConditionSeverityWarning)
 	// We expect the ready condition to include details of the error
-	tc.Expect(vm.Status.Conditions[0].Reason).To(Equal(conditions.ReasonSecretNotFound))
+	tc.Expect(vm.Status.Conditions[0].Reason).To(Equal(conditions.ReasonSecretNotFound.Name))
 	tc.Expect(vm.Status.Conditions[0].Message).To(
 		ContainSubstring("failed resolving secret references: %s/%s does not exist", tc.Namespace, secretInDiffNamespace.Name))
 

@@ -1,7 +1,7 @@
 /*
- * Copyright (c) Microsoft Corporation.
+* Copyright (c) Microsoft Corporation.
  * Licensed under the MIT license.
- */
+*/
 
 package conversions
 
@@ -82,7 +82,6 @@ func init() {
 		copyKnownType(astmodel.SecretReferenceType, "Copy", returnsValue),
 		copyKnownType(astmodel.SecretDestinationType, "Copy", returnsValue),
 		copyKnownType(astmodel.ConfigMapReferenceType, "Copy", returnsValue),
-		copyKnownType(astmodel.OptionalConfigMapReferenceType, "Copy", returnsValue),
 		copyKnownType(astmodel.ConfigMapDestinationType, "Copy", returnsValue),
 		copyKnownType(astmodel.ArbitraryOwnerReference, "Copy", returnsValue),
 		copyKnownType(astmodel.ConditionType, "Copy", returnsValue),
@@ -808,25 +807,25 @@ var handCraftedConversions = []handCraftedConversion{
 		implFunc:    "CloneSliceOfCondition",
 	},
 	{
-		fromType:    astmodel.NewOptionalType(astmodel.IntType),
-		toType:      astmodel.NewOptionalType(astmodel.IntType),
+		fromType:    astmodel.OptionalIntType,
+		toType:      astmodel.OptionalIntType,
 		implPackage: astmodel.GenRuntimeReference,
 		implFunc:    "ClonePointerToInt",
 	},
 	{
-		fromType:    astmodel.NewOptionalType(astmodel.StringType),
-		toType:      astmodel.NewOptionalType(astmodel.StringType),
+		fromType:    astmodel.OptionalStringType,
+		toType:      astmodel.OptionalStringType,
 		implPackage: astmodel.GenRuntimeReference,
 		implFunc:    "ClonePointerToString",
 	},
 	{
-		fromType:    astmodel.NewOptionalType(astmodel.StringType),
+		fromType:    astmodel.OptionalStringType,
 		toType:      astmodel.StringType,
 		implPackage: astmodel.GenRuntimeReference,
 		implFunc:    "GetOptionalStringValue",
 	},
 	{
-		fromType:    astmodel.NewOptionalType(astmodel.IntType),
+		fromType:    astmodel.OptionalIntType,
 		toType:      astmodel.IntType,
 		implPackage: astmodel.GenRuntimeReference,
 		implFunc:    "GetOptionalIntValue",

@@ -39,6 +39,14 @@ func CreateARMTypes(idFactory astmodel.IdentifierFactory) *Stage {
 		})
 }
 
+type skipError struct{}
+
+func (s skipError) Error() string {
+	return "skip"
+}
+
+var _ error = skipError{}
+
 type armPropertyTypeConversionHandler func(prop *astmodel.PropertyDefinition, isSpec bool) (*astmodel.PropertyDefinition, error)
 
 type armTypeCreator struct {
@@ -272,7 +280,7 @@ func (c *armTypeCreator) createResourceReferenceProperty(prop *astmodel.Property
 
 func (c *armTypeCreator) createSecretReferenceProperty(prop *astmodel.PropertyDefinition, _ bool) (*astmodel.PropertyDefinition, error) {
 	if !astmodel.TypeEquals(prop.PropertyType(), astmodel.SecretReferenceType) &&
-		!astmodel.TypeEquals(prop.PropertyType(), astmodel.NewOptionalType(astmodel.SecretReferenceType)) {
+		!astmodel.TypeEquals(prop.PropertyType(), astmodel.OptionalSecretReferenceType) {
 		return nil, nil
 	}
 
@@ -282,7 +290,29 @@ func (c *armTypeCreator) createSecretReferenceProperty(prop *astmodel.PropertyDe
 	if isRequired {
 		newType = astmodel.StringType
 	} else {
-		newType = astmodel.NewOptionalType(astmodel.StringType)
+		newType = astmodel.OptionalStringType
+	}
+
+	return prop.WithType(newType), nil
+}
+
+func (c *armTypeCreator) createConfigMapReferenceProperty(prop *astmodel.PropertyDefinition, _ bool) (*astmodel.PropertyDefinition, error) {
+	if !astmodel.TypeEquals(prop.PropertyType(), astmodel.ConfigMapReferenceType) &&
+		!astmodel.TypeEquals(prop.PropertyType(), astmodel.OptionalConfigMapReferenceType) {
+		return nil, nil
+	}
+
+	if prop.HasTag(astmodel.OptionalConfigMapPairTag) {
+		return nil, skipError{}
+	}
+
+	isRequired := astmodel.TypeEquals(prop.PropertyType(), astmodel.ConfigMapReferenceType)
+
+	var newType astmodel.Type
+	if isRequired {
+		newType = astmodel.StringType
+	} else {
+		newType = astmodel.OptionalStringType
 	}
 
 	return prop.WithType(newType), nil
@@ -303,6 +333,7 @@ func (c *armTypeCreator) convertObjectPropertiesForARM(t *astmodel.ObjectType, i
 		c.createARMNameProperty,
 		c.createResourceReferenceProperty,
 		c.createSecretReferenceProperty,
+		c.createConfigMapReferenceProperty,
 		c.createARMProperty,
 	}
 
@@ -312,6 +343,9 @@ func (c *armTypeCreator) convertObjectPropertiesForARM(t *astmodel.ObjectType, i
 		for _, handler := range propertyHandlers {
 			newProp, err := handler(prop, isSpecType)
 			if err != nil {
+				if errors.As(err, &skipError{}) {
+					break
+				}
 				errs = append(errs, err)
 				break // Stop calling handlers and proceed to the next property
 			}

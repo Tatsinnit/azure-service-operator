@@ -79,10 +79,15 @@ var (
 	SecretDestinationType            = MakeTypeName(GenRuntimeReference, "SecretDestination")
 	ConfigMapDestinationType         = MakeTypeName(GenRuntimeReference, "ConfigMapDestination")
 	ConfigMapReferenceType           = MakeTypeName(GenRuntimeReference, "ConfigMapReference")
-	OptionalConfigMapReferenceType   = MakeTypeName(GenRuntimeReference, "OptionalConfigMapReferenceType")
 	GenRuntimeDefaulterInterfaceName = MakeTypeName(GenRuntimeReference, "Defaulter")
 	GenRuntimeValidatorInterfaceName = MakeTypeName(GenRuntimeReference, "Validator")
 	GenRuntimeMetaObjectType         = MakeTypeName(GenRuntimeReference, "MetaObject")
+
+	// Optional types - GenRuntime
+	OptionalConfigMapReferenceType     = NewOptionalType(ConfigMapReferenceType)
+	OptionalKnownResourceReferenceType = NewOptionalType(KnownResourceReferenceType)
+	OptionalResourceReferenceType      = NewOptionalType(ResourceReferenceType)
+	OptionalSecretReferenceType        = NewOptionalType(SecretReferenceType)
 
 	// Type names - Generic ARM client
 	GenericClientType = MakeTypeName(GenericARMClientReference, "GenericClient")
@@ -111,7 +116,8 @@ var (
 	ValidatorInterfaceName          = MakeTypeName(ControllerRuntimeAdmission, "Validator")
 
 	// Type names - Core types
-	SecretType = MakeTypeName(CoreV1Reference, "Secret")
+	SecretType    = MakeTypeName(CoreV1Reference, "Secret")
+	ConfigMapType = MakeTypeName(CoreV1Reference, "ConfigMap")
 
 	// Type names - stdlib types
 	ContextType = MakeTypeName(ContextReference, "Context")
