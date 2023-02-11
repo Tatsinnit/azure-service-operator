@@ -2,10 +2,11 @@ github.com/Azure/azure-service-operator/v2/api/managedidentity/v1beta20220131pre
 ├── APIVersion: Enum (1 value)
 │   └── "2022-01-31-preview"
 ├── FederatedIdentityCredential: Resource
+│   ├── Owner: UserAssignedIdentity
 │   ├── Spec: Object (5 properties)
 │   │   ├── Audiences: string[]
 │   │   ├── AzureName: string
-│   │   ├── Issuer: Validated<*string> (0 rules)
+│   │   ├── Issuer: *string
 │   │   ├── Owner: *genruntime.KnownResourceReference
 │   │   └── Subject: *string
 │   └── Status: Object (7 properties)
@@ -16,17 +17,17 @@ github.com/Azure/azure-service-operator/v2/api/managedidentity/v1beta20220131pre
 │       ├── Name: *string
 │       ├── Subject: *string
 │       └── Type: *string
-├── FederatedIdentityCredential_STATUS_ARM: Object (4 properties)
+├── UserAssignedIdentities_FederatedIdentityCredential_STATUS_ARM: Object (4 properties)
 │   ├── Id: *string
 │   ├── Name: *string
-│   ├── Properties: Object (3 properties)
+│   ├── Properties: *Object (3 properties)
 │   │   ├── Audiences: string[]
 │   │   ├── Issuer: *string
 │   │   └── Subject: *string
 │   └── Type: *string
 └── UserAssignedIdentities_FederatedIdentityCredential_Spec_ARM: Object (2 properties)
     ├── Name: string
-    └── Properties: Object (3 properties)
+    └── Properties: *Object (3 properties)
         ├── Audiences: string[]
         ├── Issuer: *string
         └── Subject: *string

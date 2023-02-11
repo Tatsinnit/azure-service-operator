@@ -37,18 +37,18 @@ type GenericClient struct {
 	subscriptionID string
 	creds          azcore.TokenCredential
 	opts           *arm.ClientOptions
-	metrics        metrics.ARMClientMetrics
+	metrics        *metrics.ARMClientMetrics
 }
 
 // TODO: Need to do retryAfter detection in each call?
 
 // NewGenericClient creates a new instance of GenericClient
-func NewGenericClient(cloudCfg cloud.Configuration, creds azcore.TokenCredential, subscriptionID string, metrics metrics.ARMClientMetrics) (*GenericClient, error) {
+func NewGenericClient(cloudCfg cloud.Configuration, creds azcore.TokenCredential, subscriptionID string, metrics *metrics.ARMClientMetrics) (*GenericClient, error) {
 	return NewGenericClientFromHTTPClient(cloudCfg, creds, nil, subscriptionID, metrics)
 }
 
 // NewGenericClientFromHTTPClient creates a new instance of GenericClient from the provided connection.
-func NewGenericClientFromHTTPClient(cloudCfg cloud.Configuration, creds azcore.TokenCredential, httpClient *http.Client, subscriptionID string, metrics metrics.ARMClientMetrics) (*GenericClient, error) {
+func NewGenericClientFromHTTPClient(cloudCfg cloud.Configuration, creds azcore.TokenCredential, httpClient *http.Client, subscriptionID string, metrics *metrics.ARMClientMetrics) (*GenericClient, error) {
 	rmConfig, ok := cloudCfg.Services[cloud.ResourceManager]
 	if !ok {
 		return nil, errors.Errorf("provided cloud missing %q entry", cloud.ResourceManager)
@@ -84,6 +84,8 @@ func NewGenericClientFromHTTPClient(cloudCfg cloud.Configuration, creds azcore.T
 	// the value IN the interface IS nil).
 	if httpClient != nil {
 		opts.Transport = httpClient
+	} else {
+		opts.Transport = defaultHttpClient
 	}
 
 	opts.PerCallPolicies = append([]policy.Policy{rpRegistrationPolicy}, opts.PerCallPolicies...)
@@ -101,6 +103,7 @@ func NewGenericClientFromHTTPClient(cloudCfg cloud.Configuration, creds azcore.T
 		opts:           opts,
 		metrics:        metrics,
 	}, nil
+
 }
 
 // SubscriptionID returns the subscription the client is configured for
@@ -218,6 +221,9 @@ func (client *GenericClient) GetByID(ctx context.Context, resourceID string, api
 	if err != nil {
 		return zeroDuration, err
 	}
+	// The linter doesn't realize that the response is closed in the course of
+	// the getByIDHandleResponse call below. Suppressing it as it is a false positive.
+	// nolint:bodyclose
 	resp, err := client.pl.Do(req)
 	retryAfter := GetRetryAfter(resp)
 	if err != nil {
@@ -346,7 +352,7 @@ func (client *GenericClient) HeadByID(ctx context.Context, resourceID string, ap
 func IsNotFoundError(err error) bool {
 	var typedError *azcore.ResponseError
 	if errors.As(err, &typedError) {
-		if typedError.StatusCode == 404 {
+		if typedError.StatusCode == http.StatusNotFound {
 			return true
 		}
 	}

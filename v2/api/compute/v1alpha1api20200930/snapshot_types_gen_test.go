@@ -93,7 +93,7 @@ func RunPropertyAssignmentTestForSnapshot(subject Snapshot) string {
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -196,7 +196,7 @@ func RunPropertyAssignmentTestForSnapshot_Spec(subject Snapshot_Spec) string {
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -276,16 +276,16 @@ func AddIndependentPropertyGeneratorsForSnapshot_Spec(gens map[string]gopter.Gen
 	gens["AzureName"] = gen.AlphaString()
 	gens["DiskSizeGB"] = gen.PtrOf(gen.Int())
 	gens["DiskState"] = gen.PtrOf(gen.OneConstOf(
-		SnapshotProperties_DiskState_ActiveSAS,
-		SnapshotProperties_DiskState_ActiveUpload,
-		SnapshotProperties_DiskState_Attached,
-		SnapshotProperties_DiskState_ReadyToUpload,
-		SnapshotProperties_DiskState_Reserved,
-		SnapshotProperties_DiskState_Unattached))
+		DiskState_ActiveSAS,
+		DiskState_ActiveUpload,
+		DiskState_Attached,
+		DiskState_ReadyToUpload,
+		DiskState_Reserved,
+		DiskState_Unattached))
 	gens["HyperVGeneration"] = gen.PtrOf(gen.OneConstOf(SnapshotProperties_HyperVGeneration_V1, SnapshotProperties_HyperVGeneration_V2))
 	gens["Incremental"] = gen.PtrOf(gen.Bool())
 	gens["Location"] = gen.PtrOf(gen.AlphaString())
-	gens["NetworkAccessPolicy"] = gen.PtrOf(gen.OneConstOf(SnapshotProperties_NetworkAccessPolicy_AllowAll, SnapshotProperties_NetworkAccessPolicy_AllowPrivate, SnapshotProperties_NetworkAccessPolicy_DenyAll))
+	gens["NetworkAccessPolicy"] = gen.PtrOf(gen.OneConstOf(NetworkAccessPolicy_AllowAll, NetworkAccessPolicy_AllowPrivate, NetworkAccessPolicy_DenyAll))
 	gens["OsType"] = gen.PtrOf(gen.OneConstOf(SnapshotProperties_OsType_Linux, SnapshotProperties_OsType_Windows))
 	gens["Tags"] = gen.MapOf(gen.AlphaString(), gen.AlphaString())
 }
@@ -331,7 +331,7 @@ func RunPropertyAssignmentTestForSnapshot_STATUS(subject Snapshot_STATUS) string
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -474,7 +474,7 @@ func RunPropertyAssignmentTestForSnapshotSku(subject SnapshotSku) string {
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -576,7 +576,7 @@ func RunPropertyAssignmentTestForSnapshotSku_STATUS(subject SnapshotSku_STATUS) 
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)

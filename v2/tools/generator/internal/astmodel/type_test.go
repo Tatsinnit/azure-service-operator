@@ -24,10 +24,10 @@ func TestWriteDebugDescription(t *testing.T) {
 	otherPersonId := MakeTypeName(there, "PersonId")
 
 	suit := MakeTypeName(here, "Suit")
-	diamonds := EnumValue{"diamonds", "Diamonds"}
-	hearts := EnumValue{"hearts", "Hearts"}
-	clubs := EnumValue{"clubs", "Clubs"}
-	spades := EnumValue{"spades", "Spades"}
+	diamonds := MakeEnumValue("diamonds", "Diamonds")
+	hearts := MakeEnumValue("hearts", "Hearts")
+	clubs := MakeEnumValue("clubs", "Clubs")
+	spades := MakeEnumValue("spades", "Spades")
 	suitEnum := NewEnumType(StringType, diamonds, hearts, clubs, spades)
 
 	armAge := ARMFlag.ApplyTo(age)
@@ -76,7 +76,7 @@ func TestWriteDebugDescription(t *testing.T) {
 }
 
 // TestWriteDebugDescriptionNils ensures that WriteDebugDescription() doesn't panic even if called on a nil reference,
-//(this is a diagnostic method that should pretty much always do something useful)
+// (this is a diagnostic method that should pretty much always do something useful)
 func TestWriteDebugDescriptionNils(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)

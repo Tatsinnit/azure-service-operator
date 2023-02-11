@@ -56,7 +56,7 @@ func Test_Success_WithSyncPeriod_ReturnsSyncPeriod(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
-	syncPeriod := 10 * time.Second
+	syncPeriod := 12 * time.Second
 	calc := newCalculator(
 		CalculatorParameters{
 			ErrorBaseDelay:    1 * time.Second,
@@ -69,7 +69,10 @@ func Test_Success_WithSyncPeriod_ReturnsSyncPeriod(t *testing.T) {
 
 	result, err := calc.NextInterval(req, ctrl.Result{}, nil)
 	g.Expect(err).ToNot(HaveOccurred())
-	g.Expect(result.RequeueAfter > 8*time.Second).To(BeTrue())
+
+	// Threshold here needs to be at or below the lower-bound of the RequeuePeriod, taking Jitter into account
+	// Currently jitter is 0.25, so the 12s above becomes 9s to 15s
+	g.Expect(result.RequeueAfter >= 9*time.Second).To(BeTrue())
 
 	g.Expect(calc.(*calculator).failures).To(HaveLen(0))
 }
@@ -258,7 +261,33 @@ func Test_ReadyConditionErrorWithFastBackoff_UsesFastBackoff(t *testing.T) {
 	g.Expect(calc.(*calculator).failures).To(HaveLen(0))
 }
 
-func Test_KubeClientConflictError_ReturnsSuccess(t *testing.T) {
+func Test_KubeClientNotFoundError_ReturnsSuccess(t *testing.T) {
+	t.Parallel()
+	g := NewGomegaWithT(t)
+
+	calc := newCalculator(
+		CalculatorParameters{
+			ErrorBaseDelay:    1 * time.Second,
+			ErrorMaxFastDelay: 5 * time.Second,
+			ErrorMaxSlowDelay: 10 * time.Second,
+		})
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "foo", Name: "bar"}}
+
+	inputErr := &apierrors.StatusError{
+		ErrStatus: metav1.Status{
+			Reason: metav1.StatusReasonNotFound,
+		},
+	}
+
+	result, err := calc.NextInterval(req, ctrl.Result{}, inputErr)
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}))
+
+	g.Expect(calc.(*calculator).failures).To(HaveLen(0))
+}
+
+func Test_KubeClientConflict_ReturnsBackoff(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
@@ -278,7 +307,7 @@ func Test_KubeClientConflictError_ReturnsSuccess(t *testing.T) {
 	}
 
 	result, err := calc.NextInterval(req, ctrl.Result{}, inputErr)
-	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(err).To(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
 
 	g.Expect(calc.(*calculator).failures).To(HaveLen(1))

@@ -18,11 +18,11 @@ import (
 
 	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
 	"github.com/Azure/azure-service-operator/v2/internal/config"
-	"github.com/Azure/azure-service-operator/v2/internal/controllers"
+	"github.com/Azure/azure-service-operator/v2/internal/reconcilers/generic"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 )
 
-const finalizerName = controllers.GenericControllerFinalizer
+const finalizerName = generic.GenericReconcilerFinalizer
 
 func TestTargetNamespaces(t *testing.T) {
 	t.Parallel()
@@ -92,7 +92,7 @@ func checkNamespaceAnnotation(tc *testcommon.KubePerTestContext, instance metav1
 	res, err := meta.Accessor(instance)
 	namespace := res.GetNamespace()
 	tc.Expect(err).ToNot(HaveOccurred(), namespace)
-	actual, found := res.GetAnnotations()[controllers.NamespaceAnnotation]
+	actual, found := res.GetAnnotations()[generic.NamespaceAnnotation]
 	tc.Expect(found).To(BeTrue(), namespace)
 	tc.Expect(actual).To(Equal(expected), namespace)
 }
@@ -102,7 +102,7 @@ func checkNoNamespaceAnnotation(tc *testcommon.KubePerTestContext, instance meta
 	res, err := meta.Accessor(instance)
 	namespace := res.GetNamespace()
 	tc.Expect(err).ToNot(HaveOccurred(), namespace)
-	_, found := res.GetAnnotations()[controllers.NamespaceAnnotation]
+	_, found := res.GetAnnotations()[generic.NamespaceAnnotation]
 	tc.Expect(found).To(BeFalse(), namespace)
 }
 
@@ -134,8 +134,7 @@ func checkNeverGetsFinalizer(tc *testcommon.KubePerTestContext, original metav1.
 	)
 }
 
-// hasFinalizer accepts a metav1 object and returns true if the the
-// object has the provided finalizer.
+// hasFinalizer accepts a metav1 object and returns true if the object has the provided finalizer.
 func hasFinalizer(o metav1.Object, finalizer string) bool {
 	f := o.GetFinalizers()
 	for _, e := range f {
@@ -161,7 +160,7 @@ func TestOperatorNamespacePreventsReconciling(t *testing.T) {
 			Name:      tc.Namer.GenerateName("rg"),
 			Namespace: tc.Namespace,
 			Annotations: map[string]string{
-				controllers.NamespaceAnnotation: "some-other-operator",
+				generic.NamespaceAnnotation: "some-other-operator",
 			},
 		},
 		Spec: resources.ResourceGroupSpec{
@@ -193,7 +192,7 @@ func TestOperatorNamespacePreventsReconciling(t *testing.T) {
 			Name:      tc.Namer.GenerateName("rg"),
 			Namespace: tc.Namespace,
 			Annotations: map[string]string{
-				controllers.NamespaceAnnotation: podNamespace,
+				generic.NamespaceAnnotation: podNamespace,
 			},
 		},
 		Spec: resources.ResourceGroupSpec{

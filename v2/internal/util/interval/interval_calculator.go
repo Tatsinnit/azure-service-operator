@@ -71,9 +71,9 @@ var _ Calculator = &calculator{}
 // 2. If syncPeriod is set, success results that would normally be terminal are instead configured to try again in syncPeriod.
 // 3. If requeueDelayOverride is set, all happy-path requests have requeueDelayOverride set.
 // The scenarios that this handler doesn't target:
-// 1. Any error other than ReadyConditionImpacting error.
-// 2. Happy-path requests when requeueDelayOverride is not set. These are scenarios where the operator is working
-//    as expected and we're just doing something like polling an async operation.
+//  1. Any error other than ReadyConditionImpacting error.
+//  2. Happy-path requests when requeueDelayOverride is not set. These are scenarios where the operator is working
+//     as expected and we're just doing something like polling an async operation.
 func (i *calculator) NextInterval(req ctrl.Request, result ctrl.Result, err error) (ctrl.Result, error) {
 	i.failuresLock.Lock()
 	defer i.failuresLock.Unlock()
@@ -107,12 +107,18 @@ func (i *calculator) failureResult(req ctrl.Request, err error) (ctrl.Result, er
 	if !ok {
 		// NotFound is a superfluous error as per https://github.com/kubernetes-sigs/controller-runtime/issues/377
 		// The correct handling is just to ignore it and we will get an event shortly with the updated version to patch
-		// We must also ignore conflict here because updating a resource that
-		// doesn't exist returns conflict unfortunately: https://github.com/kubernetes/kubernetes/issues/89985. This is OK
-		// to ignore because a conflict means either the resource has been deleted (in which case there's nothing to do) or
-		// it has been updated, in which case there's going to be a new event triggered for it and we can count this
-		// round of reconciliation as a success and wait for the next event.
-		return ctrl.Result{}, kubeclient.IgnoreNotFoundAndConflict(err)
+		// We do NOT ignore conflict here because it's hard to tell if it's coming from an attempt to update a non-existing resource
+		// (see https://github.com/kubernetes/kubernetes/issues/89985), or if it's from an attempt to update a resource which
+		// was updated by a user. If we ignore the user-update case, we MIGHT get another event since they changed the resource,
+		// but since we don't trigger updates on all changes (some annotations are ignored) we also MIGHT NOT get a fresh event
+		// and get stuck. The solution is to let the GET at the top of the controller check for the not-found case and requeue
+		// on everything else.
+		err = kubeclient.IgnoreNotFound(err)
+		if err == nil {
+			// Since we're ignoring this error and counting it as a success, stop tracking the req
+			delete(i.failures, req)
+		}
+		return ctrl.Result{}, err
 	}
 
 	// Now we have a readyErr
@@ -148,7 +154,7 @@ func (i *calculator) makeSuccessResult() ctrl.Result {
 	// potential drift from the state in Azure. Note that we cannot use mgr.Options.SyncPeriod for this because we filter
 	// our events by predicate.GenerationChangedPredicate and the generation will not have changed.
 	if i.syncPeriod != nil {
-		result.RequeueAfter = randextensions.Jitter(i.rand, *i.syncPeriod, 0.1)
+		result.RequeueAfter = randextensions.Jitter(i.rand, *i.syncPeriod, 0.25)
 	}
 
 	return result

@@ -24,9 +24,21 @@ const (
 	NotExported = Visibility("notexported")
 )
 
+type reservedWordConsideration string
+
+const (
+	avoidReservedWords = reservedWordConsideration("avoidReservedWords")
+	allowReservedWords = reservedWordConsideration("allowReservedWords")
+)
+
 // IdentifierFactory is a factory for creating Go identifiers from Json schema names
 type IdentifierFactory interface {
 	CreateIdentifier(name string, visibility Visibility) string
+
+	// CreateStringIdentifier creates an identifier for use in a string literal. This differs from CreateIdentifier in
+	// that string literals do not need to worry about collision with Golang reserved words
+	CreateStringIdentifier(name string, visibility Visibility) string
+
 	CreatePropertyName(propertyName string, visibility Visibility) PropertyName
 	CreateGroupName(name string) string
 	// CreateEnumIdentifier generates the canonical name for an enumeration
@@ -50,8 +62,9 @@ type identifierFactory struct {
 }
 
 type idCacheKey struct {
-	name       string
-	visibility Visibility
+	name          string
+	visibility    Visibility
+	reservedWords reservedWordConsideration
 }
 
 // Even though we cache input → result for identifier generation,
@@ -90,7 +103,18 @@ func NewIdentifierFactory() IdentifierFactory {
 
 // CreateIdentifier returns a valid Go public identifier
 func (factory *identifierFactory) CreateIdentifier(name string, visibility Visibility) string {
-	cacheKey := idCacheKey{name, visibility}
+	return factory.createIdentifierImpl(name, visibility, avoidReservedWords)
+}
+
+// CreateStringIdentifier creates an identifier for use in a string literal. This differs from CreateIdentifier in
+// that string literals do not need to worry about collision with Golang reserved words
+func (factory *identifierFactory) CreateStringIdentifier(name string, visibility Visibility) string {
+	return factory.createIdentifierImpl(name, visibility, allowReservedWords)
+}
+
+// CreateIdentifier returns a valid Go public identifier
+func (factory *identifierFactory) createIdentifierImpl(name string, visibility Visibility, reservedWords reservedWordConsideration) string {
+	cacheKey := idCacheKey{name, visibility, reservedWords}
 	factory.rwLock.RLock()
 	cached, ok := factory.idCache[cacheKey]
 	factory.rwLock.RUnlock()
@@ -98,7 +122,7 @@ func (factory *identifierFactory) CreateIdentifier(name string, visibility Visib
 		return cached
 	}
 
-	result := factory.createIdentifierUncached(name, visibility)
+	result := factory.createIdentifierUncached(name, visibility, reservedWords)
 	factory.rwLock.Lock()
 	result = factory.internCache.intern(result)
 	factory.idCache[cacheKey] = result
@@ -106,7 +130,7 @@ func (factory *identifierFactory) CreateIdentifier(name string, visibility Visib
 	return result
 }
 
-func (factory *identifierFactory) createIdentifierUncached(name string, visibility Visibility) string {
+func (factory *identifierFactory) createIdentifierUncached(name string, visibility Visibility, reservedWords reservedWordConsideration) string {
 
 	// Trim any leading or trailing underscores before proceeding.
 	name = strings.Trim(name, "_")
@@ -138,9 +162,11 @@ func (factory *identifierFactory) createIdentifierUncached(name string, visibili
 
 	result := strings.Join(cleanParts, "_")
 
-	if alternateWord, ok := factory.reservedWords[result]; ok {
-		// This is a reserved word, we need to use an alternate identifier
-		return alternateWord
+	if reservedWords == avoidReservedWords {
+		if alternateWord, ok := factory.reservedWords[result]; ok {
+			// This is a reserved word, we need to use an alternate identifier
+			return alternateWord
+		}
 	}
 
 	return result
@@ -329,11 +355,11 @@ func simplifyName(context string, name string) string {
 
 // sliceIntoWords splits the provided identifier into a slice of individual words.
 // A word is defined by one of the following:
-//   1. A space ("a test" becomes "a" and "test")
-//   2. A transition between lowercase and uppercase ("aWord" becomes "a" and "Word")
-//   3. A transition between multiple uppercase letters and a lowercase letter ("XMLDocument" becomes "XML" and "Document")
-//   4. A transition between a letter and a digit ("book12" becomes "book" and "12")
-//   5. A transition between a digit and a letter ("12monkeys" becomes "12" and "monkeys")
+//  1. A space ("a test" becomes "a" and "test")
+//  2. A transition between lowercase and uppercase ("aWord" becomes "a" and "Word")
+//  3. A transition between multiple uppercase letters and a lowercase letter ("XMLDocument" becomes "XML" and "Document")
+//  4. A transition between a letter and a digit ("book12" becomes "book" and "12")
+//  5. A transition between a digit and a letter ("12monkeys" becomes "12" and "monkeys")
 func sliceIntoWords(identifier string) []string {
 	// Trim any leading and trailing spaces to make our life easier later
 	identifier = strings.Trim(identifier, " ")

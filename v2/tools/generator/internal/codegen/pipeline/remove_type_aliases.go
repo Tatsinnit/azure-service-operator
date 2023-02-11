@@ -73,6 +73,8 @@ func resolveTypeName(visitor *astmodel.TypeVisitor, name astmodel.TypeName, defi
 		return def.Name(), nil // must remain named so there is somewhere to put validations
 	case *astmodel.FlaggedType:
 		return def.Name(), nil // must remain named as it is just wrapping objectType (and objectType remains named)
+	case *astmodel.InterfaceType:
+		return def.Name(), nil // must remain named
 	case astmodel.TypeName:
 		// We need to resolve further because this type is an alias
 		klog.V(3).Infof("Found type alias %s, replacing it with %s", name, concreteType)
@@ -84,6 +86,8 @@ func resolveTypeName(visitor *astmodel.TypeVisitor, name astmodel.TypeName, defi
 	case *astmodel.ArrayType:
 		return visitor.Visit(concreteType, nil)
 	case *astmodel.MapType:
+		return visitor.Visit(concreteType, nil)
+	case *astmodel.ErroredType:
 		return visitor.Visit(concreteType, nil)
 	default:
 		panic(fmt.Sprintf("Don't know how to resolve type %T for typeName %s", concreteType, name))

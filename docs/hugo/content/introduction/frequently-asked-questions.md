@@ -3,6 +3,19 @@ title: FAQ
 ---
 ## Frequently Asked Questions
 
+### What is the release cadence?
+
+We ship updates to ASO as needed, with an eye towards releasing every 1-2 months. If there are urgent fixes, a release may happen
+more quickly than that. If there haven't been any major changes (or there are ongoing major changes that are taking a long time) a 
+release may happen more slowly.
+
+### What is the support model?
+
+Azure Service Operator is an officially supported Microsoft OSS product. Currently, support is done via GitHub issues or
+the `azure-service-operator` channel of the [Kubernetes Slack](https://kubernetes.slack.com/). There are plans to integrate ASO into
+AKS as an addon after ASO has officially gone GA. At that point, support for ASO as an AKS addon would be accessed by raising an Azure 
+support ticket.
+
 ### Does ASO help with Disaster Recovery (DR) of resources in Azure?
 
 No. If the Azure resource supports DR then you can configure it through ASO. 
@@ -68,6 +81,33 @@ Right now our focus is on getting ASO to GA, after which we will hopefully have 
 ### Can I configure how often ASO re-syncs to Azure when there have been no changes?
 
 Yes, using the `azureSyncPeriod` argument in Helm's values.yaml, or using the `AZURE_SYNC_PERIOD`
-in the `aso-controller-settings` secret.
+in the `aso-controller-settings` secret. This value is a string with format like: `15m`, `1h`, or `24h`.
+
+After changing this value, you must restart the `azureserviceoperator-controller-manager` pod in order for it to take effect
+if the pod is already running.
 
 Be careful setting this value too low as it can produce a lot of calls to Azure.
+
+### I'm seeing Subscription throttling, what can I do?
+
+Azure subscriptions have a default limit of ~1200 PUTs an hour. Prior to ASO-beta.4, ASO's default `azureSyncPeriod` was 15m.
+It was changed to 1h in ASO-beta.4.
+
+When `azureSyncPeriod` is up for a particular resource, a new PUT is issued to the resource RP to correct any drift from 
+the goal state defined in ASO. There has been discussion about changing to do diffing locally to reduce requests to Azure, 
+see [#1491](https://github.com/Azure/azure-service-operator/issues/1491).
+
+You can estimate the maximum number of resources ASO can support based on the configured `azureSyncPeriod` and the rough cap of
+1200 / hr.
+
+| azureSyncPeriod | Maximum possible resources |
+| --------------- | -------------------------- |
+| 15m             | 300                        |
+| 1h              | 1200                       |
+| 24h             | ~28000                     |
+
+### Should I use user-assigned or system-assigned identity?
+
+We don't take a position on whether it's universally better to deploy ASO using a user-assigned or system-assigned managed identity because the correct choice for you depends on your own context.
+
+If you haven't already read it, Azure has a good [best practices for managed identity guide](https://learn.microsoft.com/en-us/azure/active-directory/managed-identities-azure-resources/managed-identity-best-practice-recommendations) that may be useful.

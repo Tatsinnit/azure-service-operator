@@ -15,8 +15,9 @@ import (
 
 var (
 	// Common groups for testing
-	Group      = "person"
-	BatchGroup = "batch"
+	Group                   = "person"
+	BatchGroup              = "batch"
+	maxRestrictedNameLength = int64(25)
 
 	// Reusable Properties - any package version
 
@@ -32,6 +33,10 @@ var (
 
 	KnownAsProperty = astmodel.NewPropertyDefinition("KnownAs", "knownAs", astmodel.StringType).
 			WithDescription("How the person is generally known")
+
+	RestrictedNameProperty = astmodel.NewPropertyDefinition("RestrictedName", "restrictedName",
+		astmodel.NewValidatedType(astmodel.StringType, astmodel.StringValidations{MaxLength: &maxRestrictedNameLength})).
+		WithDescription("The name of the resource, restricted to max 25 character length")
 
 	FullAddressProperty = astmodel.NewPropertyDefinition("FullAddress", "fullAddress", astmodel.StringType).
 				WithDescription("Full written address for map or postal use")
@@ -79,7 +84,7 @@ var (
 	// Objects in Pkg2020
 	Pkg2020APIVersion = astmodel.MakeTypeDefinition(
 		astmodel.MakeTypeName(Pkg2020, "APIVersion"),
-		astmodel.NewEnumType(astmodel.StringType, astmodel.EnumValue{Identifier: "v2020", Value: "v2020"}))
+		astmodel.NewEnumType(astmodel.StringType, astmodel.MakeEnumValue("v2020", "v2020")))
 
 	// Objects in Pkg2021
 

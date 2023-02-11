@@ -92,7 +92,7 @@ func RunPropertyAssignmentTestForServer(subject Server) string {
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -195,7 +195,7 @@ func RunPropertyAssignmentTestForServer_Spec(subject Server_Spec) string {
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -315,7 +315,7 @@ func RunPropertyAssignmentTestForServer_STATUS(subject Server_STATUS) string {
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -452,7 +452,7 @@ func RunPropertyAssignmentTestForServerOperatorSpec(subject ServerOperatorSpec) 
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -554,7 +554,7 @@ func RunPropertyAssignmentTestForServerPrivateEndpointConnection_STATUS(subject 
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -671,7 +671,7 @@ func RunPropertyAssignmentTestForServerPropertiesForCreate(subject ServerPropert
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -746,16 +746,16 @@ func ServerPropertiesForCreateGenerator() gopter.Gen {
 
 // AddRelatedPropertyGeneratorsForServerPropertiesForCreate is a factory method for creating gopter generators
 func AddRelatedPropertyGeneratorsForServerPropertiesForCreate(gens map[string]gopter.Gen) {
-	gens["ServerPropertiesForDefaultCreate"] = ServerPropertiesForDefaultCreateGenerator().Map(func(it ServerPropertiesForDefaultCreate) *ServerPropertiesForDefaultCreate {
+	gens["Default"] = ServerPropertiesForDefaultCreateGenerator().Map(func(it ServerPropertiesForDefaultCreate) *ServerPropertiesForDefaultCreate {
 		return &it
 	}) // generate one case for OneOf type
-	gens["ServerPropertiesForGeoRestore"] = ServerPropertiesForGeoRestoreGenerator().Map(func(it ServerPropertiesForGeoRestore) *ServerPropertiesForGeoRestore {
+	gens["GeoRestore"] = ServerPropertiesForGeoRestoreGenerator().Map(func(it ServerPropertiesForGeoRestore) *ServerPropertiesForGeoRestore {
 		return &it
 	}) // generate one case for OneOf type
-	gens["ServerPropertiesForReplica"] = ServerPropertiesForReplicaGenerator().Map(func(it ServerPropertiesForReplica) *ServerPropertiesForReplica {
+	gens["PointInTimeRestore"] = ServerPropertiesForRestoreGenerator().Map(func(it ServerPropertiesForRestore) *ServerPropertiesForRestore {
 		return &it
 	}) // generate one case for OneOf type
-	gens["ServerPropertiesForRestore"] = ServerPropertiesForRestoreGenerator().Map(func(it ServerPropertiesForRestore) *ServerPropertiesForRestore {
+	gens["Replica"] = ServerPropertiesForReplicaGenerator().Map(func(it ServerPropertiesForReplica) *ServerPropertiesForReplica {
 		return &it
 	}) // generate one case for OneOf type
 }
@@ -791,7 +791,7 @@ func RunPropertyAssignmentTestForSku(subject Sku) string {
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -897,7 +897,7 @@ func RunPropertyAssignmentTestForSku_STATUS(subject Sku_STATUS) string {
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -1003,7 +1003,7 @@ func RunPropertyAssignmentTestForStorageProfile_STATUS(subject StorageProfile_ST
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -1109,7 +1109,7 @@ func RunPropertyAssignmentTestForServerOperatorSecrets(subject ServerOperatorSec
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -1206,7 +1206,7 @@ func RunPropertyAssignmentTestForServerPrivateEndpointConnectionProperties_STATU
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -1329,7 +1329,7 @@ func RunPropertyAssignmentTestForServerPropertiesForDefaultCreate(subject Server
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -1408,15 +1408,15 @@ func ServerPropertiesForDefaultCreateGenerator() gopter.Gen {
 // AddIndependentPropertyGeneratorsForServerPropertiesForDefaultCreate is a factory method for creating gopter generators
 func AddIndependentPropertyGeneratorsForServerPropertiesForDefaultCreate(gens map[string]gopter.Gen) {
 	gens["AdministratorLogin"] = gen.PtrOf(gen.AlphaString())
-	gens["CreateMode"] = gen.PtrOf(gen.OneConstOf(ServerPropertiesForCreate_ServerPropertiesForDefaultCreate_CreateMode_Default))
+	gens["CreateMode"] = gen.PtrOf(gen.OneConstOf(ServerPropertiesForDefaultCreate_CreateMode_Default))
 	gens["MinimalTlsVersion"] = gen.PtrOf(gen.OneConstOf(
-		ServerPropertiesForCreate_ServerPropertiesForDefaultCreate_MinimalTlsVersion_TLS1_0,
-		ServerPropertiesForCreate_ServerPropertiesForDefaultCreate_MinimalTlsVersion_TLS1_1,
-		ServerPropertiesForCreate_ServerPropertiesForDefaultCreate_MinimalTlsVersion_TLS1_2,
-		ServerPropertiesForCreate_ServerPropertiesForDefaultCreate_MinimalTlsVersion_TLSEnforcementDisabled))
-	gens["PublicNetworkAccess"] = gen.PtrOf(gen.OneConstOf(ServerPropertiesForCreate_ServerPropertiesForDefaultCreate_PublicNetworkAccess_Disabled, ServerPropertiesForCreate_ServerPropertiesForDefaultCreate_PublicNetworkAccess_Enabled))
-	gens["SslEnforcement"] = gen.PtrOf(gen.OneConstOf(ServerPropertiesForCreate_ServerPropertiesForDefaultCreate_SslEnforcement_Disabled, ServerPropertiesForCreate_ServerPropertiesForDefaultCreate_SslEnforcement_Enabled))
-	gens["Version"] = gen.PtrOf(gen.OneConstOf(ServerPropertiesForCreate_ServerPropertiesForDefaultCreate_Version_102, ServerPropertiesForCreate_ServerPropertiesForDefaultCreate_Version_103))
+		MinimalTlsVersion_TLS1_0,
+		MinimalTlsVersion_TLS1_1,
+		MinimalTlsVersion_TLS1_2,
+		MinimalTlsVersion_TLSEnforcementDisabled))
+	gens["PublicNetworkAccess"] = gen.PtrOf(gen.OneConstOf(PublicNetworkAccess_Disabled, PublicNetworkAccess_Enabled))
+	gens["SslEnforcement"] = gen.PtrOf(gen.OneConstOf(SslEnforcement_Disabled, SslEnforcement_Enabled))
+	gens["Version"] = gen.PtrOf(gen.OneConstOf(ServerVersion_102, ServerVersion_103))
 }
 
 // AddRelatedPropertyGeneratorsForServerPropertiesForDefaultCreate is a factory method for creating gopter generators
@@ -1455,7 +1455,7 @@ func RunPropertyAssignmentTestForServerPropertiesForGeoRestore(subject ServerPro
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -1533,16 +1533,16 @@ func ServerPropertiesForGeoRestoreGenerator() gopter.Gen {
 
 // AddIndependentPropertyGeneratorsForServerPropertiesForGeoRestore is a factory method for creating gopter generators
 func AddIndependentPropertyGeneratorsForServerPropertiesForGeoRestore(gens map[string]gopter.Gen) {
-	gens["CreateMode"] = gen.PtrOf(gen.OneConstOf(ServerPropertiesForCreate_ServerPropertiesForGeoRestore_CreateMode_GeoRestore))
+	gens["CreateMode"] = gen.PtrOf(gen.OneConstOf(ServerPropertiesForGeoRestore_CreateMode_GeoRestore))
 	gens["MinimalTlsVersion"] = gen.PtrOf(gen.OneConstOf(
-		ServerPropertiesForCreate_ServerPropertiesForGeoRestore_MinimalTlsVersion_TLS1_0,
-		ServerPropertiesForCreate_ServerPropertiesForGeoRestore_MinimalTlsVersion_TLS1_1,
-		ServerPropertiesForCreate_ServerPropertiesForGeoRestore_MinimalTlsVersion_TLS1_2,
-		ServerPropertiesForCreate_ServerPropertiesForGeoRestore_MinimalTlsVersion_TLSEnforcementDisabled))
-	gens["PublicNetworkAccess"] = gen.PtrOf(gen.OneConstOf(ServerPropertiesForCreate_ServerPropertiesForGeoRestore_PublicNetworkAccess_Disabled, ServerPropertiesForCreate_ServerPropertiesForGeoRestore_PublicNetworkAccess_Enabled))
+		MinimalTlsVersion_TLS1_0,
+		MinimalTlsVersion_TLS1_1,
+		MinimalTlsVersion_TLS1_2,
+		MinimalTlsVersion_TLSEnforcementDisabled))
+	gens["PublicNetworkAccess"] = gen.PtrOf(gen.OneConstOf(PublicNetworkAccess_Disabled, PublicNetworkAccess_Enabled))
 	gens["SourceServerId"] = gen.PtrOf(gen.AlphaString())
-	gens["SslEnforcement"] = gen.PtrOf(gen.OneConstOf(ServerPropertiesForCreate_ServerPropertiesForGeoRestore_SslEnforcement_Disabled, ServerPropertiesForCreate_ServerPropertiesForGeoRestore_SslEnforcement_Enabled))
-	gens["Version"] = gen.PtrOf(gen.OneConstOf(ServerPropertiesForCreate_ServerPropertiesForGeoRestore_Version_102, ServerPropertiesForCreate_ServerPropertiesForGeoRestore_Version_103))
+	gens["SslEnforcement"] = gen.PtrOf(gen.OneConstOf(SslEnforcement_Disabled, SslEnforcement_Enabled))
+	gens["Version"] = gen.PtrOf(gen.OneConstOf(ServerVersion_102, ServerVersion_103))
 }
 
 // AddRelatedPropertyGeneratorsForServerPropertiesForGeoRestore is a factory method for creating gopter generators
@@ -1581,7 +1581,7 @@ func RunPropertyAssignmentTestForServerPropertiesForReplica(subject ServerProper
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -1659,16 +1659,16 @@ func ServerPropertiesForReplicaGenerator() gopter.Gen {
 
 // AddIndependentPropertyGeneratorsForServerPropertiesForReplica is a factory method for creating gopter generators
 func AddIndependentPropertyGeneratorsForServerPropertiesForReplica(gens map[string]gopter.Gen) {
-	gens["CreateMode"] = gen.PtrOf(gen.OneConstOf(ServerPropertiesForCreate_ServerPropertiesForReplica_CreateMode_Replica))
+	gens["CreateMode"] = gen.PtrOf(gen.OneConstOf(ServerPropertiesForReplica_CreateMode_Replica))
 	gens["MinimalTlsVersion"] = gen.PtrOf(gen.OneConstOf(
-		ServerPropertiesForCreate_ServerPropertiesForReplica_MinimalTlsVersion_TLS1_0,
-		ServerPropertiesForCreate_ServerPropertiesForReplica_MinimalTlsVersion_TLS1_1,
-		ServerPropertiesForCreate_ServerPropertiesForReplica_MinimalTlsVersion_TLS1_2,
-		ServerPropertiesForCreate_ServerPropertiesForReplica_MinimalTlsVersion_TLSEnforcementDisabled))
-	gens["PublicNetworkAccess"] = gen.PtrOf(gen.OneConstOf(ServerPropertiesForCreate_ServerPropertiesForReplica_PublicNetworkAccess_Disabled, ServerPropertiesForCreate_ServerPropertiesForReplica_PublicNetworkAccess_Enabled))
+		MinimalTlsVersion_TLS1_0,
+		MinimalTlsVersion_TLS1_1,
+		MinimalTlsVersion_TLS1_2,
+		MinimalTlsVersion_TLSEnforcementDisabled))
+	gens["PublicNetworkAccess"] = gen.PtrOf(gen.OneConstOf(PublicNetworkAccess_Disabled, PublicNetworkAccess_Enabled))
 	gens["SourceServerId"] = gen.PtrOf(gen.AlphaString())
-	gens["SslEnforcement"] = gen.PtrOf(gen.OneConstOf(ServerPropertiesForCreate_ServerPropertiesForReplica_SslEnforcement_Disabled, ServerPropertiesForCreate_ServerPropertiesForReplica_SslEnforcement_Enabled))
-	gens["Version"] = gen.PtrOf(gen.OneConstOf(ServerPropertiesForCreate_ServerPropertiesForReplica_Version_102, ServerPropertiesForCreate_ServerPropertiesForReplica_Version_103))
+	gens["SslEnforcement"] = gen.PtrOf(gen.OneConstOf(SslEnforcement_Disabled, SslEnforcement_Enabled))
+	gens["Version"] = gen.PtrOf(gen.OneConstOf(ServerVersion_102, ServerVersion_103))
 }
 
 // AddRelatedPropertyGeneratorsForServerPropertiesForReplica is a factory method for creating gopter generators
@@ -1707,7 +1707,7 @@ func RunPropertyAssignmentTestForServerPropertiesForRestore(subject ServerProper
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -1785,17 +1785,17 @@ func ServerPropertiesForRestoreGenerator() gopter.Gen {
 
 // AddIndependentPropertyGeneratorsForServerPropertiesForRestore is a factory method for creating gopter generators
 func AddIndependentPropertyGeneratorsForServerPropertiesForRestore(gens map[string]gopter.Gen) {
-	gens["CreateMode"] = gen.PtrOf(gen.OneConstOf(ServerPropertiesForCreate_ServerPropertiesForRestore_CreateMode_PointInTimeRestore))
+	gens["CreateMode"] = gen.PtrOf(gen.OneConstOf(ServerPropertiesForRestore_CreateMode_PointInTimeRestore))
 	gens["MinimalTlsVersion"] = gen.PtrOf(gen.OneConstOf(
-		ServerPropertiesForCreate_ServerPropertiesForRestore_MinimalTlsVersion_TLS1_0,
-		ServerPropertiesForCreate_ServerPropertiesForRestore_MinimalTlsVersion_TLS1_1,
-		ServerPropertiesForCreate_ServerPropertiesForRestore_MinimalTlsVersion_TLS1_2,
-		ServerPropertiesForCreate_ServerPropertiesForRestore_MinimalTlsVersion_TLSEnforcementDisabled))
-	gens["PublicNetworkAccess"] = gen.PtrOf(gen.OneConstOf(ServerPropertiesForCreate_ServerPropertiesForRestore_PublicNetworkAccess_Disabled, ServerPropertiesForCreate_ServerPropertiesForRestore_PublicNetworkAccess_Enabled))
+		MinimalTlsVersion_TLS1_0,
+		MinimalTlsVersion_TLS1_1,
+		MinimalTlsVersion_TLS1_2,
+		MinimalTlsVersion_TLSEnforcementDisabled))
+	gens["PublicNetworkAccess"] = gen.PtrOf(gen.OneConstOf(PublicNetworkAccess_Disabled, PublicNetworkAccess_Enabled))
 	gens["RestorePointInTime"] = gen.PtrOf(gen.AlphaString())
 	gens["SourceServerId"] = gen.PtrOf(gen.AlphaString())
-	gens["SslEnforcement"] = gen.PtrOf(gen.OneConstOf(ServerPropertiesForCreate_ServerPropertiesForRestore_SslEnforcement_Disabled, ServerPropertiesForCreate_ServerPropertiesForRestore_SslEnforcement_Enabled))
-	gens["Version"] = gen.PtrOf(gen.OneConstOf(ServerPropertiesForCreate_ServerPropertiesForRestore_Version_102, ServerPropertiesForCreate_ServerPropertiesForRestore_Version_103))
+	gens["SslEnforcement"] = gen.PtrOf(gen.OneConstOf(SslEnforcement_Disabled, SslEnforcement_Enabled))
+	gens["Version"] = gen.PtrOf(gen.OneConstOf(ServerVersion_102, ServerVersion_103))
 }
 
 // AddRelatedPropertyGeneratorsForServerPropertiesForRestore is a factory method for creating gopter generators
@@ -1834,7 +1834,7 @@ func RunPropertyAssignmentTestForPrivateEndpointProperty_STATUS(subject PrivateE
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -1937,7 +1937,7 @@ func RunPropertyAssignmentTestForServerPrivateLinkServiceConnectionStateProperty
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -2046,7 +2046,7 @@ func RunPropertyAssignmentTestForStorageProfile(subject StorageProfile) string {
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)

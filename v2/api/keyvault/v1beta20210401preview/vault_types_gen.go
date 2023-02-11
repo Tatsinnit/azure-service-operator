@@ -24,7 +24,9 @@ import (
 // +kubebuilder:printcolumn:name="Severity",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].severity"
 // +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].reason"
 // +kubebuilder:printcolumn:name="Message",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].message"
-// Generated from: https://schema.management.azure.com/schemas/2021-04-01-preview/Microsoft.KeyVault.json#/resourceDefinitions/vaults
+// Generator information:
+// - Generated from: /keyvault/resource-manager/Microsoft.KeyVault/preview/2021-04-01-preview/keyvault.json
+// - ARM URI: /subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.KeyVault/vaults/{vaultName}
 type Vault struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -212,7 +214,7 @@ func (vault *Vault) ValidateUpdate(old runtime.Object) error {
 
 // createValidations validates the creation of the resource
 func (vault *Vault) createValidations() []func() error {
-	return []func() error{vault.validateResourceReferences}
+	return []func() error{vault.validateResourceReferences, vault.validateOptionalConfigMapReferences}
 }
 
 // deleteValidations validates the deletion of the resource
@@ -226,7 +228,20 @@ func (vault *Vault) updateValidations() []func(old runtime.Object) error {
 		func(old runtime.Object) error {
 			return vault.validateResourceReferences()
 		},
-		vault.validateWriteOnceProperties}
+		vault.validateWriteOnceProperties,
+		func(old runtime.Object) error {
+			return vault.validateOptionalConfigMapReferences()
+		},
+	}
+}
+
+// validateOptionalConfigMapReferences validates all optional configmap reference pairs to ensure that at most 1 is set
+func (vault *Vault) validateOptionalConfigMapReferences() error {
+	refs, err := reflecthelpers.FindOptionalConfigMapReferences(&vault.Spec)
+	if err != nil {
+		return err
+	}
+	return genruntime.ValidateOptionalConfigMapReferences(refs)
 }
 
 // validateResourceReferences validates all resource references
@@ -310,7 +325,9 @@ func (vault *Vault) OriginalGVK() *schema.GroupVersionKind {
 }
 
 // +kubebuilder:object:root=true
-// Generated from: https://schema.management.azure.com/schemas/2021-04-01-preview/Microsoft.KeyVault.json#/resourceDefinitions/vaults
+// Generator information:
+// - Generated from: /keyvault/resource-manager/Microsoft.KeyVault/preview/2021-04-01-preview/keyvault.json
+// - ARM URI: /subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.KeyVault/vaults/{vaultName}
 type VaultList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
@@ -328,6 +345,7 @@ type Vault_Spec struct {
 	// doesn't have to be.
 	AzureName string `json:"azureName,omitempty"`
 
+	// +kubebuilder:validation:Required
 	// Location: The supported Azure location where the key vault should be created.
 	Location *string `json:"location,omitempty"`
 
@@ -572,6 +590,7 @@ func (vault *Vault_Spec) OriginalVersion() string {
 // SetAzureName sets the Azure name of the resource
 func (vault *Vault_Spec) SetAzureName(azureName string) { vault.AzureName = azureName }
 
+// Resource information with extended details.
 type Vault_STATUS struct {
 	// Conditions: The observed state of the resource
 	Conditions []conditions.Condition `json:"conditions,omitempty"`
@@ -829,6 +848,7 @@ func (vault *Vault_STATUS) AssignProperties_To_Vault_STATUS(destination *v202104
 	return nil
 }
 
+// Metadata pertaining to creation and last modification of the key vault resource.
 type SystemData_STATUS struct {
 	// CreatedAt: The timestamp of the key vault resource creation (UTC).
 	CreatedAt *string `json:"createdAt,omitempty"`
@@ -982,7 +1002,7 @@ func (data *SystemData_STATUS) AssignProperties_To_SystemData_STATUS(destination
 	return nil
 }
 
-// Generated from: https://schema.management.azure.com/schemas/2021-04-01-preview/Microsoft.KeyVault.json#/definitions/VaultProperties
+// Properties of the vault
 type VaultProperties struct {
 	// AccessPolicies: An array of 0 to 1024 identities that have access to the key vault. All identities in the array must use
 	// the same tenant ID as the key vault's tenant ID. When `createMode` is set to `recover`, access policies are not
@@ -1022,7 +1042,7 @@ type VaultProperties struct {
 	// the key vault.
 	EnabledForTemplateDeployment *bool `json:"enabledForTemplateDeployment,omitempty"`
 
-	// NetworkAcls: A set of rules governing the network accessibility of a vault.
+	// NetworkAcls: Rules governing the accessibility of the key vault from specific network locations.
 	NetworkAcls *NetworkRuleSet `json:"networkAcls,omitempty"`
 
 	// ProvisioningState: Provisioning state of the vault.
@@ -1527,6 +1547,7 @@ func (properties *VaultProperties) AssignProperties_To_VaultProperties(destinati
 	return nil
 }
 
+// Properties of the vault
 type VaultProperties_STATUS struct {
 	// AccessPolicies: An array of 0 to 1024 identities that have access to the key vault. All identities in the array must use
 	// the same tenant ID as the key vault's tenant ID. When `createMode` is set to `recover`, access policies are not
@@ -2018,25 +2039,35 @@ func (properties *VaultProperties_STATUS) AssignProperties_To_VaultProperties_ST
 	return nil
 }
 
-// Generated from: https://schema.management.azure.com/schemas/2021-04-01-preview/Microsoft.KeyVault.json#/definitions/AccessPolicyEntry
+// An identity that have access to the key vault. All identities in the array must use the same tenant ID as the key
+// vault's tenant ID.
 type AccessPolicyEntry struct {
 	// +kubebuilder:validation:Pattern="^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$"
 	// ApplicationId:  Application ID of the client making request on behalf of a principal
-	ApplicationId *string `json:"applicationId,omitempty"`
+	ApplicationId *string `json:"applicationId,omitempty" optionalConfigMapPair:"ApplicationId"`
 
-	// +kubebuilder:validation:Required
+	// ApplicationIdFromConfig:  Application ID of the client making request on behalf of a principal
+	ApplicationIdFromConfig *genruntime.ConfigMapReference `json:"applicationIdFromConfig,omitempty" optionalConfigMapPair:"ApplicationId"`
+
 	// ObjectId: The object ID of a user, service principal or security group in the Azure Active Directory tenant for the
 	// vault. The object ID must be unique for the list of access policies.
-	ObjectId *string `json:"objectId,omitempty"`
+	ObjectId *string `json:"objectId,omitempty" optionalConfigMapPair:"ObjectId"`
+
+	// ObjectIdFromConfig: The object ID of a user, service principal or security group in the Azure Active Directory tenant
+	// for the vault. The object ID must be unique for the list of access policies.
+	ObjectIdFromConfig *genruntime.ConfigMapReference `json:"objectIdFromConfig,omitempty" optionalConfigMapPair:"ObjectId"`
 
 	// +kubebuilder:validation:Required
-	// Permissions: Permissions the identity has for keys, secrets, certificates and storage.
+	// Permissions: Permissions the identity has for keys, secrets and certificates.
 	Permissions *Permissions `json:"permissions,omitempty"`
 
-	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern="^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$"
 	// TenantId: The Azure Active Directory tenant ID that should be used for authenticating requests to the key vault.
-	TenantId *string `json:"tenantId,omitempty"`
+	TenantId *string `json:"tenantId,omitempty" optionalConfigMapPair:"TenantId"`
+
+	// TenantIdFromConfig: The Azure Active Directory tenant ID that should be used for authenticating requests to the key
+	// vault.
+	TenantIdFromConfig *genruntime.ConfigMapReference `json:"tenantIdFromConfig,omitempty" optionalConfigMapPair:"TenantId"`
 }
 
 var _ genruntime.ARMTransformer = &AccessPolicyEntry{}
@@ -2053,10 +2084,26 @@ func (entry *AccessPolicyEntry) ConvertToARM(resolved genruntime.ConvertToARMRes
 		applicationId := *entry.ApplicationId
 		result.ApplicationId = &applicationId
 	}
+	if entry.ApplicationIdFromConfig != nil {
+		applicationIdValue, err := resolved.ResolvedConfigMaps.Lookup(*entry.ApplicationIdFromConfig)
+		if err != nil {
+			return nil, errors.Wrap(err, "looking up configmap for property ApplicationId")
+		}
+		applicationId := applicationIdValue
+		result.ApplicationId = &applicationId
+	}
 
 	// Set property ‘ObjectId’:
 	if entry.ObjectId != nil {
 		objectId := *entry.ObjectId
+		result.ObjectId = &objectId
+	}
+	if entry.ObjectIdFromConfig != nil {
+		objectIdValue, err := resolved.ResolvedConfigMaps.Lookup(*entry.ObjectIdFromConfig)
+		if err != nil {
+			return nil, errors.Wrap(err, "looking up configmap for property ObjectId")
+		}
+		objectId := objectIdValue
 		result.ObjectId = &objectId
 	}
 
@@ -2073,6 +2120,14 @@ func (entry *AccessPolicyEntry) ConvertToARM(resolved genruntime.ConvertToARMRes
 	// Set property ‘TenantId’:
 	if entry.TenantId != nil {
 		tenantId := *entry.TenantId
+		result.TenantId = &tenantId
+	}
+	if entry.TenantIdFromConfig != nil {
+		tenantIdValue, err := resolved.ResolvedConfigMaps.Lookup(*entry.TenantIdFromConfig)
+		if err != nil {
+			return nil, errors.Wrap(err, "looking up configmap for property TenantId")
+		}
+		tenantId := tenantIdValue
 		result.TenantId = &tenantId
 	}
 	return result, nil
@@ -2096,11 +2151,15 @@ func (entry *AccessPolicyEntry) PopulateFromARM(owner genruntime.ArbitraryOwnerR
 		entry.ApplicationId = &applicationId
 	}
 
+	// no assignment for property ‘ApplicationIdFromConfig’
+
 	// Set property ‘ObjectId’:
 	if typedInput.ObjectId != nil {
 		objectId := *typedInput.ObjectId
 		entry.ObjectId = &objectId
 	}
+
+	// no assignment for property ‘ObjectIdFromConfig’
 
 	// Set property ‘Permissions’:
 	if typedInput.Permissions != nil {
@@ -2119,6 +2178,8 @@ func (entry *AccessPolicyEntry) PopulateFromARM(owner genruntime.ArbitraryOwnerR
 		entry.TenantId = &tenantId
 	}
 
+	// no assignment for property ‘TenantIdFromConfig’
+
 	// No error
 	return nil
 }
@@ -2134,8 +2195,24 @@ func (entry *AccessPolicyEntry) AssignProperties_From_AccessPolicyEntry(source *
 		entry.ApplicationId = nil
 	}
 
+	// ApplicationIdFromConfig
+	if source.ApplicationIdFromConfig != nil {
+		applicationIdFromConfig := source.ApplicationIdFromConfig.Copy()
+		entry.ApplicationIdFromConfig = &applicationIdFromConfig
+	} else {
+		entry.ApplicationIdFromConfig = nil
+	}
+
 	// ObjectId
 	entry.ObjectId = genruntime.ClonePointerToString(source.ObjectId)
+
+	// ObjectIdFromConfig
+	if source.ObjectIdFromConfig != nil {
+		objectIdFromConfig := source.ObjectIdFromConfig.Copy()
+		entry.ObjectIdFromConfig = &objectIdFromConfig
+	} else {
+		entry.ObjectIdFromConfig = nil
+	}
 
 	// Permissions
 	if source.Permissions != nil {
@@ -2157,6 +2234,14 @@ func (entry *AccessPolicyEntry) AssignProperties_From_AccessPolicyEntry(source *
 		entry.TenantId = nil
 	}
 
+	// TenantIdFromConfig
+	if source.TenantIdFromConfig != nil {
+		tenantIdFromConfig := source.TenantIdFromConfig.Copy()
+		entry.TenantIdFromConfig = &tenantIdFromConfig
+	} else {
+		entry.TenantIdFromConfig = nil
+	}
+
 	// No error
 	return nil
 }
@@ -2174,8 +2259,24 @@ func (entry *AccessPolicyEntry) AssignProperties_To_AccessPolicyEntry(destinatio
 		destination.ApplicationId = nil
 	}
 
+	// ApplicationIdFromConfig
+	if entry.ApplicationIdFromConfig != nil {
+		applicationIdFromConfig := entry.ApplicationIdFromConfig.Copy()
+		destination.ApplicationIdFromConfig = &applicationIdFromConfig
+	} else {
+		destination.ApplicationIdFromConfig = nil
+	}
+
 	// ObjectId
 	destination.ObjectId = genruntime.ClonePointerToString(entry.ObjectId)
+
+	// ObjectIdFromConfig
+	if entry.ObjectIdFromConfig != nil {
+		objectIdFromConfig := entry.ObjectIdFromConfig.Copy()
+		destination.ObjectIdFromConfig = &objectIdFromConfig
+	} else {
+		destination.ObjectIdFromConfig = nil
+	}
 
 	// Permissions
 	if entry.Permissions != nil {
@@ -2197,6 +2298,14 @@ func (entry *AccessPolicyEntry) AssignProperties_To_AccessPolicyEntry(destinatio
 		destination.TenantId = nil
 	}
 
+	// TenantIdFromConfig
+	if entry.TenantIdFromConfig != nil {
+		tenantIdFromConfig := entry.TenantIdFromConfig.Copy()
+		destination.TenantIdFromConfig = &tenantIdFromConfig
+	} else {
+		destination.TenantIdFromConfig = nil
+	}
+
 	// Update the property bag
 	if len(propertyBag) > 0 {
 		destination.PropertyBag = propertyBag
@@ -2208,6 +2317,8 @@ func (entry *AccessPolicyEntry) AssignProperties_To_AccessPolicyEntry(destinatio
 	return nil
 }
 
+// An identity that have access to the key vault. All identities in the array must use the same tenant ID as the key
+// vault's tenant ID.
 type AccessPolicyEntry_STATUS struct {
 	// ApplicationId:  Application ID of the client making request on behalf of a principal
 	ApplicationId *string `json:"applicationId,omitempty"`
@@ -2335,7 +2446,7 @@ func (entry *AccessPolicyEntry_STATUS) AssignProperties_To_AccessPolicyEntry_STA
 	return nil
 }
 
-// Generated from: https://schema.management.azure.com/schemas/2021-04-01-preview/Microsoft.KeyVault.json#/definitions/NetworkRuleSet
+// A set of rules governing the network accessibility of a vault.
 type NetworkRuleSet struct {
 	// Bypass: Tells what traffic can bypass network rules. This can be 'AzureServices' or 'None'.  If not specified the
 	// default is 'AzureServices'.
@@ -2568,6 +2679,7 @@ func (ruleSet *NetworkRuleSet) AssignProperties_To_NetworkRuleSet(destination *v
 	return nil
 }
 
+// A set of rules governing the network accessibility of a vault.
 type NetworkRuleSet_STATUS struct {
 	// Bypass: Tells what traffic can bypass network rules. This can be 'AzureServices' or 'None'.  If not specified the
 	// default is 'AzureServices'.
@@ -2761,6 +2873,7 @@ func (ruleSet *NetworkRuleSet_STATUS) AssignProperties_To_NetworkRuleSet_STATUS(
 	return nil
 }
 
+// Private endpoint connection item.
 type PrivateEndpointConnectionItem_STATUS struct {
 	// Etag: Modified whenever there is a change in the state of private endpoint connection.
 	Etag *string `json:"etag,omitempty"`
@@ -2944,7 +3057,7 @@ func (item *PrivateEndpointConnectionItem_STATUS) AssignProperties_To_PrivateEnd
 	return nil
 }
 
-// Generated from: https://schema.management.azure.com/schemas/2021-04-01-preview/Microsoft.KeyVault.json#/definitions/Sku
+// SKU details
 type Sku struct {
 	// +kubebuilder:validation:Required
 	// Family: SKU family name
@@ -3061,6 +3174,7 @@ func (sku *Sku) AssignProperties_To_Sku(destination *v20210401ps.Sku) error {
 	return nil
 }
 
+// SKU details
 type Sku_STATUS struct {
 	// Family: SKU family name
 	Family *Sku_Family_STATUS `json:"family,omitempty"`
@@ -3154,7 +3268,7 @@ func (sku *Sku_STATUS) AssignProperties_To_Sku_STATUS(destination *v20210401ps.S
 	return nil
 }
 
-// Generated from: https://schema.management.azure.com/schemas/2021-04-01-preview/Microsoft.KeyVault.json#/definitions/IPRule
+// A rule governing the accessibility of a vault from a specific ip address or ip range.
 type IPRule struct {
 	// +kubebuilder:validation:Required
 	// Value: An IPv4 address range in CIDR notation, such as '124.56.78.91' (simple IP address) or '124.56.78.0/24' (all
@@ -3230,6 +3344,7 @@ func (rule *IPRule) AssignProperties_To_IPRule(destination *v20210401ps.IPRule) 
 	return nil
 }
 
+// A rule governing the accessibility of a vault from a specific ip address or ip range.
 type IPRule_STATUS struct {
 	// Value: An IPv4 address range in CIDR notation, such as '124.56.78.91' (simple IP address) or '124.56.78.0/24' (all
 	// addresses that start with 124.56.78).
@@ -3289,7 +3404,7 @@ func (rule *IPRule_STATUS) AssignProperties_To_IPRule_STATUS(destination *v20210
 	return nil
 }
 
-// Generated from: https://schema.management.azure.com/schemas/2021-04-01-preview/Microsoft.KeyVault.json#/definitions/Permissions
+// Permissions the identity has for keys, secrets, certificates and storage.
 type Permissions struct {
 	// Certificates: Permissions to certificates
 	Certificates []Permissions_Certificates `json:"certificates,omitempty"`
@@ -3498,6 +3613,7 @@ func (permissions *Permissions) AssignProperties_To_Permissions(destination *v20
 	return nil
 }
 
+// Permissions the identity has for keys, secrets, certificates and storage.
 type Permissions_STATUS struct {
 	// Certificates: Permissions to certificates
 	Certificates []Permissions_Certificates_STATUS `json:"certificates,omitempty"`
@@ -3677,6 +3793,7 @@ func (permissions *Permissions_STATUS) AssignProperties_To_Permissions_STATUS(de
 	return nil
 }
 
+// Private endpoint object properties.
 type PrivateEndpoint_STATUS struct {
 	// Id: Full identifier of the private endpoint resource.
 	Id *string `json:"id,omitempty"`
@@ -3735,6 +3852,7 @@ func (endpoint *PrivateEndpoint_STATUS) AssignProperties_To_PrivateEndpoint_STAT
 	return nil
 }
 
+// The current provisioning state.
 type PrivateEndpointConnectionProvisioningState_STATUS string
 
 const (
@@ -3746,6 +3864,7 @@ const (
 	PrivateEndpointConnectionProvisioningState_STATUS_Updating     = PrivateEndpointConnectionProvisioningState_STATUS("Updating")
 )
 
+// An object that represents the approval state of the private link connection.
 type PrivateLinkServiceConnectionState_STATUS struct {
 	// ActionsRequired: A message indicating if changes on the service provider require any updates on the consumer.
 	ActionsRequired *PrivateLinkServiceConnectionState_ActionsRequired_STATUS `json:"actionsRequired,omitempty"`
@@ -3854,7 +3973,7 @@ func (state *PrivateLinkServiceConnectionState_STATUS) AssignProperties_To_Priva
 	return nil
 }
 
-// Generated from: https://schema.management.azure.com/schemas/2021-04-01-preview/Microsoft.KeyVault.json#/definitions/VirtualNetworkRule
+// A rule governing the accessibility of a vault from a specific virtual network.
 type VirtualNetworkRule struct {
 	// IgnoreMissingVnetServiceEndpoint: Property to specify whether NRP will ignore the check if parent subnet has
 	// serviceEndpoints configured.
@@ -3972,6 +4091,7 @@ func (rule *VirtualNetworkRule) AssignProperties_To_VirtualNetworkRule(destinati
 	return nil
 }
 
+// A rule governing the accessibility of a vault from a specific virtual network.
 type VirtualNetworkRule_STATUS struct {
 	// Id: Full resource id of a vnet subnet, such as
 	// '/subscriptions/subid/resourceGroups/rg1/providers/Microsoft.Network/virtualNetworks/test-vnet/subnets/subnet1'.
@@ -4057,6 +4177,7 @@ func (rule *VirtualNetworkRule_STATUS) AssignProperties_To_VirtualNetworkRule_ST
 	return nil
 }
 
+// The private endpoint connection status.
 type PrivateEndpointServiceConnectionStatus_STATUS string
 
 const (

@@ -35,7 +35,9 @@ import (
 	"github.com/Azure/azure-service-operator/v2/internal/config"
 	"github.com/Azure/azure-service-operator/v2/internal/controllers"
 	"github.com/Azure/azure-service-operator/v2/internal/genericarmclient"
+	"github.com/Azure/azure-service-operator/v2/internal/metrics"
 	"github.com/Azure/azure-service-operator/v2/internal/reconcilers/arm"
+	"github.com/Azure/azure-service-operator/v2/internal/reconcilers/generic"
 	"github.com/Azure/azure-service-operator/v2/internal/util/interval"
 	"github.com/Azure/azure-service-operator/v2/internal/util/kubeclient"
 	"github.com/Azure/azure-service-operator/v2/internal/util/lockedrand"
@@ -129,16 +131,6 @@ func createSharedEnvTest(cfg testConfig, namespaceResources *namespaceResources)
 		return nil, errors.Wrapf(err, "creating controller-runtime manager")
 	}
 
-	var clientFactory arm.ARMClientFactory = func(_ context.Context, mo genruntime.ARMMetaObject) (*genericarmclient.GenericClient, string, error) {
-		result := namespaceResources.Lookup(mo.GetNamespace())
-		if result == nil {
-			panic(fmt.Sprintf("unable to locate ARM client for namespace %s; tests should only create resources in the namespace they are assigned or have declared via TargetNamespaces",
-				mo.GetNamespace()))
-		}
-
-		return result.armClient, mo.GetNamespace(), nil
-	}
-
 	loggerFactory := func(obj metav1.Object) logr.Logger {
 		result := namespaceResources.Lookup(obj.GetNamespace())
 		if result == nil {
@@ -165,7 +157,19 @@ func createSharedEnvTest(cfg testConfig, namespaceResources *namespaceResources)
 		indexer := kubeclient.NewAndIndexer(mgr.GetFieldIndexer(), testIndexer)
 		kubeClient := kubeclient.NewClient(NewClient(mgr.GetClient(), testIndexer))
 
-		options := controllers.Options{
+		var clientFactory arm.ARMClientFactory = func(ctx context.Context, mo genruntime.ARMMetaObject) (*genericarmclient.GenericClient, string, error) {
+			result := namespaceResources.Lookup(mo.GetNamespace())
+			if result == nil {
+				panic(fmt.Sprintf("unable to locate ARM client for namespace %s; tests should only create resources in the namespace they are assigned or have declared via TargetNamespaces",
+					mo.GetNamespace()))
+			}
+
+			result.armClientCache.SetKubeClient(kubeClient)
+
+			return result.armClientCache.GetClient(ctx, mo)
+		}
+
+		options := generic.Options{
 			LoggerFactory: loggerFactory,
 			Config:        cfg.Values,
 			Options: controller.Options{
@@ -173,7 +177,7 @@ func createSharedEnvTest(cfg testConfig, namespaceResources *namespaceResources)
 				MaxConcurrentReconciles: 5,
 
 				// Use appropriate backoff for mode.
-				RateLimiter: controllers.NewRateLimiter(minBackoff, maxBackoff),
+				RateLimiter: generic.NewRateLimiter(minBackoff, maxBackoff),
 
 				LogConstructor: func(request *reconcile.Request) logr.Logger {
 					return ctrl.Log
@@ -202,7 +206,7 @@ func createSharedEnvTest(cfg testConfig, namespaceResources *namespaceResources)
 			return nil, err
 		}
 
-		err = controllers.RegisterAll(
+		err = generic.RegisterAll(
 			mgr,
 			indexer,
 			kubeClient,
@@ -216,7 +220,7 @@ func createSharedEnvTest(cfg testConfig, namespaceResources *namespaceResources)
 	}
 
 	if cfg.OperatorMode.IncludesWebhooks() {
-		err = controllers.RegisterWebhooks(mgr, controllers.GetKnownTypes())
+		err = generic.RegisterWebhooks(mgr, controllers.GetKnownTypes())
 		if err != nil {
 			stopEnvironment()
 			return nil, errors.Wrapf(err, "registering webhooks")
@@ -385,8 +389,8 @@ type runningEnvTest struct {
 // in order for the controller to access the
 // right ARM client and logger we store them in here
 type perNamespace struct {
-	armClient *genericarmclient.GenericClient
-	logger    logr.Logger
+	armClientCache *arm.ARMClientCache
+	logger         logr.Logger
 }
 
 type namespaceResources struct {
@@ -435,10 +439,11 @@ func createEnvtestContext() (BaseTestContextFactory, context.CancelFunc) {
 
 	create := func(perTestContext PerTestContext, cfg config.Values) (*KubeBaseTestContext, error) {
 		// register resources needed by controller for namespace
+		armClientCache := arm.NewARMClientCache(perTestContext.AzureClient, cfg.PodNamespace, nil, cfg.Cloud(), perTestContext.HttpClient, metrics.NewARMClientMetrics())
 		{
 			resources := &perNamespace{
-				armClient: perTestContext.AzureClient,
-				logger:    perTestContext.logger,
+				armClientCache: armClientCache,
+				logger:         perTestContext.logger,
 			}
 
 			namespace := perTestContext.Namespace

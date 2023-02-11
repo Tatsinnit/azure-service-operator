@@ -31,6 +31,7 @@ type TypeVisitor struct {
 	visitFlaggedType   func(this *TypeVisitor, it *FlaggedType, ctx interface{}) (Type, error)
 	visitValidatedType func(this *TypeVisitor, it *ValidatedType, ctx interface{}) (Type, error)
 	visitErroredType   func(this *TypeVisitor, it *ErroredType, ctx interface{}) (Type, error)
+	visitInterfaceType func(this *TypeVisitor, it *InterfaceType, ctx interface{}) (Type, error)
 }
 
 // Visit invokes the appropriate VisitX on TypeVisitor
@@ -71,6 +72,8 @@ func (tv *TypeVisitor) Visit(t Type, ctx interface{}) (Type, error) {
 		return tv.visitValidatedType(tv, it, ctx)
 	case *ErroredType:
 		return tv.visitErroredType(tv, it, ctx)
+	case *InterfaceType:
+		return tv.visitInterfaceType(tv, it, ctx)
 	}
 
 	panic(fmt.Sprintf("unhandled type: (%T) %s", t, t))
@@ -359,7 +362,25 @@ func IdentityVisitOfResourceType(this *TypeVisitor, it *ResourceType, ctx interf
 }
 
 func IdentityVisitOfOneOfType(this *TypeVisitor, it *OneOfType, ctx interface{}) (Type, error) {
-	var newTypes []Type
+
+	result := it.WithoutAnyPropertyObjects()
+
+	propertyObjects := it.PropertyObjects()
+	for _, obj := range propertyObjects {
+		newObj, err := this.Visit(obj, ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		obj, ok := newObj.(*ObjectType)
+		if !ok {
+			return nil, errors.Errorf("expected to visit oneof property object to result in object type, instead got %T", newObj)
+		}
+
+		result = result.WithAdditionalPropertyObject(obj)
+	}
+
+	newTypes := make([]Type, 0, it.Types().Len())
 	err := it.Types().ForEachError(func(oneOf Type, _ int) error {
 		newType, err := this.Visit(oneOf, ctx)
 		if err != nil {
@@ -369,15 +390,12 @@ func IdentityVisitOfOneOfType(this *TypeVisitor, it *OneOfType, ctx interface{})
 		newTypes = append(newTypes, newType)
 		return nil
 	})
+
 	if err != nil {
 		return nil, err
 	}
 
-	if typeSlicesFastEqual(newTypes, it.types.types) {
-		return it, nil // short-circuit
-	}
-
-	return BuildOneOfType(newTypes...), nil
+	return result.WithTypes(newTypes), nil
 }
 
 func IdentityVisitOfAllOfType(this *TypeVisitor, it *AllOfType, ctx interface{}) (Type, error) {
@@ -400,6 +418,11 @@ func IdentityVisitOfAllOfType(this *TypeVisitor, it *AllOfType, ctx interface{})
 	}
 
 	return BuildAllOfType(newTypes...), nil
+}
+
+func IdentityVisitOfInterfaceType(_ *TypeVisitor, it *InterfaceType, _ interface{}) (Type, error) {
+	// We don't visit the functions here to match ObjectType visit behavior
+	return it, nil
 }
 
 // just checks reference equality of types

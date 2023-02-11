@@ -2,17 +2,18 @@ github.com/Azure/azure-service-operator/v2/api/eventhub/v1alpha1api20211101stora
 ├── APIVersion: Enum (1 value)
 │   └── "2021-11-01"
 ├── Namespace: Resource
-│   ├── Spec: Object (17 properties)
+│   ├── Owner: github.com/Azure/azure-service-operator/v2/api/resources/v1betav20191001.ResourceGroup
+│   ├── Spec: Object (16 properties)
 │   │   ├── AlternateName: *string
 │   │   ├── AzureName: Validated<string> (2 rules)
-│   │   │   ├── Rule 0: {MaxLength %!s(int64=50)}
-│   │   │   └── Rule 1: {MinLength %!s(int64=6)}
+│   │   │   ├── Rule 0: MaxLength: 50
+│   │   │   └── Rule 1: MinLength: 6
 │   │   ├── ClusterArmReference: *genruntime.ResourceReference
 │   │   ├── DisableLocalAuth: *bool
-│   │   ├── Encryption: Object (4 properties)
+│   │   ├── Encryption: *Object (4 properties)
 │   │   │   ├── KeySource: *string
-│   │   │   ├── KeyVaultProperties: Object (5 properties)
-│   │   │   │   ├── Identity: Object (2 properties)
+│   │   │   ├── KeyVaultProperties: Object (5 properties)[]
+│   │   │   │   ├── Identity: *Object (2 properties)
 │   │   │   │   │   ├── PropertyBag: genruntime.PropertyBag
 │   │   │   │   │   └── UserAssignedIdentityReference: *genruntime.ResourceReference
 │   │   │   │   ├── KeyName: *string
@@ -21,7 +22,7 @@ github.com/Azure/azure-service-operator/v2/api/eventhub/v1alpha1api20211101stora
 │   │   │   │   └── PropertyBag: genruntime.PropertyBag
 │   │   │   ├── PropertyBag: genruntime.PropertyBag
 │   │   │   └── RequireInfrastructureEncryption: *bool
-│   │   ├── Identity: Object (2 properties)
+│   │   ├── Identity: *Object (2 properties)
 │   │   │   ├── PropertyBag: genruntime.PropertyBag
 │   │   │   └── Type: *string
 │   │   ├── IsAutoInflateEnabled: *bool
@@ -30,13 +31,8 @@ github.com/Azure/azure-service-operator/v2/api/eventhub/v1alpha1api20211101stora
 │   │   ├── MaximumThroughputUnits: *int
 │   │   ├── OriginalVersion: string
 │   │   ├── Owner: *genruntime.KnownResourceReference
-│   │   ├── PrivateEndpointConnections: Object (2 properties)
-│   │   │   ├── PrivateEndpoint: Object (2 properties)
-│   │   │   │   ├── PropertyBag: genruntime.PropertyBag
-│   │   │   │   └── Reference: *genruntime.ResourceReference
-│   │   │   └── PropertyBag: genruntime.PropertyBag
 │   │   ├── PropertyBag: genruntime.PropertyBag
-│   │   ├── Sku: Object (4 properties)
+│   │   ├── Sku: *Object (4 properties)
 │   │   │   ├── Capacity: *int
 │   │   │   ├── Name: *string
 │   │   │   ├── PropertyBag: genruntime.PropertyBag
@@ -49,10 +45,10 @@ github.com/Azure/azure-service-operator/v2/api/eventhub/v1alpha1api20211101stora
 │       ├── Conditions: conditions.Condition[]
 │       ├── CreatedAt: *string
 │       ├── DisableLocalAuth: *bool
-│       ├── Encryption: Object (4 properties)
+│       ├── Encryption: *Object (4 properties)
 │       │   ├── KeySource: *string
-│       │   ├── KeyVaultProperties: Object (5 properties)
-│       │   │   ├── Identity: Object (2 properties)
+│       │   ├── KeyVaultProperties: Object (5 properties)[]
+│       │   │   ├── Identity: *Object (2 properties)
 │       │   │   │   ├── PropertyBag: genruntime.PropertyBag
 │       │   │   │   └── UserAssignedIdentity: *string
 │       │   │   ├── KeyName: *string
@@ -62,12 +58,12 @@ github.com/Azure/azure-service-operator/v2/api/eventhub/v1alpha1api20211101stora
 │       │   ├── PropertyBag: genruntime.PropertyBag
 │       │   └── RequireInfrastructureEncryption: *bool
 │       ├── Id: *string
-│       ├── Identity: Object (5 properties)
+│       ├── Identity: *Object (5 properties)
 │       │   ├── PrincipalId: *string
 │       │   ├── PropertyBag: genruntime.PropertyBag
 │       │   ├── TenantId: *string
 │       │   ├── Type: *string
-│       │   └── UserAssignedIdentities: Object (3 properties)
+│       │   └── UserAssignedIdentities: map[string]Object (3 properties)
 │       │       ├── ClientId: *string
 │       │       ├── PrincipalId: *string
 │       │       └── PropertyBag: genruntime.PropertyBag
@@ -77,27 +73,19 @@ github.com/Azure/azure-service-operator/v2/api/eventhub/v1alpha1api20211101stora
 │       ├── MaximumThroughputUnits: *int
 │       ├── MetricId: *string
 │       ├── Name: *string
-│       ├── PrivateEndpointConnections: Object (3 properties)
+│       ├── PrivateEndpointConnections: Object (2 properties)[]
 │       │   ├── Id: *string
-│       │   ├── PropertyBag: genruntime.PropertyBag
-│       │   └── SystemData: Object (7 properties)
-│       │       ├── CreatedAt: *string
-│       │       ├── CreatedBy: *string
-│       │       ├── CreatedByType: *string
-│       │       ├── LastModifiedAt: *string
-│       │       ├── LastModifiedBy: *string
-│       │       ├── LastModifiedByType: *string
-│       │       └── PropertyBag: genruntime.PropertyBag
+│       │   └── PropertyBag: genruntime.PropertyBag
 │       ├── PropertyBag: genruntime.PropertyBag
 │       ├── ProvisioningState: *string
 │       ├── ServiceBusEndpoint: *string
-│       ├── Sku: Object (4 properties)
+│       ├── Sku: *Object (4 properties)
 │       │   ├── Capacity: *int
 │       │   ├── Name: *string
 │       │   ├── PropertyBag: genruntime.PropertyBag
 │       │   └── Tier: *string
 │       ├── Status: *string
-│       ├── SystemData: Object (7 properties)
+│       ├── SystemData: *Object (7 properties)
 │       │   ├── CreatedAt: *string
 │       │   ├── CreatedBy: *string
 │       │   ├── CreatedByType: *string
@@ -110,15 +98,14 @@ github.com/Azure/azure-service-operator/v2/api/eventhub/v1alpha1api20211101stora
 │       ├── UpdatedAt: *string
 │       └── ZoneRedundant: *bool
 ├── NamespacesAuthorizationRule: Resource
-│   ├── Spec: Object (7 properties)
+│   ├── Owner: github.com/Azure/azure-service-operator/v2/api/eventhub/v1alpha1api20211101.Namespace
+│   ├── Spec: Object (5 properties)
 │   │   ├── AzureName: Validated<string> (1 rule)
-│   │   │   └── Rule 0: {MinLength %!s(int64=1)}
-│   │   ├── Location: *string
+│   │   │   └── Rule 0: MinLength: 1
 │   │   ├── OriginalVersion: string
 │   │   ├── Owner: *genruntime.KnownResourceReference
 │   │   ├── PropertyBag: genruntime.PropertyBag
-│   │   ├── Rights: string[]
-│   │   └── Tags: map[string]string
+│   │   └── Rights: string[]
 │   └── Status: Object (8 properties)
 │       ├── Conditions: conditions.Condition[]
 │       ├── Id: *string
@@ -126,7 +113,7 @@ github.com/Azure/azure-service-operator/v2/api/eventhub/v1alpha1api20211101stora
 │       ├── Name: *string
 │       ├── PropertyBag: genruntime.PropertyBag
 │       ├── Rights: string[]
-│       ├── SystemData: Object (7 properties)
+│       ├── SystemData: *Object (7 properties)
 │       │   ├── CreatedAt: *string
 │       │   ├── CreatedBy: *string
 │       │   ├── CreatedByType: *string
@@ -136,12 +123,13 @@ github.com/Azure/azure-service-operator/v2/api/eventhub/v1alpha1api20211101stora
 │       │   └── PropertyBag: genruntime.PropertyBag
 │       └── Type: *string
 ├── NamespacesEventhub: Resource
-│   ├── Spec: Object (9 properties)
+│   ├── Owner: github.com/Azure/azure-service-operator/v2/api/eventhub/v1alpha1api20211101.Namespace
+│   ├── Spec: Object (7 properties)
 │   │   ├── AzureName: Validated<string> (2 rules)
-│   │   │   ├── Rule 0: {MaxLength %!s(int64=256)}
-│   │   │   └── Rule 1: {MinLength %!s(int64=1)}
-│   │   ├── CaptureDescription: Object (7 properties)
-│   │   │   ├── Destination: Object (8 properties)
+│   │   │   ├── Rule 0: MaxLength: 256
+│   │   │   └── Rule 1: MinLength: 1
+│   │   ├── CaptureDescription: *Object (7 properties)
+│   │   │   ├── Destination: *Object (8 properties)
 │   │   │   │   ├── ArchiveNameFormat: *string
 │   │   │   │   ├── BlobContainer: *string
 │   │   │   │   ├── DataLakeAccountName: *string
@@ -156,16 +144,14 @@ github.com/Azure/azure-service-operator/v2/api/eventhub/v1alpha1api20211101stora
 │   │   │   ├── PropertyBag: genruntime.PropertyBag
 │   │   │   ├── SizeLimitInBytes: *int
 │   │   │   └── SkipEmptyArchives: *bool
-│   │   ├── Location: *string
 │   │   ├── MessageRetentionInDays: *int
 │   │   ├── OriginalVersion: string
 │   │   ├── Owner: *genruntime.KnownResourceReference
 │   │   ├── PartitionCount: *int
-│   │   ├── PropertyBag: genruntime.PropertyBag
-│   │   └── Tags: map[string]string
+│   │   └── PropertyBag: genruntime.PropertyBag
 │   └── Status: Object (14 properties)
-│       ├── CaptureDescription: Object (7 properties)
-│       │   ├── Destination: Object (8 properties)
+│       ├── CaptureDescription: *Object (7 properties)
+│       │   ├── Destination: *Object (8 properties)
 │       │   │   ├── ArchiveNameFormat: *string
 │       │   │   ├── BlobContainer: *string
 │       │   │   ├── DataLakeAccountName: *string
@@ -190,7 +176,7 @@ github.com/Azure/azure-service-operator/v2/api/eventhub/v1alpha1api20211101stora
 │       ├── PartitionIds: string[]
 │       ├── PropertyBag: genruntime.PropertyBag
 │       ├── Status: *string
-│       ├── SystemData: Object (7 properties)
+│       ├── SystemData: *Object (7 properties)
 │       │   ├── CreatedAt: *string
 │       │   ├── CreatedBy: *string
 │       │   ├── CreatedByType: *string
@@ -201,15 +187,14 @@ github.com/Azure/azure-service-operator/v2/api/eventhub/v1alpha1api20211101stora
 │       ├── Type: *string
 │       └── UpdatedAt: *string
 ├── NamespacesEventhubsAuthorizationRule: Resource
-│   ├── Spec: Object (7 properties)
+│   ├── Owner: github.com/Azure/azure-service-operator/v2/api/eventhub/v1alpha1api20211101.NamespacesEventhub
+│   ├── Spec: Object (5 properties)
 │   │   ├── AzureName: Validated<string> (1 rule)
-│   │   │   └── Rule 0: {MinLength %!s(int64=1)}
-│   │   ├── Location: *string
+│   │   │   └── Rule 0: MinLength: 1
 │   │   ├── OriginalVersion: string
 │   │   ├── Owner: *genruntime.KnownResourceReference
 │   │   ├── PropertyBag: genruntime.PropertyBag
-│   │   ├── Rights: string[]
-│   │   └── Tags: map[string]string
+│   │   └── Rights: string[]
 │   └── Status: Object (8 properties)
 │       ├── Conditions: conditions.Condition[]
 │       ├── Id: *string
@@ -217,7 +202,7 @@ github.com/Azure/azure-service-operator/v2/api/eventhub/v1alpha1api20211101stora
 │       ├── Name: *string
 │       ├── PropertyBag: genruntime.PropertyBag
 │       ├── Rights: string[]
-│       ├── SystemData: Object (7 properties)
+│       ├── SystemData: *Object (7 properties)
 │       │   ├── CreatedAt: *string
 │       │   ├── CreatedBy: *string
 │       │   ├── CreatedByType: *string
@@ -227,15 +212,14 @@ github.com/Azure/azure-service-operator/v2/api/eventhub/v1alpha1api20211101stora
 │       │   └── PropertyBag: genruntime.PropertyBag
 │       └── Type: *string
 └── NamespacesEventhubsConsumerGroup: Resource
-    ├── Spec: Object (7 properties)
+    ├── Owner: github.com/Azure/azure-service-operator/v2/api/eventhub/v1alpha1api20211101.NamespacesEventhub
+    ├── Spec: Object (5 properties)
     │   ├── AzureName: Validated<string> (2 rules)
-    │   │   ├── Rule 0: {MaxLength %!s(int64=50)}
-    │   │   └── Rule 1: {MinLength %!s(int64=1)}
-    │   ├── Location: *string
+    │   │   ├── Rule 0: MaxLength: 50
+    │   │   └── Rule 1: MinLength: 1
     │   ├── OriginalVersion: string
     │   ├── Owner: *genruntime.KnownResourceReference
     │   ├── PropertyBag: genruntime.PropertyBag
-    │   ├── Tags: map[string]string
     │   └── UserMetadata: *string
     └── Status: Object (10 properties)
         ├── Conditions: conditions.Condition[]
@@ -244,7 +228,7 @@ github.com/Azure/azure-service-operator/v2/api/eventhub/v1alpha1api20211101stora
         ├── Location: *string
         ├── Name: *string
         ├── PropertyBag: genruntime.PropertyBag
-        ├── SystemData: Object (7 properties)
+        ├── SystemData: *Object (7 properties)
         │   ├── CreatedAt: *string
         │   ├── CreatedBy: *string
         │   ├── CreatedByType: *string

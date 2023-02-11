@@ -12,6 +12,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/benbjohnson/clock"
 	"github.com/go-logr/logr"
@@ -24,12 +25,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/Azure/azure-service-operator/v2/identity"
 	"github.com/Azure/azure-service-operator/v2/internal/config"
 	"github.com/Azure/azure-service-operator/v2/internal/controllers"
 	"github.com/Azure/azure-service-operator/v2/internal/genericarmclient"
 	. "github.com/Azure/azure-service-operator/v2/internal/logging"
 	asometrics "github.com/Azure/azure-service-operator/v2/internal/metrics"
 	armreconciler "github.com/Azure/azure-service-operator/v2/internal/reconcilers/arm"
+	"github.com/Azure/azure-service-operator/v2/internal/reconcilers/generic"
 	"github.com/Azure/azure-service-operator/v2/internal/util/interval"
 	"github.com/Azure/azure-service-operator/v2/internal/util/kubeclient"
 	"github.com/Azure/azure-service-operator/v2/internal/util/lockedrand"
@@ -58,7 +61,6 @@ func main() {
 
 	armMetrics := asometrics.NewARMClientMetrics()
 	asometrics.RegisterMetrics(armMetrics)
-
 	scheme := controllers.CreateScheme()
 
 	ctrl.SetLogger(klogr.New())
@@ -88,28 +90,35 @@ func main() {
 		os.Exit(1)
 	}
 
-	creds, err := azidentity.NewDefaultAzureCredential(nil)
-	if err != nil {
-		setupLog.Error(err, "unable to get default azure credential")
-		os.Exit(1)
+	var credential azcore.TokenCredential
+	if cfg.UseWorkloadIdentityAuth {
+		credential, err = identity.NewWorkloadIdentityCredential(cfg.TenantID, cfg.ClientID)
+		if err != nil {
+			setupLog.Error(err, "unable to get workload identity credential")
+			os.Exit(1)
+		}
+	} else {
+		credential, err = azidentity.NewDefaultAzureCredential(nil)
+		if err != nil {
+			setupLog.Error(err, "unable to get default azure credential")
+			os.Exit(1)
+		}
 	}
 
-	globalARMClient, err := genericarmclient.NewGenericClient(cfg.Cloud(), creds, cfg.SubscriptionID, armMetrics)
+	globalARMClient, err := genericarmclient.NewGenericClient(cfg.Cloud(), credential, cfg.SubscriptionID, armMetrics)
 	if err != nil {
 		setupLog.Error(err, "failed to get new genericArmClient")
 		os.Exit(1)
 	}
 
 	kubeClient := kubeclient.NewClient(mgr.GetClient())
-	armClientCache := armreconciler.NewARMClientCache(globalARMClient, cfg.PodNamespace, kubeClient, cfg.Cloud(), nil)
+	armClientCache := armreconciler.NewARMClientCache(globalARMClient, cfg.PodNamespace, kubeClient, cfg.Cloud(), nil, armMetrics)
 
 	var clientFactory armreconciler.ARMClientFactory = func(ctx context.Context, obj genruntime.ARMMetaObject) (*genericarmclient.GenericClient, string, error) {
 		return armClientCache.GetClient(ctx, obj)
 	}
-
 	log := ctrl.Log.WithName("controllers")
 	log.V(Status).Info("Configuration details", "config", cfg.String())
-
 	if cfg.OperatorMode.IncludesWatchers() {
 		positiveConditions := conditions.NewPositiveConditionBuilder(clock.New())
 
@@ -126,7 +135,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		err = controllers.RegisterAll(
+		err = generic.RegisterAll(
 			mgr,
 			mgr.GetFieldIndexer(),
 			kubeClient,
@@ -140,7 +149,7 @@ func main() {
 	}
 
 	if cfg.OperatorMode.IncludesWebhooks() {
-		if errs := controllers.RegisterWebhooks(mgr, controllers.GetKnownTypes()); errs != nil {
+		if errs := generic.RegisterWebhooks(mgr, controllers.GetKnownTypes()); errs != nil {
 			setupLog.Error(err, "failed to register webhook for gvks")
 			os.Exit(1)
 		}
@@ -160,8 +169,8 @@ func main() {
 	}
 }
 
-func makeControllerOptions(log logr.Logger, cfg config.Values) controllers.Options {
-	return controllers.Options{
+func makeControllerOptions(log logr.Logger, cfg config.Values) generic.Options {
+	return generic.Options{
 		Config: cfg,
 		Options: controller.Options{
 			MaxConcurrentReconciles: 1,
@@ -174,7 +183,7 @@ func makeControllerOptions(log logr.Logger, cfg config.Values) controllers.Optio
 				return log.WithValues("namespace", req.Namespace, "name", req.Name)
 			},
 			// These rate limits are used for happy-path backoffs (for example polling async operation IDs for PUT/DELETE)
-			RateLimiter: controllers.NewRateLimiter(1*time.Second, 1*time.Minute),
+			RateLimiter: generic.NewRateLimiter(1*time.Second, 1*time.Minute),
 		},
 		RequeueIntervalCalculator: interval.NewCalculator(
 			// These rate limits are primarily for ReadyConditionImpactingError's

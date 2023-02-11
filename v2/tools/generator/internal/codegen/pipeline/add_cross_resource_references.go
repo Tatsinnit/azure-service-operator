@@ -18,17 +18,18 @@ import (
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/config"
 )
 
-// AddCrossResourceReferencesStageID is the unique identifier for this pipeline stage
-const AddCrossResourceReferencesStageID = "addCrossResourceReferences"
+// TransformCrossResourceReferencesStageID is the unique identifier for this pipeline stage
+const TransformCrossResourceReferencesStageID = "transformCrossResourceReferences"
 
 var armIDDescriptionRegex = regexp.MustCompile("(?i)(.*/subscriptions/.*?/resourceGroups/.*|ARM ID|Resource ID|resourceId)")
+var idRegex = regexp.MustCompile("^(.*)I[d|D]s?$")
 
-// AddCrossResourceReferences replaces cross resource references with genruntime.ResourceReference.
-func AddCrossResourceReferences(configuration *config.Configuration, idFactory astmodel.IdentifierFactory) *Stage {
-	return NewLegacyStage(
-		AddCrossResourceReferencesStageID,
+// TransformCrossResourceReferences replaces cross resource references with genruntime.ResourceReference.
+func TransformCrossResourceReferences(configuration *config.Configuration, idFactory astmodel.IdentifierFactory) *Stage {
+	return NewStage(
+		TransformCrossResourceReferencesStageID,
 		"Replace cross-resource references with genruntime.ResourceReference",
-		func(ctx context.Context, definitions astmodel.TypeDefinitionSet) (astmodel.TypeDefinitionSet, error) {
+		func(ctx context.Context, state *State) (*State, error) {
 			typesWithARMIDs := make(astmodel.TypeDefinitionSet)
 
 			var crossResourceReferenceErrs []error
@@ -36,7 +37,7 @@ func AddCrossResourceReferences(configuration *config.Configuration, idFactory a
 			isCrossResourceReference := func(typeName astmodel.TypeName, prop *astmodel.PropertyDefinition) bool {
 				// First check if we know that this property is an ARMID already
 				isReference, err := configuration.ARMReference(typeName, prop.PropertyName())
-				if primitive, ok := astmodel.AsPrimitiveType(prop.PropertyType()); ok {
+				if primitive, ok := extractPrimitiveType(prop.PropertyType()); ok {
 					if primitive == astmodel.ARMIDType {
 						if err == nil {
 							if !isReference {
@@ -85,7 +86,7 @@ func AddCrossResourceReferences(configuration *config.Configuration, idFactory a
 			}
 
 			visitor := MakeCrossResourceReferenceTypeVisitor(idFactory, isCrossResourceReference)
-			for _, def := range definitions {
+			for _, def := range state.Definitions() {
 				// Skip Status types
 				// TODO: we need flags
 				if def.Name().IsStatus() {
@@ -97,6 +98,7 @@ func AddCrossResourceReferences(configuration *config.Configuration, idFactory a
 				if err != nil {
 					return nil, errors.Wrapf(err, "visiting %q", def.Name())
 				}
+
 				typesWithARMIDs.Add(def.WithType(t))
 
 				// TODO: Remove types that have only a single field ID and pull things up a level? Will need to wait for George's
@@ -108,7 +110,7 @@ func AddCrossResourceReferences(configuration *config.Configuration, idFactory a
 				return nil, err
 			}
 
-			result, err := stripRemainingARMIDPrimitiveTypes(typesWithARMIDs)
+			updatedDefs, err := stripARMIDPrimitiveTypes(typesWithARMIDs)
 			if err != nil {
 				return nil, errors.Wrap(err, "failed to strip ARM ID primitive types")
 			}
@@ -122,7 +124,7 @@ func AddCrossResourceReferences(configuration *config.Configuration, idFactory a
 					"Found unused $armReference configurations; these need to be fixed or removed.")
 			}
 
-			return result, nil
+			return state.WithDefinitions(updatedDefs), nil
 		})
 }
 
@@ -148,7 +150,7 @@ func MakeCrossResourceReferenceTypeVisitor(idFactory astmodel.IdentifierFactory,
 			if visitor.isPropertyAnARMReference(typeName, prop) {
 				klog.V(4).Infof("Transforming \"%s.%s\" field into genruntime.ResourceReference", typeName, prop.PropertyName())
 				originalName := string(prop.PropertyName())
-				prop = makeResourceReferenceProperty(idFactory, prop)
+				prop = makeResourceReferenceProperty(typeName, idFactory, prop)
 
 				// TODO: We could pass this information forward some other way?
 				// Add tag so that we remember what this field was before
@@ -192,9 +194,33 @@ func DoesPropertyLookLikeARMReference(prop *astmodel.PropertyDefinition) bool {
 	return false
 }
 
-func makeResourceReferenceProperty(idFactory astmodel.IdentifierFactory, existing *astmodel.PropertyDefinition) *astmodel.PropertyDefinition {
-	_, isSlice := astmodel.AsArrayType(existing.PropertyType())
-	_, isMap := astmodel.AsMapType(existing.PropertyType())
+func makeReferencePropertyName(existing *astmodel.PropertyDefinition, isSlice bool, isMap bool) string {
+	propertyNameSuffix := "Reference"
+	if isSlice || isMap {
+		propertyNameSuffix = "References"
+	}
+
+	var referencePropertyName string
+	// Special case for "Id" and properties that end in "Id", which are quite common in the specs. This is primarily
+	// because it's awkward to have a field called "Id" not just be a string and instead but a complex type describing
+	// a reference.
+	s := existing.PropertyName().String()
+
+	if strings.ToLower(s) == "id" {
+		referencePropertyName = propertyNameSuffix
+	} else if idRegex.MatchString(s) {
+		referencePropertyName = idRegex.ReplaceAllString(s, "${1}"+propertyNameSuffix)
+	} else {
+		referencePropertyName = s + propertyNameSuffix
+	}
+
+	return referencePropertyName
+}
+
+// makeLegacyReferencePropertyName does not correctly deal with properties with "ID" suffix, but exists
+// to ensure backward compatibility with old versions.
+// See https://github.com/Azure/azure-service-operator/issues/2501#issuecomment-1251650714
+func makeLegacyReferencePropertyName(existing *astmodel.PropertyDefinition, isSlice bool, isMap bool) string {
 	propertyNameSuffix := "Reference"
 	if isSlice || isMap {
 		propertyNameSuffix = "References"
@@ -214,6 +240,24 @@ func makeResourceReferenceProperty(idFactory astmodel.IdentifierFactory, existin
 		referencePropertyName = string(existing.PropertyName()) + propertyNameSuffix
 	}
 
+	return referencePropertyName
+}
+
+func makeResourceReferenceProperty(
+	typeName astmodel.TypeName,
+	idFactory astmodel.IdentifierFactory,
+	existing *astmodel.PropertyDefinition) *astmodel.PropertyDefinition {
+
+	_, isSlice := astmodel.AsArrayType(existing.PropertyType())
+	_, isMap := astmodel.AsMapType(existing.PropertyType())
+	var referencePropertyName string
+	// This is hacky but works
+	if group, version, ok := typeName.PackageReference.TryGroupVersion(); ok && group == "containerservice" && strings.Contains(version, "20210501") {
+		referencePropertyName = makeLegacyReferencePropertyName(existing, isSlice, isMap)
+	} else {
+		referencePropertyName = makeReferencePropertyName(existing, isSlice, isMap)
+	}
+
 	var newPropType astmodel.Type
 
 	if isSlice {
@@ -226,7 +270,7 @@ func makeResourceReferenceProperty(idFactory astmodel.IdentifierFactory, existin
 
 	newProp := astmodel.NewPropertyDefinition(
 		idFactory.CreatePropertyName(referencePropertyName, astmodel.Exported),
-		idFactory.CreateIdentifier(referencePropertyName, astmodel.NotExported),
+		idFactory.CreateStringIdentifier(referencePropertyName, astmodel.NotExported),
 		newPropType)
 
 	newProp = newProp.WithDescription(existing.Description())
@@ -239,7 +283,7 @@ func makeResourceReferenceProperty(idFactory astmodel.IdentifierFactory, existin
 	return newProp
 }
 
-func stripRemainingARMIDPrimitiveTypes(types astmodel.TypeDefinitionSet) (astmodel.TypeDefinitionSet, error) {
+func stripARMIDPrimitiveTypes(types astmodel.TypeDefinitionSet) (astmodel.TypeDefinitionSet, error) {
 	// Any astmodel.ARMReference's which have escaped need to be turned into
 	// strings
 	armIDStrippingVisitor := astmodel.TypeVisitorBuilder{
@@ -261,4 +305,22 @@ func stripRemainingARMIDPrimitiveTypes(types astmodel.TypeDefinitionSet) (astmod
 	}
 
 	return result, nil
+}
+
+// ExtractPrimitiveType extracts a PrimitiveType from the specified type if possible. This includes unwrapping
+// MetaType's like ValidatedType as well as checking the element type of types such as ArrayType and MapType.
+func extractPrimitiveType(aType astmodel.Type) (*astmodel.PrimitiveType, bool) {
+	if primitiveType, ok := astmodel.AsPrimitiveType(aType); ok {
+		return primitiveType, ok
+	}
+
+	if arrayType, ok := astmodel.AsArrayType(aType); ok {
+		return extractPrimitiveType(arrayType.Element())
+	}
+
+	if mapType, ok := astmodel.AsMapType(aType); ok {
+		return extractPrimitiveType(mapType.ValueType())
+	}
+
+	return nil, false
 }

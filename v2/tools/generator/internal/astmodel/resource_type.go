@@ -45,6 +45,7 @@ type ResourceType struct {
 	annotations         []string // TODO: Consider ensuring that these are actually kubebuilder annotations.
 	scope               ResourceScope
 	armType             string
+	armURI              string
 	apiVersionTypeName  TypeName
 	apiVersionEnumValue EnumValue
 	InterfaceImplementer
@@ -270,6 +271,18 @@ func (resource *ResourceType) WithARMType(armType string) *ResourceType {
 	return result
 }
 
+// WithARMURI sets the ARMURI
+func (resource *ResourceType) WithARMURI(armURI string) *ResourceType {
+	result := resource.copy()
+	result.armURI = armURI
+	return result
+}
+
+// ARMURI gets the ARMURI
+func (resource *ResourceType) ARMURI() string {
+	return resource.armURI
+}
+
 // WithAPIVersion returns a new ResourceType with the specified API version (type and value).
 func (resource *ResourceType) WithAPIVersion(apiVersionTypeName TypeName, apiVersionEnumValue EnumValue) *ResourceType {
 	result := resource.copy()
@@ -474,6 +487,10 @@ func (resource *ResourceType) References() TypeNameSet {
 	// anywhere else
 	if resource.HasAPIVersion() {
 		result.Add(resource.APIVersionTypeName())
+	}
+
+	for _, f := range resource.functions {
+		result.AddAll(f.References())
 	}
 
 	return result
@@ -701,6 +718,7 @@ func (resource *ResourceType) copy() *ResourceType {
 		annotations:          append([]string(nil), resource.annotations...),
 		scope:                resource.scope,
 		armType:              resource.armType,
+		armURI:               resource.armURI,
 		apiVersionTypeName:   resource.apiVersionTypeName,
 		apiVersionEnumValue:  resource.apiVersionEnumValue,
 		InterfaceImplementer: resource.InterfaceImplementer.copy(),

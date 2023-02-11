@@ -92,7 +92,7 @@ func RunPropertyAssignmentTestForSignalR(subject SignalR) string {
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -161,7 +161,7 @@ func SignalRGenerator() gopter.Gen {
 // AddRelatedPropertyGeneratorsForSignalR is a factory method for creating gopter generators
 func AddRelatedPropertyGeneratorsForSignalR(gens map[string]gopter.Gen) {
 	gens["Spec"] = SignalR_SpecGenerator()
-	gens["Status"] = SignalRResource_STATUSGenerator()
+	gens["Status"] = SignalR_STATUSGenerator()
 }
 
 func Test_SignalR_Spec_WhenPropertiesConverted_RoundTripsWithoutLoss(t *testing.T) {
@@ -195,7 +195,7 @@ func RunPropertyAssignmentTestForSignalR_Spec(subject SignalR_Spec) string {
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -294,38 +294,38 @@ func AddRelatedPropertyGeneratorsForSignalR_Spec(gens map[string]gopter.Gen) {
 	gens["Upstream"] = gen.PtrOf(ServerlessUpstreamSettingsGenerator())
 }
 
-func Test_SignalRResource_STATUS_WhenPropertiesConverted_RoundTripsWithoutLoss(t *testing.T) {
+func Test_SignalR_STATUS_WhenPropertiesConverted_RoundTripsWithoutLoss(t *testing.T) {
 	t.Parallel()
 	parameters := gopter.DefaultTestParameters()
 	parameters.MaxSize = 10
 	properties := gopter.NewProperties(parameters)
 	properties.Property(
-		"Round trip from SignalRResource_STATUS to SignalRResource_STATUS via AssignProperties_To_SignalRResource_STATUS & AssignProperties_From_SignalRResource_STATUS returns original",
-		prop.ForAll(RunPropertyAssignmentTestForSignalRResource_STATUS, SignalRResource_STATUSGenerator()))
+		"Round trip from SignalR_STATUS to SignalR_STATUS via AssignProperties_To_SignalR_STATUS & AssignProperties_From_SignalR_STATUS returns original",
+		prop.ForAll(RunPropertyAssignmentTestForSignalR_STATUS, SignalR_STATUSGenerator()))
 	properties.TestingRun(t, gopter.NewFormatedReporter(false, 240, os.Stdout))
 }
 
-// RunPropertyAssignmentTestForSignalRResource_STATUS tests if a specific instance of SignalRResource_STATUS can be assigned to v1beta20211001storage and back losslessly
-func RunPropertyAssignmentTestForSignalRResource_STATUS(subject SignalRResource_STATUS) string {
+// RunPropertyAssignmentTestForSignalR_STATUS tests if a specific instance of SignalR_STATUS can be assigned to v1beta20211001storage and back losslessly
+func RunPropertyAssignmentTestForSignalR_STATUS(subject SignalR_STATUS) string {
 	// Copy subject to make sure assignment doesn't modify it
 	copied := subject.DeepCopy()
 
 	// Use AssignPropertiesTo() for the first stage of conversion
-	var other v20211001s.SignalRResource_STATUS
-	err := copied.AssignProperties_To_SignalRResource_STATUS(&other)
+	var other v20211001s.SignalR_STATUS
+	err := copied.AssignProperties_To_SignalR_STATUS(&other)
 	if err != nil {
 		return err.Error()
 	}
 
 	// Use AssignPropertiesFrom() to convert back to our original type
-	var actual SignalRResource_STATUS
-	err = actual.AssignProperties_From_SignalRResource_STATUS(&other)
+	var actual SignalR_STATUS
+	err = actual.AssignProperties_From_SignalR_STATUS(&other)
 	if err != nil {
 		return err.Error()
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -336,20 +336,20 @@ func RunPropertyAssignmentTestForSignalRResource_STATUS(subject SignalRResource_
 	return ""
 }
 
-func Test_SignalRResource_STATUS_WhenSerializedToJson_DeserializesAsEqual(t *testing.T) {
+func Test_SignalR_STATUS_WhenSerializedToJson_DeserializesAsEqual(t *testing.T) {
 	t.Parallel()
 	parameters := gopter.DefaultTestParameters()
 	parameters.MinSuccessfulTests = 80
 	parameters.MaxSize = 3
 	properties := gopter.NewProperties(parameters)
 	properties.Property(
-		"Round trip of SignalRResource_STATUS via JSON returns original",
-		prop.ForAll(RunJSONSerializationTestForSignalRResource_STATUS, SignalRResource_STATUSGenerator()))
+		"Round trip of SignalR_STATUS via JSON returns original",
+		prop.ForAll(RunJSONSerializationTestForSignalR_STATUS, SignalR_STATUSGenerator()))
 	properties.TestingRun(t, gopter.NewFormatedReporter(true, 240, os.Stdout))
 }
 
-// RunJSONSerializationTestForSignalRResource_STATUS runs a test to see if a specific instance of SignalRResource_STATUS round trips to JSON and back losslessly
-func RunJSONSerializationTestForSignalRResource_STATUS(subject SignalRResource_STATUS) string {
+// RunJSONSerializationTestForSignalR_STATUS runs a test to see if a specific instance of SignalR_STATUS round trips to JSON and back losslessly
+func RunJSONSerializationTestForSignalR_STATUS(subject SignalR_STATUS) string {
 	// Serialize to JSON
 	bin, err := json.Marshal(subject)
 	if err != nil {
@@ -357,7 +357,7 @@ func RunJSONSerializationTestForSignalRResource_STATUS(subject SignalRResource_S
 	}
 
 	// Deserialize back into memory
-	var actual SignalRResource_STATUS
+	var actual SignalR_STATUS
 	err = json.Unmarshal(bin, &actual)
 	if err != nil {
 		return err.Error()
@@ -375,34 +375,33 @@ func RunJSONSerializationTestForSignalRResource_STATUS(subject SignalRResource_S
 	return ""
 }
 
-// Generator of SignalRResource_STATUS instances for property testing - lazily instantiated by
-// SignalRResource_STATUSGenerator()
-var signalRResource_STATUSGenerator gopter.Gen
+// Generator of SignalR_STATUS instances for property testing - lazily instantiated by SignalR_STATUSGenerator()
+var signalR_STATUSGenerator gopter.Gen
 
-// SignalRResource_STATUSGenerator returns a generator of SignalRResource_STATUS instances for property testing.
-// We first initialize signalRResource_STATUSGenerator with a simplified generator based on the
+// SignalR_STATUSGenerator returns a generator of SignalR_STATUS instances for property testing.
+// We first initialize signalR_STATUSGenerator with a simplified generator based on the
 // fields with primitive types then replacing it with a more complex one that also handles complex fields
 // to ensure any cycles in the object graph properly terminate.
-func SignalRResource_STATUSGenerator() gopter.Gen {
-	if signalRResource_STATUSGenerator != nil {
-		return signalRResource_STATUSGenerator
+func SignalR_STATUSGenerator() gopter.Gen {
+	if signalR_STATUSGenerator != nil {
+		return signalR_STATUSGenerator
 	}
 
 	generators := make(map[string]gopter.Gen)
-	AddIndependentPropertyGeneratorsForSignalRResource_STATUS(generators)
-	signalRResource_STATUSGenerator = gen.Struct(reflect.TypeOf(SignalRResource_STATUS{}), generators)
+	AddIndependentPropertyGeneratorsForSignalR_STATUS(generators)
+	signalR_STATUSGenerator = gen.Struct(reflect.TypeOf(SignalR_STATUS{}), generators)
 
 	// The above call to gen.Struct() captures the map, so create a new one
 	generators = make(map[string]gopter.Gen)
-	AddIndependentPropertyGeneratorsForSignalRResource_STATUS(generators)
-	AddRelatedPropertyGeneratorsForSignalRResource_STATUS(generators)
-	signalRResource_STATUSGenerator = gen.Struct(reflect.TypeOf(SignalRResource_STATUS{}), generators)
+	AddIndependentPropertyGeneratorsForSignalR_STATUS(generators)
+	AddRelatedPropertyGeneratorsForSignalR_STATUS(generators)
+	signalR_STATUSGenerator = gen.Struct(reflect.TypeOf(SignalR_STATUS{}), generators)
 
-	return signalRResource_STATUSGenerator
+	return signalR_STATUSGenerator
 }
 
-// AddIndependentPropertyGeneratorsForSignalRResource_STATUS is a factory method for creating gopter generators
-func AddIndependentPropertyGeneratorsForSignalRResource_STATUS(gens map[string]gopter.Gen) {
+// AddIndependentPropertyGeneratorsForSignalR_STATUS is a factory method for creating gopter generators
+func AddIndependentPropertyGeneratorsForSignalR_STATUS(gens map[string]gopter.Gen) {
 	gens["DisableAadAuth"] = gen.PtrOf(gen.Bool())
 	gens["DisableLocalAuth"] = gen.PtrOf(gen.Bool())
 	gens["ExternalIP"] = gen.PtrOf(gen.AlphaString())
@@ -421,8 +420,8 @@ func AddIndependentPropertyGeneratorsForSignalRResource_STATUS(gens map[string]g
 	gens["Version"] = gen.PtrOf(gen.AlphaString())
 }
 
-// AddRelatedPropertyGeneratorsForSignalRResource_STATUS is a factory method for creating gopter generators
-func AddRelatedPropertyGeneratorsForSignalRResource_STATUS(gens map[string]gopter.Gen) {
+// AddRelatedPropertyGeneratorsForSignalR_STATUS is a factory method for creating gopter generators
+func AddRelatedPropertyGeneratorsForSignalR_STATUS(gens map[string]gopter.Gen) {
 	gens["Cors"] = gen.PtrOf(SignalRCorsSettings_STATUSGenerator())
 	gens["Features"] = gen.SliceOf(SignalRFeature_STATUSGenerator())
 	gens["Identity"] = gen.PtrOf(ManagedIdentity_STATUSGenerator())
@@ -467,7 +466,7 @@ func RunPropertyAssignmentTestForManagedIdentity(subject ManagedIdentity) string
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -569,7 +568,7 @@ func RunPropertyAssignmentTestForManagedIdentity_STATUS(subject ManagedIdentity_
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -688,7 +687,7 @@ func RunPropertyAssignmentTestForPrivateEndpointConnection_STATUS_SignalR_SubRes
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -743,9 +742,6 @@ func RunJSONSerializationTestForPrivateEndpointConnection_STATUS_SignalR_SubReso
 var privateEndpointConnection_STATUS_SignalR_SubResourceEmbeddedGenerator gopter.Gen
 
 // PrivateEndpointConnection_STATUS_SignalR_SubResourceEmbeddedGenerator returns a generator of PrivateEndpointConnection_STATUS_SignalR_SubResourceEmbedded instances for property testing.
-// We first initialize privateEndpointConnection_STATUS_SignalR_SubResourceEmbeddedGenerator with a simplified generator based on the
-// fields with primitive types then replacing it with a more complex one that also handles complex fields
-// to ensure any cycles in the object graph properly terminate.
 func PrivateEndpointConnection_STATUS_SignalR_SubResourceEmbeddedGenerator() gopter.Gen {
 	if privateEndpointConnection_STATUS_SignalR_SubResourceEmbeddedGenerator != nil {
 		return privateEndpointConnection_STATUS_SignalR_SubResourceEmbeddedGenerator
@@ -755,23 +751,12 @@ func PrivateEndpointConnection_STATUS_SignalR_SubResourceEmbeddedGenerator() gop
 	AddIndependentPropertyGeneratorsForPrivateEndpointConnection_STATUS_SignalR_SubResourceEmbedded(generators)
 	privateEndpointConnection_STATUS_SignalR_SubResourceEmbeddedGenerator = gen.Struct(reflect.TypeOf(PrivateEndpointConnection_STATUS_SignalR_SubResourceEmbedded{}), generators)
 
-	// The above call to gen.Struct() captures the map, so create a new one
-	generators = make(map[string]gopter.Gen)
-	AddIndependentPropertyGeneratorsForPrivateEndpointConnection_STATUS_SignalR_SubResourceEmbedded(generators)
-	AddRelatedPropertyGeneratorsForPrivateEndpointConnection_STATUS_SignalR_SubResourceEmbedded(generators)
-	privateEndpointConnection_STATUS_SignalR_SubResourceEmbeddedGenerator = gen.Struct(reflect.TypeOf(PrivateEndpointConnection_STATUS_SignalR_SubResourceEmbedded{}), generators)
-
 	return privateEndpointConnection_STATUS_SignalR_SubResourceEmbeddedGenerator
 }
 
 // AddIndependentPropertyGeneratorsForPrivateEndpointConnection_STATUS_SignalR_SubResourceEmbedded is a factory method for creating gopter generators
 func AddIndependentPropertyGeneratorsForPrivateEndpointConnection_STATUS_SignalR_SubResourceEmbedded(gens map[string]gopter.Gen) {
 	gens["Id"] = gen.PtrOf(gen.AlphaString())
-}
-
-// AddRelatedPropertyGeneratorsForPrivateEndpointConnection_STATUS_SignalR_SubResourceEmbedded is a factory method for creating gopter generators
-func AddRelatedPropertyGeneratorsForPrivateEndpointConnection_STATUS_SignalR_SubResourceEmbedded(gens map[string]gopter.Gen) {
-	gens["SystemData"] = gen.PtrOf(SystemData_STATUSGenerator())
 }
 
 func Test_ResourceLogConfiguration_WhenPropertiesConverted_RoundTripsWithoutLoss(t *testing.T) {
@@ -805,7 +790,7 @@ func RunPropertyAssignmentTestForResourceLogConfiguration(subject ResourceLogCon
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -908,7 +893,7 @@ func RunPropertyAssignmentTestForResourceLogConfiguration_STATUS(subject Resourc
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -1011,7 +996,7 @@ func RunPropertyAssignmentTestForResourceSku(subject ResourceSku) string {
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -1115,7 +1100,7 @@ func RunPropertyAssignmentTestForResourceSku_STATUS(subject ResourceSku_STATUS) 
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -1221,7 +1206,7 @@ func RunPropertyAssignmentTestForServerlessUpstreamSettings(subject ServerlessUp
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -1324,7 +1309,7 @@ func RunPropertyAssignmentTestForServerlessUpstreamSettings_STATUS(subject Serve
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -1427,7 +1412,7 @@ func RunPropertyAssignmentTestForSharedPrivateLinkResource_STATUS_SignalR_SubRes
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -1482,9 +1467,6 @@ func RunJSONSerializationTestForSharedPrivateLinkResource_STATUS_SignalR_SubReso
 var sharedPrivateLinkResource_STATUS_SignalR_SubResourceEmbeddedGenerator gopter.Gen
 
 // SharedPrivateLinkResource_STATUS_SignalR_SubResourceEmbeddedGenerator returns a generator of SharedPrivateLinkResource_STATUS_SignalR_SubResourceEmbedded instances for property testing.
-// We first initialize sharedPrivateLinkResource_STATUS_SignalR_SubResourceEmbeddedGenerator with a simplified generator based on the
-// fields with primitive types then replacing it with a more complex one that also handles complex fields
-// to ensure any cycles in the object graph properly terminate.
 func SharedPrivateLinkResource_STATUS_SignalR_SubResourceEmbeddedGenerator() gopter.Gen {
 	if sharedPrivateLinkResource_STATUS_SignalR_SubResourceEmbeddedGenerator != nil {
 		return sharedPrivateLinkResource_STATUS_SignalR_SubResourceEmbeddedGenerator
@@ -1494,23 +1476,12 @@ func SharedPrivateLinkResource_STATUS_SignalR_SubResourceEmbeddedGenerator() gop
 	AddIndependentPropertyGeneratorsForSharedPrivateLinkResource_STATUS_SignalR_SubResourceEmbedded(generators)
 	sharedPrivateLinkResource_STATUS_SignalR_SubResourceEmbeddedGenerator = gen.Struct(reflect.TypeOf(SharedPrivateLinkResource_STATUS_SignalR_SubResourceEmbedded{}), generators)
 
-	// The above call to gen.Struct() captures the map, so create a new one
-	generators = make(map[string]gopter.Gen)
-	AddIndependentPropertyGeneratorsForSharedPrivateLinkResource_STATUS_SignalR_SubResourceEmbedded(generators)
-	AddRelatedPropertyGeneratorsForSharedPrivateLinkResource_STATUS_SignalR_SubResourceEmbedded(generators)
-	sharedPrivateLinkResource_STATUS_SignalR_SubResourceEmbeddedGenerator = gen.Struct(reflect.TypeOf(SharedPrivateLinkResource_STATUS_SignalR_SubResourceEmbedded{}), generators)
-
 	return sharedPrivateLinkResource_STATUS_SignalR_SubResourceEmbeddedGenerator
 }
 
 // AddIndependentPropertyGeneratorsForSharedPrivateLinkResource_STATUS_SignalR_SubResourceEmbedded is a factory method for creating gopter generators
 func AddIndependentPropertyGeneratorsForSharedPrivateLinkResource_STATUS_SignalR_SubResourceEmbedded(gens map[string]gopter.Gen) {
 	gens["Id"] = gen.PtrOf(gen.AlphaString())
-}
-
-// AddRelatedPropertyGeneratorsForSharedPrivateLinkResource_STATUS_SignalR_SubResourceEmbedded is a factory method for creating gopter generators
-func AddRelatedPropertyGeneratorsForSharedPrivateLinkResource_STATUS_SignalR_SubResourceEmbedded(gens map[string]gopter.Gen) {
-	gens["SystemData"] = gen.PtrOf(SystemData_STATUSGenerator())
 }
 
 func Test_SignalRCorsSettings_WhenPropertiesConverted_RoundTripsWithoutLoss(t *testing.T) {
@@ -1544,7 +1515,7 @@ func RunPropertyAssignmentTestForSignalRCorsSettings(subject SignalRCorsSettings
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -1647,7 +1618,7 @@ func RunPropertyAssignmentTestForSignalRCorsSettings_STATUS(subject SignalRCorsS
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -1750,7 +1721,7 @@ func RunPropertyAssignmentTestForSignalRFeature(subject SignalRFeature) string {
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -1854,7 +1825,7 @@ func RunPropertyAssignmentTestForSignalRFeature_STATUS(subject SignalRFeature_ST
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -1959,7 +1930,7 @@ func RunPropertyAssignmentTestForSignalRNetworkACLs(subject SignalRNetworkACLs) 
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -2076,7 +2047,7 @@ func RunPropertyAssignmentTestForSignalRNetworkACLs_STATUS(subject SignalRNetwor
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -2194,7 +2165,7 @@ func RunPropertyAssignmentTestForSignalRTlsSettings(subject SignalRTlsSettings) 
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -2296,7 +2267,7 @@ func RunPropertyAssignmentTestForSignalRTlsSettings_STATUS(subject SignalRTlsSet
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -2399,7 +2370,7 @@ func RunPropertyAssignmentTestForSystemData_STATUS(subject SystemData_STATUS) st
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -2506,7 +2477,7 @@ func RunPropertyAssignmentTestForNetworkACL(subject NetworkACL) string {
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -2609,7 +2580,7 @@ func RunPropertyAssignmentTestForNetworkACL_STATUS(subject NetworkACL_STATUS) st
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -2712,7 +2683,7 @@ func RunPropertyAssignmentTestForPrivateEndpointACL(subject PrivateEndpointACL) 
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -2816,7 +2787,7 @@ func RunPropertyAssignmentTestForPrivateEndpointACL_STATUS(subject PrivateEndpoi
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -2921,7 +2892,7 @@ func RunPropertyAssignmentTestForResourceLogCategory(subject ResourceLogCategory
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -3025,7 +2996,7 @@ func RunPropertyAssignmentTestForResourceLogCategory_STATUS(subject ResourceLogC
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -3129,7 +3100,7 @@ func RunPropertyAssignmentTestForUpstreamTemplate(subject UpstreamTemplate) stri
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -3248,7 +3219,7 @@ func RunPropertyAssignmentTestForUpstreamTemplate_STATUS(subject UpstreamTemplat
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -3368,7 +3339,7 @@ func RunPropertyAssignmentTestForUserAssignedIdentityProperty_STATUS(subject Use
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -3472,7 +3443,7 @@ func RunPropertyAssignmentTestForUpstreamAuthSettings(subject UpstreamAuthSettin
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -3589,7 +3560,7 @@ func RunPropertyAssignmentTestForUpstreamAuthSettings_STATUS(subject UpstreamAut
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -3706,7 +3677,7 @@ func RunPropertyAssignmentTestForManagedIdentitySettings(subject ManagedIdentity
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -3809,7 +3780,7 @@ func RunPropertyAssignmentTestForManagedIdentitySettings_STATUS(subject ManagedI
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)

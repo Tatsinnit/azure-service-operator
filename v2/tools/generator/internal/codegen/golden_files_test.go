@@ -136,10 +136,11 @@ func NewTestCodeGenerator(
 	path string,
 	t *testing.T,
 	testConfig GoldenTestConfig,
-	genPipeline config.GenerationPipeline) (*CodeGenerator, error) {
+	genPipeline config.GenerationPipeline,
+) (*CodeGenerator, error) {
 	idFactory := astmodel.NewIdentifierFactory()
 	cfg := config.NewConfiguration()
-	cfg.GoModulePath = test.GoModulePrefix
+	cfg.SetGoModulePath(test.GoModulePrefix)
 
 	pipelineTarget, err := pipeline.TranslatePipelineToTarget(genPipeline)
 	if err != nil {
@@ -159,9 +160,6 @@ func NewTestCodeGenerator(
 			pipeline.CheckForAnyTypeStageID,
 			pipeline.CreateResourceExtensionsStageID,
 			pipeline.CreateTypesForBackwardCompatibilityID,
-			// TODO: Once the stage is enabled in the pipeline, we may need to remove it here for testing
-			// pipeline.InjectHubFunctionStageID,
-			// pipeline.ImplementConvertibleInterfaceStageId,
 			pipeline.ReportOnTypesAndVersionsStageID,
 			pipeline.ReportResourceVersionsStageID,
 			pipeline.ReportResourceStructureStageId)
@@ -177,11 +175,11 @@ func NewTestCodeGenerator(
 			codegen.RemoveStages(
 				pipeline.RemoveEmbeddedResourcesStageID,
 				pipeline.CollapseCrossGroupReferencesStageID,
-				pipeline.AddCrossResourceReferencesStageID)
+				pipeline.TransformCrossResourceReferencesStageID)
 
 			codegen.ReplaceStage(pipeline.StripUnreferencedTypeDefinitionsStageID, stripUnusedTypesPipelineStage())
 		} else {
-			codegen.ReplaceStage(pipeline.AddCrossResourceReferencesStageID, addCrossResourceReferencesForTest(idFactory))
+			codegen.ReplaceStage(pipeline.TransformCrossResourceReferencesStageID, addCrossResourceReferencesForTest(idFactory))
 		}
 	case config.GenerationPipelineCrossplane:
 		codegen.RemoveStages(
@@ -197,7 +195,7 @@ func NewTestCodeGenerator(
 		return nil, errors.Errorf("unknown pipeline kind %q", string(genPipeline))
 	}
 
-	codegen.ReplaceStage(pipeline.LoadSchemaIntoTypesStageID, loadTestSchemaIntoTypes(idFactory, cfg, path))
+	codegen.ReplaceStage(pipeline.LoadTypesStageID, loadTestSchemaIntoTypes(idFactory, cfg, path))
 	codegen.ReplaceStage(pipeline.ExportPackagesStageID, exportPackagesTestPipelineStage(t, testName))
 
 	if testConfig.InjectEmbeddedStruct {
@@ -216,10 +214,14 @@ func NewTestCodeGenerator(
 	return codegen, nil
 }
 
+// TODO: we still need to replace this with openapi instead of jsonschema
 func loadTestSchemaIntoTypes(
 	idFactory astmodel.IdentifierFactory,
 	configuration *config.Configuration,
-	path string) *pipeline.Stage {
+	path string,
+) *pipeline.Stage {
+	// TODO(matthchr): ???
+	// source := configuration.SchemaRoot
 
 	return pipeline.NewStage(
 		"loadTestSchema",
@@ -333,7 +335,7 @@ func stripUnusedTypesPipelineStage() *pipeline.Stage {
 // TODO: we have no way to give Swagger to the golden files tests currently.
 func addCrossResourceReferencesForTest(idFactory astmodel.IdentifierFactory) *pipeline.Stage {
 	return pipeline.NewStage(
-		pipeline.AddCrossResourceReferencesStageID,
+		pipeline.TransformCrossResourceReferencesStageID,
 		"Add cross resource references for test",
 		func(ctx context.Context, state *pipeline.State) (*pipeline.State, error) {
 			defs := make(astmodel.TypeDefinitionSet)

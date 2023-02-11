@@ -92,7 +92,7 @@ func RunPropertyAssignmentTestForWorkspace(subject Workspace) string {
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -195,7 +195,7 @@ func RunPropertyAssignmentTestForWorkspace_Spec(subject Workspace_Spec) string {
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -284,8 +284,8 @@ func AddIndependentPropertyGeneratorsForWorkspace_Spec(gens map[string]gopter.Ge
 		WorkspaceProperties_ProvisioningState_ProvisioningAccount,
 		WorkspaceProperties_ProvisioningState_Succeeded,
 		WorkspaceProperties_ProvisioningState_Updating))
-	gens["PublicNetworkAccessForIngestion"] = gen.PtrOf(gen.OneConstOf(WorkspaceProperties_PublicNetworkAccessForIngestion_Disabled, WorkspaceProperties_PublicNetworkAccessForIngestion_Enabled))
-	gens["PublicNetworkAccessForQuery"] = gen.PtrOf(gen.OneConstOf(WorkspaceProperties_PublicNetworkAccessForQuery_Disabled, WorkspaceProperties_PublicNetworkAccessForQuery_Enabled))
+	gens["PublicNetworkAccessForIngestion"] = gen.PtrOf(gen.OneConstOf(PublicNetworkAccessType_Disabled, PublicNetworkAccessType_Enabled))
+	gens["PublicNetworkAccessForQuery"] = gen.PtrOf(gen.OneConstOf(PublicNetworkAccessType_Disabled, PublicNetworkAccessType_Enabled))
 	gens["RetentionInDays"] = gen.PtrOf(gen.Int())
 	gens["Tags"] = gen.MapOf(gen.AlphaString(), gen.AlphaString())
 }
@@ -328,7 +328,7 @@ func RunPropertyAssignmentTestForWorkspace_STATUS(subject Workspace_STATUS) stri
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -467,7 +467,7 @@ func RunPropertyAssignmentTestForPrivateLinkScopedResource_STATUS(subject Privat
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -571,7 +571,7 @@ func RunPropertyAssignmentTestForWorkspaceCapping(subject WorkspaceCapping) stri
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -673,7 +673,7 @@ func RunPropertyAssignmentTestForWorkspaceCapping_STATUS(subject WorkspaceCappin
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -784,7 +784,7 @@ func RunPropertyAssignmentTestForWorkspaceFeatures(subject WorkspaceFeatures) st
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -889,7 +889,7 @@ func RunPropertyAssignmentTestForWorkspaceFeatures_STATUS(subject WorkspaceFeatu
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -996,7 +996,7 @@ func RunPropertyAssignmentTestForWorkspaceSku(subject WorkspaceSku) string {
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
@@ -1064,7 +1064,15 @@ func WorkspaceSkuGenerator() gopter.Gen {
 
 // AddIndependentPropertyGeneratorsForWorkspaceSku is a factory method for creating gopter generators
 func AddIndependentPropertyGeneratorsForWorkspaceSku(gens map[string]gopter.Gen) {
-	gens["CapacityReservationLevel"] = gen.PtrOf(gen.Int())
+	gens["CapacityReservationLevel"] = gen.PtrOf(gen.OneConstOf(
+		WorkspaceSku_CapacityReservationLevel_100,
+		WorkspaceSku_CapacityReservationLevel_1000,
+		WorkspaceSku_CapacityReservationLevel_200,
+		WorkspaceSku_CapacityReservationLevel_2000,
+		WorkspaceSku_CapacityReservationLevel_300,
+		WorkspaceSku_CapacityReservationLevel_400,
+		WorkspaceSku_CapacityReservationLevel_500,
+		WorkspaceSku_CapacityReservationLevel_5000))
 	gens["Name"] = gen.PtrOf(gen.OneConstOf(
 		WorkspaceSku_Name_CapacityReservation,
 		WorkspaceSku_Name_Free,
@@ -1107,7 +1115,7 @@ func RunPropertyAssignmentTestForWorkspaceSku_STATUS(subject WorkspaceSku_STATUS
 	}
 
 	// Check for a match
-	match := cmp.Equal(subject, actual)
+	match := cmp.Equal(subject, actual, cmpopts.EquateEmpty())
 	if !match {
 		actualFmt := pretty.Sprint(actual)
 		subjectFmt := pretty.Sprint(subject)
