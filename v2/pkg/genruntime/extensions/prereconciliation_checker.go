@@ -7,13 +7,16 @@ package extensions
 
 import (
 	"context"
-	"github.com/Azure/azure-service-operator/v2/internal/genericarmclient"
+
 	. "github.com/Azure/azure-service-operator/v2/internal/logging"
-	"github.com/Azure/azure-service-operator/v2/internal/util/kubeclient"
+
+	"github.com/go-logr/logr"
+	"github.com/rotisserie/eris"
+
+	"github.com/Azure/azure-service-operator/v2/internal/genericarmclient"
+	"github.com/Azure/azure-service-operator/v2/internal/resolver"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
-	"github.com/go-logr/logr"
-	"github.com/pkg/errors"
 )
 
 // PreReconciliationChecker is implemented by resources that want to do extra checks before proceeding with
@@ -33,7 +36,7 @@ type PreReconciliationChecker interface {
 		ctx context.Context,
 		obj genruntime.MetaObject,
 		owner genruntime.MetaObject,
-		kubeClient kubeclient.Client,
+		resourceResolver *resolver.Resolver,
 		armClient *genericarmclient.GenericClient,
 		log logr.Logger,
 		next PreReconcileCheckFunc,
@@ -44,7 +47,7 @@ type PreReconcileCheckFunc func(
 	ctx context.Context,
 	obj genruntime.MetaObject,
 	owner genruntime.MetaObject,
-	kubeClient kubeclient.Client,
+	resourceResolver *resolver.Resolver,
 	armClient *genericarmclient.GenericClient,
 	log logr.Logger,
 ) (PreReconcileCheckResult, error)
@@ -65,7 +68,7 @@ func ProceedWithReconcile() PreReconcileCheckResult {
 }
 
 // BlockReconcile indicates reconciliation of a resource is currently blocked by returning a PreReconcileCheckResult
-// with action `Block`.
+// with action `Block`. The reconciliation will automatically be retried after a short delay.
 // reason is an explanatory reason to show to the user via a warning condition on the resource.
 func BlockReconcile(reason string) PreReconcileCheckResult {
 	return PreReconcileCheckResult{
@@ -77,7 +80,7 @@ func BlockReconcile(reason string) PreReconcileCheckResult {
 }
 
 // PostponeReconcile indicates reconciliation of a resource is not currently required by returning a
-// PreReconcileCheckResult with action `Postpone`.
+// PreReconcileCheckResult with action `Postpone`. Reconciliation will not be retried until the usual scheduled check.
 func PostponeReconcile() PreReconcileCheckResult {
 	return PreReconcileCheckResult{
 		action:   preReconcileCheckResultTypePostpone,
@@ -101,7 +104,7 @@ func (r PreReconcileCheckResult) Message() string {
 // CreateConditionError returns an error that can be used to set a condition on the resource.
 func (r PreReconcileCheckResult) CreateConditionError() error {
 	return conditions.NewReadyConditionImpactingError(
-		errors.New(r.message),
+		eris.New(r.message),
 		r.severity,
 		r.reason)
 }
@@ -132,13 +135,13 @@ func CreatePreReconciliationChecker(
 		ctx context.Context,
 		obj genruntime.MetaObject,
 		owner genruntime.MetaObject,
-		kubeClient kubeclient.Client,
+		resourceResolver *resolver.Resolver,
 		armClient *genericarmclient.GenericClient,
 		log logr.Logger,
 	) (PreReconcileCheckResult, error) {
 		log.V(Status).Info("Extension pre-reconcile check running")
 
-		result, err := impl.PreReconcileCheck(ctx, obj, owner, kubeClient, armClient, log, alwaysReconcile)
+		result, err := impl.PreReconcileCheck(ctx, obj, owner, resourceResolver, armClient, log, alwaysReconcile)
 		if err != nil {
 			log.V(Status).Info(
 				"Extension pre-reconcile check failed",
@@ -164,7 +167,7 @@ func alwaysReconcile(
 	_ context.Context,
 	_ genruntime.MetaObject,
 	_ genruntime.MetaObject,
-	_ kubeclient.Client,
+	_ *resolver.Resolver,
 	_ *genericarmclient.GenericClient,
 	_ logr.Logger,
 ) (PreReconcileCheckResult, error) {

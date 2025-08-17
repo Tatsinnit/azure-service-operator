@@ -4,10 +4,10 @@
 package customizations
 
 import (
-	alpha20181130 "github.com/Azure/azure-service-operator/v2/api/managedidentity/v1alpha1api20181130"
-	alpha20181130s "github.com/Azure/azure-service-operator/v2/api/managedidentity/v1alpha1api20181130storage"
-	v20181130 "github.com/Azure/azure-service-operator/v2/api/managedidentity/v1beta20181130"
-	v20181130s "github.com/Azure/azure-service-operator/v2/api/managedidentity/v1beta20181130storage"
+	v20181130 "github.com/Azure/azure-service-operator/v2/api/managedidentity/v1api20181130"
+	v20181130s "github.com/Azure/azure-service-operator/v2/api/managedidentity/v1api20181130/storage"
+	v20230131 "github.com/Azure/azure-service-operator/v2/api/managedidentity/v1api20230131"
+	v20230131s "github.com/Azure/azure-service-operator/v2/api/managedidentity/v1api20230131/storage"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
 
@@ -17,8 +17,8 @@ type UserAssignedIdentityExtension struct {
 // GetExtendedResources Returns the KubernetesResource slice for Resource versions
 func (extension *UserAssignedIdentityExtension) GetExtendedResources() []genruntime.KubernetesResource {
 	return []genruntime.KubernetesResource{
-		&alpha20181130.UserAssignedIdentity{},
-		&alpha20181130s.UserAssignedIdentity{},
 		&v20181130.UserAssignedIdentity{},
-		&v20181130s.UserAssignedIdentity{}}
+		&v20181130s.UserAssignedIdentity{},
+		&v20230131.UserAssignedIdentity{},
+		&v20230131s.UserAssignedIdentity{}}
 }

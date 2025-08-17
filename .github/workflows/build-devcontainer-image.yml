@@ -24,19 +24,22 @@ jobs:
       packages: write
       contents: read
 
+    # Only run this scheduled job on the main repo, it can't work elsewhere
+    if: ${{ github.repository == 'Azure/azure-service-operator' }}
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # pinned to 4.1.7
 
       - name: Log in to GitHub Docker Registry
-        uses: docker/login-action@v1
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # pinned to v3.3.0
         with:
           registry: docker.pkg.github.com # ghcr.io not yet enabled for Azure org
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build & push Devcontainer image 
-        uses: docker/build-push-action@v2
+        uses: docker/build-push-action@v6
         with:
           context: .devcontainer
           push: true

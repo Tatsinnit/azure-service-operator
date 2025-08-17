@@ -7,6 +7,7 @@ package functions
 
 import (
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
@@ -23,21 +24,31 @@ func createGetStatusFunction(
 	f *ObjectFunction,
 	genContext *astmodel.CodeGenerationContext,
 	receiver astmodel.TypeName,
-	_ string) *dst.FuncDecl {
-	receiverIdent := f.IdFactory().CreateReceiver(receiver.Name())
+	_ string,
+) (*dst.FuncDecl, error) {
+	receiverIdent := f.IDFactory().CreateReceiver(receiver.Name())
 	receiverType := astmodel.NewOptionalType(receiver)
+	receiverTypeExpr, err := receiverType.AsTypeExpr(genContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating receiver type expression")
+	}
 
 	fn := &astbuilder.FuncDetails{
 		ReceiverIdent: receiverIdent,
-		ReceiverType:  receiverType.AsType(genContext),
+		ReceiverType:  receiverTypeExpr,
 		Name:          "GetStatus",
 		Body: astbuilder.Statements(
 			astbuilder.Returns(
 				astbuilder.AddrOf(astbuilder.Selector(dst.NewIdent(receiverIdent), "Status")))),
 	}
 
-	fn.AddReturn(astmodel.ConvertibleStatusInterfaceType.AsType(genContext))
+	convertibleStatusInterfaceExpr, err := astmodel.ConvertibleStatusInterfaceType.AsTypeExpr(genContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating type expression for ConvertibleStatusInterface")
+	}
+
+	fn.AddReturn(convertibleStatusInterfaceExpr)
 	fn.AddComments("returns the status of this resource")
 
-	return fn.DefineFunc()
+	return fn.DefineFunc(), nil
 }

@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pkg/errors"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/internal/genericarmclient"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
+	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/core"
 )
 
 type ResourceHierarchyRoot string
@@ -21,12 +23,15 @@ const (
 	ResourceHierarchyRootResourceGroup = ResourceHierarchyRoot("ResourceGroup")
 	ResourceHierarchyRootSubscription  = ResourceHierarchyRoot("Subscription")
 	ResourceHierarchyRootTenant        = ResourceHierarchyRoot("Tenant")
+	ResourceHierarchyRootARMID         = ResourceHierarchyRoot("ARMID")
 	ResourceHierarchyRootOverride      = ResourceHierarchyRoot("Override")
 )
 
 // If we wanted to type-assert we'd have to solve some circular dependency problems... for now this is ok.
-const ResourceGroupKind = "ResourceGroup"
-const ResourceGroupGroup = "resources.azure.com"
+const (
+	ResourceGroupKind  = "ResourceGroup"
+	ResourceGroupGroup = "resources.azure.com"
+)
 
 type ResourceHierarchy []genruntime.ARMMetaObject
 
@@ -34,8 +39,22 @@ type ResourceHierarchy []genruntime.ARMMetaObject
 // in a resource group.
 func (h ResourceHierarchy) ResourceGroup() (string, error) {
 	rootKind := h.rootKind(h)
+	if rootKind == ResourceHierarchyRootARMID {
+		armIDStr := h[0].Owner().ARMID
+		armID, err := arm.ParseResourceID(armIDStr)
+		if err != nil {
+			return "", err
+		}
+
+		if armID.ResourceGroupName == "" {
+			return "", eris.Errorf("not rooted by a resource group: %s", armIDStr)
+		}
+
+		return armID.ResourceGroupName, nil
+	}
+
 	if rootKind != ResourceHierarchyRootResourceGroup {
-		return "", errors.Errorf("not rooted by a resource group: %s", rootKind)
+		return "", eris.Errorf("not rooted by a resource group: %s", rootKind)
 	}
 
 	resourceGroup := h[0]
@@ -46,14 +65,16 @@ func (h ResourceHierarchy) ResourceGroup() (string, error) {
 // if the root is not a subscription.
 func (h ResourceHierarchy) Location() (string, error) {
 	rootKind := h.rootKind(h)
+	// We don't support ARM ID rooted for this method because it doesn't really make sense.
+	// If there's a need for it in the future we can add it
 	if rootKind != ResourceHierarchyRootSubscription {
-		return "", errors.Errorf("not rooted in a subscription: %s", rootKind)
+		return "", eris.Errorf("not rooted in a subscription: %s", rootKind)
 	}
 
 	// There's an assumption here that the root resource has a location
 	locatable, ok := h[0].(genruntime.LocatableResource)
 	if !ok {
-		return "", errors.Errorf("root does not implement LocatableResource: %T", h[0])
+		return "", eris.Errorf("root does not implement LocatableResource: %T", h[0])
 	}
 
 	return locatable.Location(), nil
@@ -80,19 +101,31 @@ func (h ResourceHierarchy) fullyQualifiedARMIDImpl(subscriptionID string, origin
 	lastResource := h[len(h)-1]
 	lastResourceScope := lastResource.GetResourceScope()
 
+	// Under normal circumstances, this can't happen - but if there's a problem with the
+	// webhooks it is possible. We can't create a valid ARM ID without an AzureName, so we fail here.
+	if lastResource.AzureName() == "" {
+		return "", eris.Errorf("resource has empty AzureName, cannot create fully qualified ARM ID")
+	}
+
 	if lastResourceScope == genruntime.ResourceScopeExtension {
-		hierarchy := h[:len(h)-1]
-		parentARMID, err := hierarchy.fullyQualifiedARMIDImpl(subscriptionID, h)
-		if err != nil {
-			return "", err
+		var parentARMID string
+		if lastResource.Owner().IsDirectARMReference() {
+			parentARMID = lastResource.Owner().ARMID
+		} else {
+			hierarchy := h[:len(h)-1]
+			var err error
+			parentARMID, err = hierarchy.fullyQualifiedARMIDImpl(subscriptionID, h)
+			if err != nil {
+				return "", err
+			}
 		}
 
-		provider, types, err := getResourceTypeAndProvider(lastResource)
+		provider, types, err := genruntime.GetResourceTypeAndProvider(lastResource)
 		if err != nil {
 			return "", err
 		}
 		if len(types) != 1 {
-			return "", errors.Errorf("extension resource cannot have more than one resource type, but had type: %s", lastResource.GetType())
+			return "", eris.Errorf("extension resource cannot have more than one resource type, but had type: %s", lastResource.GetType())
 		}
 
 		return fmt.Sprintf("%s/providers/%s/%s/%s", parentARMID, provider, types[0], lastResource.AzureName()), nil
@@ -112,14 +145,32 @@ func (h ResourceHierarchy) fullyQualifiedARMIDImpl(subscriptionID string, origin
 		// The only resource we actually care about for figuring out resource types is the
 		// most derived resource
 		res := h[len(h)-1]
-		provider, resourceTypes, err := getResourceTypeAndProvider(res)
+		provider, resourceTypes, err := genruntime.GetResourceTypeAndProvider(res)
 		if err != nil {
 			return "", err
 		}
 
+		root := h[0]
+
+		err = genruntime.VerifyResourceOwnerARMID(root)
+		if err != nil {
+			return "", err
+		}
+
+		// Safe to do it this way, Claimer makes sure the owner exists and is Ready and will always have an armId annotation before we reach here.
+		ownerARMID, err := genruntime.GetAndParseResourceID(root)
+		if err != nil {
+			return "", err
+		}
+
+		// Confirm that the subscription ID the user specified matches the subscription ID we're using from our credential
+		if ok := genruntime.CheckARMIDMatchesSubscription(subscriptionID, ownerARMID); !ok {
+			return "", core.NewSubscriptionMismatchError(ownerARMID.SubscriptionID, subscriptionID)
+		}
+
 		// Ensure that we have the same number of names and types
 		if len(remainingNames) != len(resourceTypes) {
-			return "", errors.Errorf(
+			return "", eris.Errorf(
 				"could not create fully qualified ARM ID, had %d azureNames and %d resourceTypes. azureNames: %+q resourceTypes: %+q",
 				len(remainingNames),
 				len(resourceTypes),
@@ -134,14 +185,14 @@ func (h ResourceHierarchy) fullyQualifiedARMIDImpl(subscriptionID string, origin
 		// The only resource we actually care about for figuring out resource types is the
 		// most derived resource
 		res := h[len(h)-1]
-		provider, resourceTypes, err := getResourceTypeAndProvider(res)
+		provider, resourceTypes, err := genruntime.GetResourceTypeAndProvider(res)
 		if err != nil {
 			return "", err
 		}
 
 		// Ensure that we have the same number of names and types
 		if len(azureNames) != len(resourceTypes) {
-			return "", errors.Errorf(
+			return "", eris.Errorf(
 				"could not create fully qualified ARM ID, had %d azureNames and %d resourceTypes. azureNames: %+q resourceTypes: %+q",
 				len(azureNames),
 				len(resourceTypes),
@@ -151,14 +202,68 @@ func (h ResourceHierarchy) fullyQualifiedARMIDImpl(subscriptionID string, origin
 		// Join them together
 		interleaved := genruntime.InterleaveStrSlice(resourceTypes, azureNames)
 		return genericarmclient.MakeTenantScopeARMID(provider, interleaved...)
+	case ResourceHierarchyRootARMID:
+		// TODO: Possibly refactor this huge method into sub-functions?
+		// The only resource we actually care about for figuring out resource types is the
+		// most derived resource
+		res := h[len(h)-1]
+		provider, resourceTypes, err := genruntime.GetResourceTypeAndProvider(res)
+		if err != nil {
+			return "", err
+		}
+
+		// We also need the ARMID from the root resource
+		root := h[0]
+		armIDStr := root.Owner().ARMID // Safe to do this without nil-guards because we already checked elsewhere
+
+		// Trim the trailing slash of the ARM ID if it's there (we'll add it back later)
+		armIDStr = strings.TrimRight(armIDStr, "/")
+
+		err = genruntime.VerifyResourceOwnerARMID(root)
+		if err != nil {
+			return "", err
+		}
+		// We used to have a check here ensuring that the owner ARM ID matched the referenced credential/secret
+		// ARM ID. That check was removed as with ARM ID-based owners the subscription the resource is being
+		// deployed to is pretty obvious (it's directly in the ID) so we felt the chances of mistakenly deploying to
+		// an incorrect subscription with kube-based ownership.
+
+		// Rooting to an ARM ID means that some of the resourceTypes may not actually be included explicitly in our
+		// hierarchy (because they're instead in the ARM ID itself). We filter these out of resourceTypes by
+		// removing types that aren't included in the hierarchy.
+		_, rootResourceTypes, err := genruntime.GetResourceTypeAndProvider(root)
+		if err != nil {
+			return "", err
+		}
+		resourceTypesIncludedInARMID := rootResourceTypes[:len(rootResourceTypes)-1]
+		resourceTypes = resourceTypes[len(resourceTypesIncludedInARMID):]
+
+		// Ensure that we have the same number of names and types
+		if len(azureNames) != len(resourceTypes) {
+			return "", eris.Errorf("could not create fully qualified ARM ID, had %d azureNames and %d resourceTypes. azureNames: %+q resourceTypes: %+q",
+				len(azureNames),
+				len(resourceTypes),
+				azureNames,
+				resourceTypes)
+		}
+
+		interleaved := genruntime.InterleaveStrSlice(resourceTypes, azureNames)
+		suffix := strings.Join(interleaved, "/")
+		// If the root ARM ID already contains the provider ID, we can just append the pairs.
+		// If it doesn't, we need to build a full ARM ID by appending the provider as well.
+		if strings.Contains(strings.ToLower(armIDStr), strings.ToLower(provider)) {
+			return fmt.Sprintf("%s/%s", armIDStr, suffix), nil
+		} else {
+			return fmt.Sprintf("%s/providers/%s/%s", armIDStr, provider, suffix), nil
+		}
 	case ResourceHierarchyRootOverride:
 		// Find the resource that has the override and start building the ID from there:
 		idFragment, idx := h.getChildResourceIDOverride()
 		if idx == -1 {
-			return "", errors.Errorf("Resource had root kind %q, but had no child resource ID override", rootKind)
+			return "", eris.Errorf("resource had root kind %q, but had no child resource ID override", rootKind)
 		}
 		if idx != 0 {
-			return "", errors.Errorf("Resource had root kind %q, but child resource override was not at index 0. Instead at index %d", rootKind, idx)
+			return "", eris.Errorf("resource had root kind %q, but child resource override was not at index 0. Instead at index %d", rootKind, idx)
 		}
 		return idFragment, nil
 		// TODO: if we actually need to support this for hierarchies, we could do something like the below
@@ -169,17 +274,18 @@ func (h ResourceHierarchy) fullyQualifiedARMIDImpl(subscriptionID string, origin
 		// append them together and tack them on to the idFragment
 
 	default:
-		return "", errors.Errorf("unknown root kind %q", rootKind)
+		return "", eris.Errorf("unknown root kind %q", rootKind)
 	}
 }
 
 // rootKind returns the ResourceHierarchyRoot type of the hierarchy.
-// There are 5 cases here:
+// There are 6 cases here:
 //  1. The hierarchy is comprised solely of a resource group. This is subscription rooted.
 //  2. The hierarchy has multiple entries and roots up to a resource group. This is Resource Group rooted.
 //  3. The hierarchy has multiple entries and doesn't root up to a resource group. This is subscription rooted.
 //  4. The hierarchy roots up to a tenant scope resource. This is tenant rooted.
-//  5. The hierarchy contains a resource that sets genruntime.ChildResourceIDOverrideAnnotation. This is
+//  5. The hierarchy roots up to a resource whose Owner() is an ARMID. This is ARMID rooted.
+//  6. The hierarchy contains a resource that sets genruntime.ChildResourceIDOverrideAnnotation. This is
 //     "Override" rooted.
 func (h ResourceHierarchy) rootKind(originalHierarchy ResourceHierarchy) ResourceHierarchyRoot {
 	if len(h) == 0 {
@@ -193,7 +299,15 @@ func (h ResourceHierarchy) rootKind(originalHierarchy ResourceHierarchy) Resourc
 		return ResourceHierarchyRootOverride
 	}
 
-	scope := h[0].GetResourceScope()
+	root := h[0]
+
+	// Check if the root resource is owned by an ARM ID
+	rootOwner := root.Owner()
+	if rootOwner != nil && rootOwner.IsDirectARMReference() {
+		return ResourceHierarchyRootARMID
+	}
+
+	scope := root.GetResourceScope()
 	if scope == genruntime.ResourceScopeTenant {
 		return ResourceHierarchyRootTenant
 	}
@@ -216,18 +330,6 @@ func (h ResourceHierarchy) getAzureNames() []string {
 	}
 
 	return azureNames
-}
-
-func getResourceTypeAndProvider(res genruntime.ARMMetaObject) (string, []string, error) {
-	rawType := res.GetType()
-
-	split := strings.Split(rawType, "/")
-	if len(split) <= 1 {
-		return "", nil, errors.Errorf("unexpected resource type format: %q", rawType)
-	}
-
-	// The first item is always the provider
-	return split[0], split[1:], nil
 }
 
 // getChildResourceIDOverride returns the child resource ID override and the index at which the override was specified, or

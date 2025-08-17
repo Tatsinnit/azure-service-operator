@@ -11,14 +11,14 @@ import (
 
 	gomegaformat "github.com/onsi/gomega/format"
 	"github.com/onsi/gomega/types"
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func actualAsObj(actual interface{}) (client.Object, error) {
 	obj, ok := actual.(client.Object)
 	if !ok {
-		return nil, errors.Errorf("expected client.Object, was: %T", actual)
+		return nil, eris.Errorf("expected client.Object, was: %T", actual)
 	}
 
 	return obj, nil
@@ -34,7 +34,6 @@ type BeDeletedMatcher struct {
 var _ types.GomegaMatcher = &BeDeletedMatcher{}
 
 func (m *BeDeletedMatcher) Match(actual interface{}) (bool, error) {
-
 	if actual == nil {
 		return false, nil
 	}

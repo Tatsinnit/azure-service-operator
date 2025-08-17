@@ -8,20 +8,19 @@ package config_test
 import (
 	"testing"
 
-	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/config"
-	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/test"
-
 	. "github.com/onsi/gomega"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
+	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/config"
+	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/test"
 )
 
 // Shared test values -- note that these are used by type_transformer_test.go too
 var (
-	person2020  = astmodel.MakeTypeName(test.MakeLocalPackageReference("party", "2020-01-01"), "person")
-	post2019    = astmodel.MakeTypeName(test.MakeLocalPackageReference("thing", "2019-01-01"), "post")
-	student2019 = astmodel.MakeTypeName(test.MakeLocalPackageReference("role", "2019-01-01"), "student")
-	tutor2019   = astmodel.MakeTypeName(test.MakeLocalPackageReference("role", "2019-01-01"), "tutor")
+	person2020  = astmodel.MakeInternalTypeName(test.MakeLocalPackageReference("party", "2020-01-01"), "person")
+	post2019    = astmodel.MakeInternalTypeName(test.MakeLocalPackageReference("thing", "2019-01-01"), "post")
+	student2019 = astmodel.MakeInternalTypeName(test.MakeLocalPackageReference("role", "2019-01-01"), "student")
+	tutor2019   = astmodel.MakeInternalTypeName(test.MakeLocalPackageReference("role", "2019-01-01"), "tutor")
 )
 
 func Test_FilterByGroup_CorrectlySelectsStructs(t *testing.T) {
@@ -31,8 +30,6 @@ func Test_FilterByGroup_CorrectlySelectsStructs(t *testing.T) {
 	filter := config.TypeMatcher{
 		Group: config.NewFieldMatcher("role"),
 	}
-	err := filter.Initialize()
-	g.Expect(err).To(BeNil())
 
 	// Roles should be selected
 	g.Expect(filter.AppliesToType(student2019)).To(BeTrue())
@@ -50,8 +47,6 @@ func Test_FilterByVersion_CorrectlySelectsStructs(t *testing.T) {
 	filter := config.TypeMatcher{
 		Version: config.NewFieldMatcher("v2019*"),
 	}
-	err := filter.Initialize()
-	g.Expect(err).To(BeNil())
 
 	// Version from 2019 should be selected
 	g.Expect(filter.AppliesToType(post2019)).To(BeTrue())
@@ -68,8 +63,6 @@ func Test_FilterByName_CorrectlySelectsStructs(t *testing.T) {
 	filter := config.TypeMatcher{
 		Name: config.NewFieldMatcher("p*"),
 	}
-	err := filter.Initialize()
-	g.Expect(err).To(BeNil())
 
 	// Name starts with "p" should be selected
 	g.Expect(filter.AppliesToType(person2020)).To(BeTrue())
@@ -87,8 +80,6 @@ func Test_FilterByMultipleConditions_CorrectlySelectsStructs(t *testing.T) {
 		Name:    config.NewFieldMatcher("p*"),
 		Version: config.NewFieldMatcher("v2019*"),
 	}
-	err := filter.Initialize()
-	g.Expect(err).To(BeNil())
 
 	// Version not selected by filter
 	g.Expect(filter.AppliesToType(person2020)).To(BeFalse())
@@ -108,8 +99,6 @@ func Test_FiltersAreCaseInsensitive(t *testing.T) {
 		Group: config.NewFieldMatcher("ROLE"),
 		Name:  config.NewFieldMatcher("TuToR"),
 	}
-	err := filter.Initialize()
-	g.Expect(err).To(BeNil())
 
 	// Tutor
 	g.Expect(filter.AppliesToType(tutor2019)).To(BeTrue())
@@ -127,8 +116,6 @@ func Test_FilterByMultipleWildcards_CorrectlySelectsStructs(t *testing.T) {
 	filter := config.TypeMatcher{
 		Name: config.NewFieldMatcher("p*;*t"),
 	}
-	err := filter.Initialize()
-	g.Expect(err).To(BeNil())
 
 	// Selected
 	g.Expect(filter.AppliesToType(person2020)).To(BeTrue())

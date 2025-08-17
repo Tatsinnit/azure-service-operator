@@ -5,19 +5,19 @@
 
 package astmodel
 
-import "github.com/pkg/errors"
+import "github.com/rotisserie/eris"
 
 // PropertyInjector is a utility for injecting property definitions into resources and objects
 type PropertyInjector struct {
 	// visitor is used to do the actual injection
-	visitor TypeVisitor
+	visitor TypeVisitor[*PropertyDefinition]
 }
 
 // NewPropertyInjector creates a new property injector for modifying resources and objects
 func NewPropertyInjector() *PropertyInjector {
 	result := &PropertyInjector{}
 
-	result.visitor = TypeVisitorBuilder{
+	result.visitor = TypeVisitorBuilder[*PropertyDefinition]{
 		VisitObjectType: result.injectPropertyIntoObject,
 	}.Build()
 
@@ -28,7 +28,7 @@ func NewPropertyInjector() *PropertyInjector {
 func (pi *PropertyInjector) Inject(def TypeDefinition, prop *PropertyDefinition) (TypeDefinition, error) {
 	result, err := pi.visitor.VisitDefinition(def, prop)
 	if err != nil {
-		return TypeDefinition{}, errors.Wrapf(err, "failed to inject property %q into %q", prop.PropertyName(), def.Name())
+		return TypeDefinition{}, eris.Wrapf(err, "failed to inject property %q into %q", prop.PropertyName(), def.Name())
 	}
 
 	return result, nil
@@ -36,11 +36,11 @@ func (pi *PropertyInjector) Inject(def TypeDefinition, prop *PropertyDefinition)
 
 // injectPropertyIntoObject takes the property provided as a context and includes it on the provided object type
 func (pi *PropertyInjector) injectPropertyIntoObject(
-	_ *TypeVisitor, ot *ObjectType, ctx interface{}) (Type, error) {
-	prop := ctx.(*PropertyDefinition)
+	_ *TypeVisitor[*PropertyDefinition], ot *ObjectType, prop *PropertyDefinition,
+) (Type, error) {
 	// Ensure that we don't already have a property with the same name
 	if _, ok := ot.Property(prop.PropertyName()); ok {
-		return nil, errors.Errorf("already has property named %q", prop.PropertyName())
+		return nil, eris.Errorf("already has property named %q", prop.PropertyName())
 	}
 
 	return ot.WithProperty(prop), nil

@@ -4,12 +4,10 @@
 package customizations
 
 import (
-	alpha20201201 "github.com/Azure/azure-service-operator/v2/api/compute/v1alpha1api20201201"
-	alpha20201201s "github.com/Azure/azure-service-operator/v2/api/compute/v1alpha1api20201201storage"
-	v20201201 "github.com/Azure/azure-service-operator/v2/api/compute/v1beta20201201"
-	v20201201s "github.com/Azure/azure-service-operator/v2/api/compute/v1beta20201201storage"
-	v20220301 "github.com/Azure/azure-service-operator/v2/api/compute/v1beta20220301"
-	v20220301s "github.com/Azure/azure-service-operator/v2/api/compute/v1beta20220301storage"
+	v20201201 "github.com/Azure/azure-service-operator/v2/api/compute/v1api20201201"
+	v20201201s "github.com/Azure/azure-service-operator/v2/api/compute/v1api20201201/storage"
+	v20220301 "github.com/Azure/azure-service-operator/v2/api/compute/v1api20220301"
+	v20220301s "github.com/Azure/azure-service-operator/v2/api/compute/v1api20220301/storage"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
 
@@ -19,8 +17,6 @@ type VirtualMachineExtension struct {
 // GetExtendedResources Returns the KubernetesResource slice for Resource versions
 func (extension *VirtualMachineExtension) GetExtendedResources() []genruntime.KubernetesResource {
 	return []genruntime.KubernetesResource{
-		&alpha20201201.VirtualMachine{},
-		&alpha20201201s.VirtualMachine{},
 		&v20201201.VirtualMachine{},
 		&v20201201s.VirtualMachine{},
 		&v20220301.VirtualMachine{},

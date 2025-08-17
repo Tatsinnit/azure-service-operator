@@ -9,40 +9,43 @@ import (
 	"context"
 	"strings"
 
-	"github.com/pkg/errors"
-	"k8s.io/klog/v2"
+	"github.com/go-logr/logr"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
 
-func FlattenProperties() *Stage {
-	return NewLegacyStage("flattenProperties", "Apply flattening to properties marked for flattening", applyPropertyFlattening)
+const FlattenPropertiesStageID = "flattenProperties"
+
+func FlattenProperties(log logr.Logger) *Stage {
+	return NewStage(
+		FlattenPropertiesStageID,
+		"Apply flattening to properties marked for flattening",
+		func(ctx context.Context, state *State) (*State, error) {
+			defs := state.Definitions()
+			visitor := makeFlatteningVisitor(defs, log)
+
+			result := make(astmodel.TypeDefinitionSet)
+			for name, def := range defs {
+				newDef, err := visitor.VisitDefinition(def, name)
+				if err != nil {
+					return nil, err
+				}
+
+				result.Add(newDef)
+			}
+
+			return state.WithDefinitions(result), nil
+		})
 }
 
-func applyPropertyFlattening(
-	ctx context.Context,
-	defs astmodel.TypeDefinitionSet,
-) (astmodel.TypeDefinitionSet, error) {
-	visitor := makeFlatteningVisitor(defs)
-
-	result := make(astmodel.TypeDefinitionSet)
-	for name, def := range defs {
-		newDef, err := visitor.VisitDefinition(def, name)
-		if err != nil {
-			return nil, err
-		}
-
-		result.Add(newDef)
-	}
-
-	return result, nil
-}
-
-func makeFlatteningVisitor(defs astmodel.TypeDefinitionSet) astmodel.TypeVisitor {
-	return astmodel.TypeVisitorBuilder{
-		VisitObjectType: func(this *astmodel.TypeVisitor, it *astmodel.ObjectType, ctx interface{}) (astmodel.Type, error) {
-			name := ctx.(astmodel.TypeName)
-
+func makeFlatteningVisitor(defs astmodel.TypeDefinitionSet, log logr.Logger) astmodel.TypeVisitor[astmodel.TypeName] {
+	return astmodel.TypeVisitorBuilder[astmodel.TypeName]{
+		VisitObjectType: func(
+			this *astmodel.TypeVisitor[astmodel.TypeName],
+			it *astmodel.ObjectType,
+			ctx astmodel.TypeName,
+		) (astmodel.Type, error) {
 			newIt, err := astmodel.IdentityVisitOfObjectType(this, it, ctx)
 			if err != nil {
 				return nil, err
@@ -50,17 +53,13 @@ func makeFlatteningVisitor(defs astmodel.TypeDefinitionSet) astmodel.TypeVisitor
 
 			it = newIt.(*astmodel.ObjectType)
 
-			newProps, err := collectAndFlattenProperties(name, it, defs)
+			newProps, err := collectAndFlattenProperties(ctx, it, defs, log)
 			if err != nil {
 				return nil, err
 			}
 
 			// fix any colliding names:
 			newProps = fixCollisions(newProps)
-
-			if len(newProps) != it.Properties().Len() {
-				klog.V(4).Infof("Flattened properties in %s", name)
-			}
 
 			result := it.WithoutProperties().WithProperties(newProps...)
 
@@ -128,8 +127,8 @@ func fixCollisions(props []*astmodel.PropertyDefinition) []*astmodel.PropertyDef
 
 				// disambiguate by prefixing with properties
 				newName := astmodel.PropertyName(strings.Join(stringNames, "") + string(p.PropertyName()))
-				newJsonName := strings.ToLower(strings.Join(stringNames, "_") + string(p.PropertyName()))
-				p = p.WithName(newName).WithJsonName(newJsonName)
+				newJSONName := strings.ToLower(strings.Join(stringNames, "_") + string(p.PropertyName()))
+				p = p.WithName(newName).WithJSONName(newJSONName)
 			}
 		}
 
@@ -144,6 +143,7 @@ func collectAndFlattenProperties(
 	container astmodel.TypeName,
 	objectType *astmodel.ObjectType,
 	defs astmodel.TypeDefinitionSet,
+	log logr.Logger,
 ) ([]*astmodel.PropertyDefinition, error) {
 	var flattenedProps []*astmodel.PropertyDefinition
 
@@ -154,9 +154,14 @@ func collectAndFlattenProperties(
 			return // continue
 		}
 
-		innerProps, err := flattenProperty(container, prop, defs)
+		innerProps, err := flattenProperty(container, prop, defs, logr.Discard())
 		if err != nil {
-			klog.Warningf("Skipping flatten of %s on %s: %s", prop.PropertyName(), container, err)
+			log.V(2).Info(
+				"Skipping flatten",
+				"property", prop.PropertyName(),
+				"container", container,
+				"reason", err)
+
 			innerProps = []*astmodel.PropertyDefinition{
 				prop.SetFlatten(false),
 			}
@@ -172,10 +177,11 @@ func flattenProperty(
 	container astmodel.TypeName,
 	prop *astmodel.PropertyDefinition,
 	defs astmodel.TypeDefinitionSet,
+	log logr.Logger,
 ) ([]*astmodel.PropertyDefinition, error) {
-	props, err := flattenPropType(container, prop.PropertyType(), defs)
+	props, err := flattenPropType(container, prop.PropertyType(), defs, log)
 	if err != nil {
-		return nil, errors.Wrapf(err, "flattening property %s", prop.PropertyName())
+		return nil, eris.Wrapf(err, "flattening property %s", prop.PropertyName())
 	}
 
 	for i, p := range props {
@@ -190,11 +196,12 @@ func flattenPropType(
 	container astmodel.TypeName,
 	propType astmodel.Type,
 	defs astmodel.TypeDefinitionSet,
+	log logr.Logger,
 ) ([]*astmodel.PropertyDefinition, error) {
 	switch propType := propType.(type) {
 	// "base case"
 	case *astmodel.ObjectType:
-		return collectAndFlattenProperties(container, propType, defs)
+		return collectAndFlattenProperties(container, propType, defs, log)
 
 	// typename must be resolved
 	case astmodel.TypeName:
@@ -203,7 +210,7 @@ func flattenPropType(
 			return nil, err
 		}
 
-		props, err := flattenPropType(container, resolved, defs)
+		props, err := flattenPropType(container, resolved, defs, log)
 		if err != nil {
 			return nil, err
 		}
@@ -212,9 +219,9 @@ func flattenPropType(
 
 	// flattening something that is optional makes everything inside it optional
 	case *astmodel.OptionalType:
-		innerProps, err := flattenPropType(container, propType.Element(), defs)
+		innerProps, err := flattenPropType(container, propType.Element(), defs, log)
 		if err != nil {
-			return nil, errors.Wrap(err, "wrapping optional type")
+			return nil, eris.Wrap(err, "wrapping optional type")
 		}
 
 		for ix := range innerProps {
@@ -225,6 +232,6 @@ func flattenPropType(
 
 	default:
 		desc := astmodel.DebugDescription(propType)
-		return nil, errors.Errorf("flatten applied to non-object type: %s", desc)
+		return nil, eris.Errorf("flatten applied to non-object type: %s", desc)
 	}
 }

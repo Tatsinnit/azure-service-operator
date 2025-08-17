@@ -7,6 +7,7 @@ package astmodel
 
 import (
 	"fmt"
+	"path"
 	"strings"
 	"unicode"
 )
@@ -17,18 +18,18 @@ type LocalPackageReference struct {
 	group            string
 	apiVersion       string
 	generatorVersion string
-
 	// version == apiVersion + generatorVersion
 	// cached to save on allocations
 	version string
 }
 
 var (
-	_ PackageReference = LocalPackageReference{}
-	_ fmt.Stringer     = LocalPackageReference{}
+	_ PackageReference         = LocalPackageReference{}
+	_ fmt.Stringer             = LocalPackageReference{}
+	_ InternalPackageReference = LocalPackageReference{}
 )
 
-const GeneratorVersion string = "v1beta"
+const GeneratorVersion string = "v1api"
 
 // MakeLocalPackageReference Creates a new local package reference from a group and version
 func MakeLocalPackageReference(prefix string, group string, versionPrefix string, version string) LocalPackageReference {
@@ -67,6 +68,16 @@ func (pr LocalPackageReference) PackagePath() string {
 	return url
 }
 
+// ImportPath returns the path to use when importing this package
+func (pr LocalPackageReference) ImportPath() string {
+	return path.Join(pr.localPathPrefix, pr.group, pr.version)
+}
+
+// FolderPath returns the relative path to this package on disk.
+func (pr LocalPackageReference) FolderPath() string {
+	return path.Join(pr.group, pr.version)
+}
+
 // Equals returns true if the passed package reference references the same package, false otherwise
 func (pr LocalPackageReference) Equals(ref PackageReference) bool {
 	if ref == nil {
@@ -92,7 +103,7 @@ func (pr LocalPackageReference) String() string {
 // We don't check the version prefix (which contains the version of the generator) as that may contain alpha or beta
 // even if the ARM version is not preview.
 func (pr LocalPackageReference) IsPreview() bool {
-	return containsPreviewVersionLabel(strings.ToLower(pr.apiVersion))
+	return ContainsPreviewVersionLabel(strings.ToLower(pr.apiVersion))
 }
 
 // WithVersionPrefix returns a new LocalPackageReference with a different version prefix
@@ -112,13 +123,13 @@ func (pr LocalPackageReference) GeneratorVersion() string {
 	return pr.generatorVersion
 }
 
-// ApiVersion returns the API version of this reference, separate from the generator version
-func (pr LocalPackageReference) ApiVersion() string {
+// APIVersion returns the API version of this reference, separate from the generator version
+func (pr LocalPackageReference) APIVersion() string {
 	return pr.apiVersion
 }
 
-// HasApiVersion returns true if this reference has the specified API version
-func (pr LocalPackageReference) HasApiVersion(ver string) bool {
+// HasAPIVersion returns true if this reference has the specified API version
+func (pr LocalPackageReference) HasAPIVersion(ver string) bool {
 	return strings.EqualFold(pr.apiVersion, ver)
 }
 
@@ -128,14 +139,53 @@ func IsLocalPackageReference(ref PackageReference) bool {
 	return ok
 }
 
-// TryGroupVersion returns the group and version of this local reference.
-func (pr LocalPackageReference) TryGroupVersion() (string, string, bool) {
-	return pr.group, pr.Version(), true
-}
-
 // GroupVersion returns the group and version of this local reference.
 func (pr LocalPackageReference) GroupVersion() (string, string) {
 	return pr.group, pr.Version()
+}
+
+// ImportAlias returns the import alias to use for this package reference
+func (pr LocalPackageReference) ImportAlias(style PackageImportStyle) string {
+	groupForAlias := strings.ReplaceAll(pr.group, ".", "")
+
+	switch style {
+	case Name, VersionOnly:
+		return fmt.Sprintf(
+			"%s%s",
+			pr.simplifiedGeneratorVersion(pr.generatorVersion),
+			pr.simplifiedAPIVersion(pr.apiVersion))
+	case GroupOnly:
+		return groupForAlias
+	case GroupAndVersion:
+		return fmt.Sprintf(
+			"%s_%s%s",
+			groupForAlias,
+			pr.simplifiedGeneratorVersion(pr.generatorVersion),
+			pr.simplifiedAPIVersion(pr.apiVersion))
+	default:
+		panic(fmt.Sprintf("didn't expect PackageImportStyle %q", style))
+	}
+}
+
+var apiVersionSimplifier = strings.NewReplacer(
+	"alpha", "a",
+	"beta", "b",
+	"preview", "p",
+	"-", "",
+)
+
+func (pr LocalPackageReference) simplifiedAPIVersion(version string) string {
+	return strings.ToLower(apiVersionSimplifier.Replace(version))
+}
+
+var generatorVersionSimplifier = strings.NewReplacer(
+	"v1alpha1api", "alpha",
+	"v1beta1api", "beta",
+	"v1api", "v",
+)
+
+func (pr LocalPackageReference) simplifiedGeneratorVersion(version string) string {
+	return generatorVersionSimplifier.Replace(version)
 }
 
 // sanitizePackageName removes all non-alphanumeric characters and converts to lower case

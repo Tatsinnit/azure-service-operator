@@ -9,6 +9,7 @@ import (
 	"time"
 
 	. "github.com/onsi/gomega"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,13 +17,14 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
+	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1api20200601"
 	"github.com/Azure/azure-service-operator/v2/internal/config"
 	"github.com/Azure/azure-service-operator/v2/internal/reconcilers/generic"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
+	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
 
-const finalizerName = generic.GenericReconcilerFinalizer
+const finalizerName = genruntime.ReconcilerFinalizer
 
 func TestTargetNamespaces(t *testing.T) {
 	t.Parallel()
@@ -36,7 +38,7 @@ func TestTargetNamespaces(t *testing.T) {
 	err := tc.CreateTestNamespaces("watched", "unwatched")
 	tc.Expect(err).ToNot(HaveOccurred())
 
-	standardSpec := resources.ResourceGroupSpec{
+	standardSpec := resources.ResourceGroup_Spec{
 		Location: tc.AzureRegion,
 		Tags:     testcommon.CreateTestResourceGroupDefaultTags(),
 	}
@@ -51,7 +53,7 @@ func TestTargetNamespaces(t *testing.T) {
 		},
 		Spec: standardSpec,
 	}
-	tc.CreateResourceGroupAndWait(&rgDefault)
+	tc.CreateResourceAndWait(&rgDefault)
 	// Check that the instance is annotated with the operator namespace.
 	checkNamespaceAnnotation(tc, &rgDefault, podNamespace)
 
@@ -63,7 +65,7 @@ func TestTargetNamespaces(t *testing.T) {
 		},
 		Spec: standardSpec,
 	}
-	tc.CreateResourceGroupAndWait(&rgWatched)
+	tc.CreateResourceAndWait(&rgWatched)
 	checkNamespaceAnnotation(tc, &rgWatched, podNamespace)
 
 	// But the unwatched namespace isn't...
@@ -76,8 +78,7 @@ func TestTargetNamespaces(t *testing.T) {
 		},
 		Spec: standardSpec,
 	}
-	_, err = tc.CreateResourceGroup(&rgUnwatched)
-	tc.Expect(err).ToNot(HaveOccurred())
+	tc.CreateResource(&rgUnwatched)
 
 	// We can tell that the resource isn't being reconciled if it
 	// never gets a finalizer.
@@ -163,19 +164,18 @@ func TestOperatorNamespacePreventsReconciling(t *testing.T) {
 				generic.NamespaceAnnotation: "some-other-operator",
 			},
 		},
-		Spec: resources.ResourceGroupSpec{
+		Spec: resources.ResourceGroup_Spec{
 			Location: tc.AzureRegion,
 			Tags:     testcommon.CreateTestResourceGroupDefaultTags(),
 		},
 	}
-	_, err := tc.CreateResourceGroup(&notMine)
-	tc.Expect(err).NotTo(HaveOccurred())
+	tc.CreateResource(&notMine)
 
 	checkNeverGetsFinalizer(tc, &notMine, "instance claimed by some other operator got finalizer")
 
 	var events corev1.EventList
 	tc.ListResources(&events, &client.ListOptions{
-		FieldSelector: fields.ParseSelectorOrDie("involvedObject.name=" + notMine.ObjectMeta.Name),
+		FieldSelector: fields.ParseSelectorOrDie("involvedObject.name=" + notMine.Name),
 		Namespace:     tc.Namespace,
 	})
 	tc.Expect(events.Items).To(HaveLen(1))
@@ -195,10 +195,10 @@ func TestOperatorNamespacePreventsReconciling(t *testing.T) {
 				generic.NamespaceAnnotation: podNamespace,
 			},
 		},
-		Spec: resources.ResourceGroupSpec{
+		Spec: resources.ResourceGroup_Spec{
 			Location: tc.AzureRegion,
 			Tags:     testcommon.CreateTestResourceGroupDefaultTags(),
 		},
 	}
-	tc.CreateResourceGroupAndWait(&mine)
+	tc.CreateResourceAndWait(&mine)
 }

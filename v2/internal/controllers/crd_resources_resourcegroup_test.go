@@ -8,8 +8,9 @@ package controllers_test
 import (
 	"testing"
 
-	"github.com/Azure/go-autorest/autorest/to"
 	. "github.com/onsi/gomega"
+
+	"github.com/Azure/azure-service-operator/v2/internal/util/to"
 )
 
 func Test_Resources_ResourceGroup_CRUD(t *testing.T) {
@@ -23,9 +24,10 @@ func Test_Resources_ResourceGroup_CRUD(t *testing.T) {
 
 	// check properties
 	tc.Expect(rg.Status.Location).To(Equal(tc.AzureRegion))
-	tc.Expect(rg.Status.ProvisioningState).To(Equal(to.StringPtr("Succeeded")))
-	tc.Expect(rg.Status.ID).ToNot(BeNil())
-	armId := *rg.Status.ID
+	tc.Expect(rg.Status.Properties).ToNot(BeNil())
+	tc.Expect(rg.Status.Properties.ProvisioningState).To(Equal(to.Ptr("Succeeded")))
+	tc.Expect(rg.Status.Id).ToNot(BeNil())
+	armId := *rg.Status.Id
 
 	// Update the tags
 	old := rg.DeepCopy()
@@ -37,7 +39,7 @@ func Test_Resources_ResourceGroup_CRUD(t *testing.T) {
 
 	// Ensure that the resource group was really deleted in Azure
 	// TODO: Do we want to just use an SDK here? This process is quite icky as is...
-	exists, _, err := tc.AzureClient.HeadByID(
+	exists, _, err := tc.AzureClient.CheckExistenceWithGetByID(
 		tc.Ctx,
 		armId,
 		"2020-06-01")

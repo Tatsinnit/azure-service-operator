@@ -10,37 +10,37 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Azure/azure-service-operator/v2/internal/set"
-	"github.com/Azure/azure-service-operator/v2/internal/util/kubeclient"
-	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/extensions"
+	. "github.com/Azure/azure-service-operator/v2/internal/logging"
 
-	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/go-logr/logr"
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	v1 "k8s.io/api/core/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/conversion"
 
-	postgresql "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1beta20210601storage"
+	postgresql "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1api20240801/storage"
 	"github.com/Azure/azure-service-operator/v2/internal/genericarmclient"
-	. "github.com/Azure/azure-service-operator/v2/internal/logging"
+	"github.com/Azure/azure-service-operator/v2/internal/resolver"
+	"github.com/Azure/azure-service-operator/v2/internal/set"
+	"github.com/Azure/azure-service-operator/v2/internal/util/to"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
+	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/extensions"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/secrets"
 )
 
-var _ genruntime.KubernetesExporter = &FlexibleServerExtension{}
+var _ genruntime.KubernetesSecretExporter = &FlexibleServerExtension{}
 
-func (ext *FlexibleServerExtension) ExportKubernetesResources(
-	_ context.Context,
+func (ext *FlexibleServerExtension) ExportKubernetesSecrets(
+	ctx context.Context,
 	obj genruntime.MetaObject,
-	_ *genericarmclient.GenericClient,
-	log logr.Logger) ([]client.Object, error) {
-
+	additionalSecrets set.Set[string],
+	armClient *genericarmclient.GenericClient,
+	log logr.Logger,
+) (*genruntime.KubernetesSecretExportResult, error) {
 	// This has to be the current hub storage version. It will need to be updated
 	// if the hub storage version changes.
 	typedObj, ok := obj.(*postgresql.FlexibleServer)
 	if !ok {
-		return nil, errors.Errorf("cannot run on unknown resource type %T, expected *postgresql.FlexibleServer", obj)
+		return nil, eris.Errorf("cannot run on unknown resource type %T, expected *postgresql.FlexibleServer", obj)
 	}
 
 	// Type assert that we are the hub type. This will fail to compile if
@@ -58,7 +58,10 @@ func (ext *FlexibleServerExtension) ExportKubernetesResources(
 		return nil, err
 	}
 
-	return secrets.SliceToClientObjectSlice(secretSlice), nil
+	return &genruntime.KubernetesSecretExportResult{
+		Objs:       secrets.SliceToClientObjectSlice(secretSlice),
+		RawSecrets: nil, // No RawSecrets as all secret values are coming from status (not real secrets)
+	}, nil
 }
 
 func secretsSpecified(obj *postgresql.FlexibleServer) bool {
@@ -67,21 +70,17 @@ func secretsSpecified(obj *postgresql.FlexibleServer) bool {
 	}
 
 	operatorSecrets := obj.Spec.OperatorSpec.Secrets
-	if operatorSecrets.FullyQualifiedDomainName != nil {
-		return true
-	}
-
-	return false
+	return operatorSecrets.FullyQualifiedDomainName != nil
 }
 
 func secretsToWrite(obj *postgresql.FlexibleServer) ([]*v1.Secret, error) {
 	operatorSpecSecrets := obj.Spec.OperatorSpec.Secrets
 	if operatorSpecSecrets == nil {
-		return nil, errors.Errorf("unexpected nil operatorspec")
+		return nil, nil
 	}
 
 	collector := secrets.NewCollector(obj.Namespace)
-	collector.AddValue(operatorSpecSecrets.FullyQualifiedDomainName, to.String(obj.Status.FullyQualifiedDomainName))
+	collector.AddValue(operatorSpecSecrets.FullyQualifiedDomainName, to.Value(obj.Status.FullyQualifiedDomainName))
 
 	return collector.Values()
 }
@@ -100,20 +99,20 @@ var nonBlockingFlexibleServerStates = set.Make(
 )
 
 func (ext *FlexibleServerExtension) PreReconcileCheck(
-	_ context.Context,
+	ctx context.Context,
 	obj genruntime.MetaObject,
 	owner genruntime.MetaObject,
-	_ kubeclient.Client,
-	_ *genericarmclient.GenericClient,
-	_ logr.Logger,
-	_ extensions.PreReconcileCheckFunc,
+	resourceResolver *resolver.Resolver,
+	armClient *genericarmclient.GenericClient,
+	log logr.Logger,
+	next extensions.PreReconcileCheckFunc,
 ) (extensions.PreReconcileCheckResult, error) {
 	// This has to be the current hub storage version. It will need to be updated
 	// if the hub storage version changes.
 	server, ok := obj.(*postgresql.FlexibleServer)
 	if !ok {
 		return extensions.PreReconcileCheckResult{},
-			errors.Errorf("cannot run on unknown resource type %T, expected *postgresql.FlexibleServer", obj)
+			eris.Errorf("cannot run on unknown resource type %T, expected *postgresql.FlexibleServer", obj)
 	}
 
 	// Type assert that we are the hub type. This will fail to compile if
@@ -128,7 +127,7 @@ func (ext *FlexibleServerExtension) PreReconcileCheck(
 				*state)), nil
 	}
 
-	return extensions.ProceedWithReconcile(), nil
+	return next(ctx, obj, owner, resourceResolver, armClient, log)
 }
 
 func flexibleServerStateBlocksReconciliation(state string) bool {

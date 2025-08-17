@@ -8,9 +8,10 @@ package extensions
 import (
 	"context"
 
+	. "github.com/Azure/azure-service-operator/v2/internal/logging"
+
 	"github.com/go-logr/logr"
 
-	. "github.com/Azure/azure-service-operator/v2/internal/logging"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
 
@@ -27,8 +28,8 @@ type ClaimFunc = func(ctx context.Context, log logr.Logger, obj genruntime.ARMOw
 // the provided default ClaimFunc is run by default.
 func CreateClaimer(
 	host genruntime.ResourceExtension,
-	next ClaimFunc) ClaimFunc {
-
+	next ClaimFunc,
+) ClaimFunc {
 	impl, ok := host.(Claimer)
 	if !ok {
 		return next

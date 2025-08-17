@@ -11,13 +11,14 @@ import (
 	"strings"
 	"testing"
 
+	. "github.com/onsi/gomega"
+
+	"github.com/go-logr/logr"
 	"github.com/sebdah/goldie/v2"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/codegen/pipeline"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/config"
-
-	. "github.com/onsi/gomega"
 )
 
 func TestGolden_NewARMCodeGeneratorFromConfigCreatesRightPipeline(t *testing.T) {
@@ -28,7 +29,7 @@ func TestGolden_NewARMCodeGeneratorFromConfigCreatesRightPipeline(t *testing.T) 
 	idFactory := astmodel.NewIdentifierFactory()
 	configuration := config.NewConfiguration()
 
-	codegen, err := NewTargetedCodeGeneratorFromConfig(configuration, idFactory, pipeline.ARMTarget)
+	codegen, err := NewTargetedCodeGeneratorFromConfig(configuration, idFactory, pipeline.ARMTarget, logr.Discard())
 	g.Expect(err).To(Succeed())
 
 	result := writePipeline("Expected Pipeline Stages for ARM Code Generation", codegen)
@@ -46,7 +47,7 @@ func TestGolden_NewCrossplaneCodeGeneratorFromConfigCreatesRightPipeline(t *test
 	idFactory := astmodel.NewIdentifierFactory()
 	configuration := config.NewConfiguration()
 
-	codegen, err := NewTargetedCodeGeneratorFromConfig(configuration, idFactory, pipeline.CrossplaneTarget)
+	codegen, err := NewTargetedCodeGeneratorFromConfig(configuration, idFactory, pipeline.CrossplaneTarget, logr.Discard())
 	g.Expect(err).To(Succeed())
 
 	result := writePipeline("Expected Pipeline Stages for ARM Code Generation", codegen)
@@ -80,8 +81,8 @@ func writePipeline(title string, codegen *CodeGenerator) []byte {
 
 	idWidth := 0
 	for _, s := range codegen.pipeline {
-		if len(s.Id()) > idWidth {
-			idWidth = len(s.Id())
+		if len(s.ID()) > idWidth {
+			idWidth = len(s.ID())
 		}
 	}
 
@@ -97,7 +98,7 @@ func writePipeline(title string, codegen *CodeGenerator) []byte {
 			targets = targets + t.String()
 		}
 
-		fmt.Fprintf(&b, format, s.Id(), targets, s.Description())
+		fmt.Fprintf(&b, format, s.ID(), targets, s.Description())
 	}
 
 	return b.Bytes()

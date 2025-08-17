@@ -9,6 +9,8 @@ import (
 	"sort"
 
 	"github.com/dave/dst"
+
+	pkgset "github.com/Azure/azure-service-operator/v2/internal/set"
 )
 
 // PackageImportSet represents a set of distinct PackageImport references
@@ -30,9 +32,9 @@ func NewPackageImportSet() *PackageImportSet {
 // import); if it doesn't have an explicit name, we only use it if we don't already have the reference (ensuring that
 // we keep any existing named import if we have one).
 func (set *PackageImportSet) AddImport(packageImport PackageImport) {
-	_, ok := set.imports[packageImport.packageReference]
-	if !ok || packageImport.HasExplicitName() {
-		// Always use imports with explicit names or imports for packages we don't have
+	existing, ok := set.imports[packageImport.packageReference]
+	if !ok || !existing.HasExplicitName() {
+		// We don't have this import, or we don't have an explicit name for it
 		set.imports[packageImport.packageReference] = packageImport
 	}
 
@@ -50,6 +52,15 @@ func (set *PackageImportSet) AddImportOfReference(ref PackageReference) {
 func (set *PackageImportSet) AddImportsOfReferences(refs ...PackageReference) {
 	for _, ref := range refs {
 		set.AddImport(NewPackageImport(ref))
+	}
+}
+
+// AddImportsForPackageReferenceSet ensures this set includes an import of all the references in
+// the specified set.
+// Adding a reference already in the set is fine.
+func (set *PackageImportSet) AddImportsForPackageReferenceSet(refs *PackageReferenceSet) {
+	for ref := range refs.All() {
+		set.AddImportOfReference(ref)
 	}
 }
 
@@ -151,16 +162,16 @@ func (set *PackageImportSet) ensureAliasesAssigned() {
 
 // assignImportAliases generates import aliases for each non-external package reference
 func (set *PackageImportSet) assignImportAliases() {
-	byGroup := set.createMapByGroup()
-	for _, imports := range byGroup {
-		if len(byGroup) == 1 {
-			// There is only one group (total!) so just use the version
-			set.applyStyleToImports(VersionOnly, imports)
-		} else if len(imports) == 1 {
-			// There is only one import in this group, just use the group name
-			set.applyStyleToImports(GroupOnly, imports)
-		} else {
-			set.applyStyleToImports(GroupAndVersion, imports)
+	importStyles := []PackageImportStyle{
+		Name,
+		GroupOnly,
+		VersionOnly,
+		GroupAndVersion,
+	}
+
+	for _, style := range importStyles {
+		if set.tryAssignImportAliases(style) {
+			return
 		}
 	}
 }
@@ -181,25 +192,66 @@ func (set *PackageImportSet) orderImports(i PackageImport, j PackageImport) bool
 		}
 	}
 
-	return i.packageReference.PackagePath() < j.packageReference.PackagePath()
+	return i.packageReference.ImportPath() < j.packageReference.ImportPath()
 }
 
-func (set *PackageImportSet) createMapByGroup() map[string][]PackageImport {
-	result := make(map[string][]PackageImport)
+// tryAssignImportAliases attempts to apply the specified PackageImportStyle to the specified imports.
+// Returns true if all the imports had unique names and were successfully updated, false otherwise.
+// Does not modify the set if it returns false.
+func (set *PackageImportSet) tryAssignImportAliases(
+	style PackageImportStyle,
+) bool {
+	// aliased keeps track of every import that we've assigned an alias to, keyed by the new alias.
+	// This allows us to check for duplicates.
+	aliased := make(map[string]PackageImport)
+
+	// groupConflicts keeps track of any group for which we have conflicted aliases.
+	// This allows us to add aliases for groups where we don't have any conflicts.
+	groupConflicts := make(pkgset.Set[string])
+
+	// Work out the aliases that each import will have
 	for _, imp := range set.imports {
-		group, _, ok := imp.packageReference.TryGroupVersion()
+		// We only apply styles to internal package references
+		if pr, ok := imp.packageReference.(InternalPackageReference); ok {
+
+			// Don't want to change any existing aliases
+			if !imp.HasExplicitName() {
+				// Assign an alias of the expected style
+				imp = imp.WithImportAlias(style)
+			}
+
+			if match, ok := aliased[imp.name]; ok {
+				// We have a duplicate name, can't apply the style to this group,
+				// nor to the group we conflict with
+				groupConflicts.Add(pr.Group())
+
+				matchPR := match.packageReference.(InternalPackageReference)
+
+				groupConflicts.Add(matchPR.Group())
+				continue
+			}
+		}
+
+		// We keep track of the import names we've used, even for external packages
+		aliased[imp.name] = imp
+	}
+
+	// Apply the aliases, but only for groups where no conflict was found
+	result := true
+	for _, imp := range aliased {
+		pr, ok := imp.packageReference.(InternalPackageReference)
 		if !ok {
 			continue
 		}
 
-		result[group] = append(result[group], imp)
+		if groupConflicts.Contains(pr.Group()) {
+			result = false
+			continue
+		}
+
+		// Modify the map directly to bypass any rules enforced elsewhere
+		set.imports[imp.packageReference] = imp
 	}
 
 	return result
-}
-
-func (set *PackageImportSet) applyStyleToImports(style PackageImportStyle, imports []PackageImport) {
-	for _, imp := range imports {
-		set.AddImport(imp.WithImportAlias(style))
-	}
 }

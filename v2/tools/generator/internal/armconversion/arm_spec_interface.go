@@ -9,7 +9,7 @@ import (
 	"fmt"
 
 	"github.com/dave/dst"
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
@@ -19,7 +19,7 @@ import (
 func checkPropertyPresence(o *astmodel.ObjectType, name astmodel.PropertyName) error {
 	_, ok := o.Property(name)
 	if !ok {
-		return errors.Errorf("resource spec doesn't have %q property", name)
+		return eris.Errorf("resource spec doesn't have %q property", name)
 	}
 
 	return nil
@@ -38,15 +38,15 @@ func NewARMSpecInterfaceImpl(
 		return nil, err
 	}
 
-	getNameFunc := functions.NewObjectFunction("Get"+astmodel.NameProperty, idFactory, getNameFunction)
-	getNameFunc.AddPackageReference(astmodel.GenRuntimeReference)
+	getNameFunc := functions.NewObjectFunction(
+		"Get"+astmodel.NameProperty,
+		idFactory,
+		getNameFunction,
+		astmodel.GenRuntimeReference)
 
 	getTypeFunc := functions.NewGetTypeFunction(resource.ARMType(), idFactory, functions.ReceiverTypePtr)
 
-	getAPIVersionFunc := functions.NewGetAPIVersionFunction(
-		resource.APIVersionTypeName(),
-		resource.APIVersionEnumValue(),
-		idFactory)
+	getAPIVersionFunc := functions.NewGetAPIVersionFunction(resource.APIVersionEnumValue(), idFactory)
 
 	result := astmodel.NewInterfaceImplementation(
 		astmodel.ARMResourceSpecType,
@@ -62,7 +62,7 @@ func getNameFunction(
 	genContext *astmodel.CodeGenerationContext,
 	receiver astmodel.TypeName,
 	methodName string,
-) *dst.FuncDecl {
+) (*dst.FuncDecl, error) {
 	return armSpecInterfaceSimpleGetFunction(
 		fn,
 		genContext,
@@ -79,9 +79,12 @@ func armSpecInterfaceSimpleGetFunction(
 	methodName string,
 	propertyName string,
 	castToString bool,
-) *dst.FuncDecl {
-	receiverIdent := fn.IdFactory().CreateReceiver(receiver.Name())
-	receiverType := receiver.AsType(codeGenerationContext)
+) (*dst.FuncDecl, error) {
+	receiverIdent := fn.IDFactory().CreateReceiver(receiver.Name())
+	receiverExpr, err := receiver.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrapf(err, "creating type expression for %s", receiver.Name())
+	}
 
 	var result dst.Expr = astbuilder.Selector(dst.NewIdent(receiverIdent), propertyName)
 
@@ -97,12 +100,12 @@ func armSpecInterfaceSimpleGetFunction(
 	details := &astbuilder.FuncDetails{
 		Name:          methodName,
 		ReceiverIdent: receiverIdent,
-		ReceiverType:  astbuilder.Dereference(receiverType),
+		ReceiverType:  astbuilder.Dereference(receiverExpr),
 		Body:          astbuilder.Statements(retResult),
 	}
 
 	details.AddComments(fmt.Sprintf("returns the %s of the resource", propertyName))
 	details.AddReturns("string")
 
-	return details.DefineFunc()
+	return details.DefineFunc(), nil
 }

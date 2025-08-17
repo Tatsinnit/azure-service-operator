@@ -6,39 +6,51 @@
 package genruntime
 
 import (
-	"github.com/pkg/errors"
+	"context"
+
+	"github.com/rotisserie/eris"
 	"k8s.io/apimachinery/pkg/runtime"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
 // Validator is similar to controller-runtime/pkg/webhook/admission Validator. Implementing this interface
 // allows you to hook into the code generated validations and add custom handcrafted validations.
-type Validator interface {
+type Validator[T runtime.Object] interface {
 	// CreateValidations returns validation functions that should be run on create.
-	CreateValidations() []func() error
+	CreateValidations() []func(ctx context.Context, obj T) (admission.Warnings, error)
 	// UpdateValidations returns validation functions that should be run on update.
-	UpdateValidations() []func(old runtime.Object) error
+	UpdateValidations() []func(ctx context.Context, oldObj T, newObj T) (admission.Warnings, error)
 	// DeleteValidations returns validation functions that should be run on delete.
-	DeleteValidations() []func() error
+	DeleteValidations() []func(ctx context.Context, obj T) (admission.Warnings, error)
 }
 
 // Defaulter is similar to controller-runtime/pkg/webhook/admission Defaulter. Implementing this interface
 // allows you to hook into the code generated defaults and add custom handcrafted defaults.
 type Defaulter interface {
 	// CustomDefault performs custom defaults that are run in addition to the code generated defaults.
-	CustomDefault()
+	CustomDefault(ctx context.Context, obj runtime.Object) error
 }
 
 // ValidateWriteOnceProperties function validates the update on WriteOnce properties.
-func ValidateWriteOnceProperties(oldObj ARMMetaObject, newObj ARMMetaObject) error {
+func ValidateWriteOnceProperties(oldObj ARMMetaObject, newObj ARMMetaObject) (admission.Warnings, error) {
 	var errs []error
 
 	if !IsResourceCreatedSuccessfully(newObj) {
-		return nil
+		return nil, nil
 	}
 
-	if oldObj.AzureName() != newObj.AzureName() {
-		errs = append(errs, errors.Errorf("updating 'AzureName' is not allowed for '%s : %s", oldObj.GetObjectKind().GroupVersionKind(), oldObj.GetName()))
+	// Prohibit changing the AzureName,
+	// but allow it to be set if it's empty.
+	//
+	// https://github.com/Azure/azure-service-operator/issues/4306
+	oldName := oldObj.AzureName()
+	if oldName != "" && oldName != newObj.AzureName() {
+		err := eris.Errorf(
+			"updating 'spec.azureName' is not allowed for '%s : %s",
+			oldObj.GetObjectKind().GroupVersionKind(),
+			oldObj.GetName())
+		errs = append(errs, err)
 	}
 
 	// Ensure that owner has not been changed
@@ -49,13 +61,68 @@ func ValidateWriteOnceProperties(oldObj ARMMetaObject, newObj ARMMetaObject) err
 	ownerAdded := oldOwner == nil && newOwner != nil
 	ownerRemoved := oldOwner != nil && newOwner == nil
 
-	if (bothHaveOwner && oldOwner.Name != newOwner.Name) || ownerAdded {
-		errs = append(errs, errors.Errorf("updating 'Owner.Name' is not allowed for '%s : %s", oldObj.GetObjectKind().GroupVersionKind(), oldObj.GetName()))
+	ownerNameChanged := bothHaveOwner && oldOwner.Name != newOwner.Name
+	ownerARMIDChanged := bothHaveOwner && oldOwner.ARMID != newOwner.ARMID
+
+	if ownerAdded {
+		// This error may not be possible to trigger in practice, as it requires an Azure resource that supports existing without an owner
+		// or with an owner. There aren't any resources that meet those criteria that we know of, so this check is primarily us being
+		// defensive.
+		errs = append(errs, eris.Errorf("adding an owner to an already created resource is not allowed for '%s : %s", oldObj.GetObjectKind().GroupVersionKind(), oldObj.GetName()))
+	} else if ownerNameChanged {
+		errs = append(errs, eris.Errorf("updating 'spec.owner.name' is not allowed for '%s : %s", oldObj.GetObjectKind().GroupVersionKind(), oldObj.GetName()))
+	} else if ownerARMIDChanged {
+		errs = append(errs, eris.Errorf("updating 'spec.owner.armId' is not allowed for '%s : %s", oldObj.GetObjectKind().GroupVersionKind(), oldObj.GetName()))
 	} else if ownerRemoved {
-		errs = append(errs, errors.Errorf("removing 'Owner' is not allowed for '%s : %s", oldObj.GetObjectKind().GroupVersionKind(), oldObj.GetName()))
+		errs = append(errs, eris.Errorf("removing 'spec.owner' is not allowed for '%s : %s", oldObj.GetObjectKind().GroupVersionKind(), oldObj.GetName()))
 	}
 
-	return kerrors.NewAggregate(errs)
+	return nil, kerrors.NewAggregate(errs)
+}
+
+func ValidateCreate[T runtime.Object](ctx context.Context, resource T, validations []func(ctx context.Context, resource T) (admission.Warnings, error)) (admission.Warnings, error) {
+	var errs []error
+	var warnings admission.Warnings
+	for _, validation := range validations {
+		warning, err := validation(ctx, resource)
+		if warning != nil {
+			warnings = append(warnings, warning...)
+		}
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return warnings, kerrors.NewAggregate(errs)
+}
+
+func ValidateDelete[T runtime.Object](ctx context.Context, resource T, validations []func(ctx context.Context, resource T) (admission.Warnings, error)) (admission.Warnings, error) {
+	var errs []error
+	var warnings admission.Warnings
+	for _, validation := range validations {
+		warning, err := validation(ctx, resource)
+		if warning != nil {
+			warnings = append(warnings, warning...)
+		}
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return warnings, kerrors.NewAggregate(errs)
+}
+
+func ValidateUpdate[T runtime.Object](ctx context.Context, old T, new T, validations []func(ctx context.Context, old T, new T) (admission.Warnings, error)) (admission.Warnings, error) {
+	var errs []error
+	var warnings admission.Warnings
+	for _, validation := range validations {
+		warning, err := validation(ctx, old, new)
+		if warning != nil {
+			warnings = append(warnings, warning...)
+		}
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return warnings, kerrors.NewAggregate(errs)
 }
 
 func IsResourceCreatedSuccessfully(obj ARMMetaObject) bool {

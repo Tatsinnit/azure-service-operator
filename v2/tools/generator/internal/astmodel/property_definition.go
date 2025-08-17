@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
 	"golang.org/x/exp/slices"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
@@ -45,6 +46,9 @@ type PropertyDefinition struct {
 	// the last entry is always the original property name, so it will look like:
 	// x,y,z,propName
 	flattenedFrom []PropertyName
+
+	// originalName is the original name of this property, prior to any renames
+	originalName PropertyName
 
 	isSecret bool
 	readOnly bool
@@ -81,6 +85,7 @@ func NewPropertyDefinition(propertyName PropertyName, jsonName string, propertyT
 		propertyType:  propertyType,
 		description:   "",
 		flattenedFrom: []PropertyName{propertyName},
+		originalName:  propertyName,
 		tags: readonly.CreateMap(map[string][]string{
 			"json": {jsonName, "omitempty"},
 		}),
@@ -95,7 +100,7 @@ func (property *PropertyDefinition) WithName(name PropertyName) *PropertyDefinit
 }
 
 // WithName returns a new PropertyDefinition with the JSON name
-func (property *PropertyDefinition) WithJsonName(jsonName string) *PropertyDefinition {
+func (property *PropertyDefinition) WithJSONName(jsonName string) *PropertyDefinition {
 	result := property.copy()
 	// TODO post-alpha: replace result.tags with structured types
 	jsonTag, _ := result.tags.Get("json")
@@ -169,9 +174,11 @@ func (property *PropertyDefinition) Description() string {
 }
 
 // WithType clones the property and returns it with a new type
-func (property *PropertyDefinition) WithType(newType Type) *PropertyDefinition {
+func (property *PropertyDefinition) WithType(
+	newType Type,
+) *PropertyDefinition {
 	if newType == nil {
-		panic("nil type provided to WithType")
+		panic(eris.New("nil type provided to WithType"))
 	}
 
 	if TypeEquals(property.propertyType, newType) {
@@ -279,7 +286,7 @@ func (property *PropertyDefinition) MakeRequired() *PropertyDefinition {
 	}
 
 	if !isTypeOptional(property.PropertyType()) {
-		panic(fmt.Sprintf(
+		panic(eris.Errorf(
 			"property %s with non-optional type %T cannot be marked kubebuilder:validation:Required.",
 			property.PropertyName(),
 			property.PropertyType()))
@@ -328,6 +335,12 @@ func (property *PropertyDefinition) MakeTypeOptional() *PropertyDefinition {
 	result.propertyType = makePropertyTypeOptional(property.PropertyType())
 
 	return result
+}
+
+// Renamed allows checking to see if the property has been renamed.
+// Returns the original name, and true if a rename has occurred; otherwise returns an undefined value and false.
+func (property *PropertyDefinition) Renamed() (PropertyName, bool) {
+	return property.originalName, property.propertyName != property.originalName
 }
 
 func makePropertyTypeRequired(t Type) Type {
@@ -396,9 +409,11 @@ func (property *PropertyDefinition) renderedTags() string {
 }
 
 // AsField generates a Go AST field node representing this property definition
-func (property *PropertyDefinition) AsField(codeGenerationContext *CodeGenerationContext) *dst.Field {
+func (property *PropertyDefinition) AsField(
+	codeGenerationContext *CodeGenerationContext,
+) (*dst.Field, error) {
 	if property.flatten {
-		panic(fmt.Sprintf("property %s marked for flattening was not flattened", property.propertyName))
+		return nil, eris.Errorf("property %s marked for flattening was not flattened", property.propertyName)
 	}
 
 	tags := property.renderedTags()
@@ -421,9 +436,14 @@ func (property *PropertyDefinition) AsField(codeGenerationContext *CodeGeneratio
 	}
 
 	// Some types opt out of codegen by returning nil
-	typeDeclaration := propType.AsType(codeGenerationContext)
-	if typeDeclaration == nil {
-		return nil
+	propTypeExpr, err := propType.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrapf(err, "unable to generate field for property %s", property.propertyName)
+	}
+
+	typeExpr := propTypeExpr
+	if typeExpr == nil {
+		return nil, nil
 	}
 
 	before := dst.NewLine
@@ -440,7 +460,7 @@ func (property *PropertyDefinition) AsField(codeGenerationContext *CodeGeneratio
 			},
 		},
 		Names: names,
-		Type:  propType.AsType(codeGenerationContext),
+		Type:  propTypeExpr,
 		Tag:   astbuilder.TextLiteralf("`%s`", tags),
 	}
 
@@ -450,14 +470,18 @@ func (property *PropertyDefinition) AsField(codeGenerationContext *CodeGeneratio
 		astbuilder.AddWrappedComment(&result.Decs.Start, fmt.Sprintf("%s: %s", property.propertyName, property.description))
 	}
 
-	return result
+	return result, nil
 }
 
 func (property *PropertyDefinition) tagsEqual(f *PropertyDefinition) bool {
 	// Comparison here takes ordering into account because for tags like
 	// json, ordering matters - `json:"foo,omitempty"` is different than
 	// `json:"omitempty,foo`
-	return property.tags.Equals(f.tags, slices.Equal[string])
+	return property.tags.Equals(
+		f.tags,
+		func(left []string, right []string) bool {
+			return slices.Equal(left, right)
+		})
 }
 
 // Equals tests to see if the specified PropertyDefinition specifies the same property

@@ -8,7 +8,7 @@ package pipeline
 import (
 	"context"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
@@ -18,7 +18,6 @@ func FixIDFields() *Stage {
 		"fixIdFields",
 		"Remove ARM ID annotations from status, and Id from Spec types",
 		func(ctx context.Context, state *State) (*State, error) {
-
 			updatedStatusDefs, err := replaceStatusARMIDWithString(state.Definitions())
 			if err != nil {
 				return nil, err
@@ -31,7 +30,7 @@ func FixIDFields() *Stage {
 
 			updatedDefs := astmodel.TypesDisjointUnion(updatedStatusDefs, updatedSpecDefs)
 
-			state = state.WithDefinitions(state.Definitions().OverlayWith(updatedDefs))
+			state = state.WithOverlaidDefinitions(updatedDefs)
 			return state, nil
 		})
 
@@ -39,8 +38,8 @@ func FixIDFields() *Stage {
 }
 
 func removeSpecIDField(defs astmodel.TypeDefinitionSet) (astmodel.TypeDefinitionSet, error) {
-	removeIDVisitor := astmodel.TypeVisitorBuilder{
-		VisitObjectType: func(this *astmodel.TypeVisitor, it *astmodel.ObjectType, ctx interface{}) (astmodel.Type, error) {
+	removeIDVisitor := astmodel.TypeVisitorBuilder[any]{
+		VisitObjectType: func(this *astmodel.TypeVisitor[any], it *astmodel.ObjectType, ctx interface{}) (astmodel.Type, error) {
 			it.Properties().ForEach(func(prop *astmodel.PropertyDefinition) {
 				prim, isPrimitive := astmodel.AsPrimitiveType(prop.PropertyType())
 				if prop.HasName("Id") && isPrimitive && prim == astmodel.ARMIDType {
@@ -54,15 +53,15 @@ func removeSpecIDField(defs astmodel.TypeDefinitionSet) (astmodel.TypeDefinition
 
 	updatedDefs, err := removeIDVisitor.VisitDefinitions(astmodel.FindSpecDefinitions(defs), nil)
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to remove spec.Id")
+		return nil, eris.Wrapf(err, "failed to remove spec.Id")
 	}
 
 	return updatedDefs, nil
 }
 
 func replaceStatusARMIDWithString(defs astmodel.TypeDefinitionSet) (astmodel.TypeDefinitionSet, error) {
-	replaceARMIDWithStringVisitor := astmodel.TypeVisitorBuilder{
-		VisitPrimitive: func(_ *astmodel.TypeVisitor, it *astmodel.PrimitiveType, _ interface{}) (astmodel.Type, error) {
+	replaceARMIDWithStringVisitor := astmodel.TypeVisitorBuilder[any]{
+		VisitPrimitive: func(_ *astmodel.TypeVisitor[any], it *astmodel.PrimitiveType, _ interface{}) (astmodel.Type, error) {
 			if it == astmodel.ARMIDType {
 				return astmodel.StringType, nil
 			}
@@ -73,7 +72,7 @@ func replaceStatusARMIDWithString(defs astmodel.TypeDefinitionSet) (astmodel.Typ
 
 	updatedDefs, err := replaceARMIDWithStringVisitor.VisitDefinitions(astmodel.FindStatusDefinitions(defs), nil)
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to replace ARM ID with String on status types")
+		return nil, eris.Wrapf(err, "failed to replace ARM ID with String on status types")
 	}
 
 	return updatedDefs, nil

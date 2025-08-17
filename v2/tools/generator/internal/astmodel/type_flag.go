@@ -13,6 +13,7 @@ const (
 	StorageFlag = TypeFlag("storage")
 	ARMFlag     = TypeFlag("arm")
 	OneOfFlag   = TypeFlag("oneof")
+	DoNotPrune  = TypeFlag("donotprune")
 )
 
 var _ fmt.Stringer = TypeFlag("")
@@ -29,12 +30,11 @@ func (f TypeFlag) ApplyTo(t Type) *FlaggedType {
 
 // RemoveFrom applies the tag to the provided type
 func (f TypeFlag) RemoveFrom(t Type) (Type, error) {
-
 	removeFlag := func(it *FlaggedType) Type {
 		return it.WithoutFlag(f)
 	}
 
-	visitor := TypeVisitorBuilder{
+	visitor := TypeVisitorBuilder[any]{
 		VisitFlaggedType: removeFlag,
 	}.Build()
 

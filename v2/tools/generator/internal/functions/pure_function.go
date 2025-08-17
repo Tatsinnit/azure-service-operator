@@ -27,7 +27,8 @@ var _ astmodel.Function = &PureFunction{}
 func NewPureFunction(
 	name string,
 	idFactory astmodel.IdentifierFactory,
-	asFunc PureFunctionHandler) *PureFunction {
+	asFunc PureFunctionHandler,
+) *PureFunction {
 	return &PureFunction{
 		name:             name,
 		asFunc:           asFunc,
@@ -44,7 +45,7 @@ func (fn *PureFunction) Name() string {
 	return fn.name
 }
 
-func (fn *PureFunction) IdFactory() astmodel.IdentifierFactory {
+func (fn *PureFunction) IDFactory() astmodel.IdentifierFactory {
 	return fn.idFactory
 }
 
@@ -61,8 +62,11 @@ func (fn *PureFunction) References() astmodel.TypeNameSet {
 }
 
 // AsFunc renders the current instance as a Go abstract syntax tree
-func (fn *PureFunction) AsFunc(codeGenerationContext *astmodel.CodeGenerationContext, _ astmodel.TypeName) *dst.FuncDecl {
-	return fn.asFunc(fn, codeGenerationContext, fn.name)
+func (fn *PureFunction) AsFunc(
+	codeGenerationContext *astmodel.CodeGenerationContext,
+	_ astmodel.InternalTypeName,
+) (*dst.FuncDecl, error) {
+	return fn.asFunc(fn, codeGenerationContext, fn.name), nil
 }
 
 // Equals checks if this function is equal to the passed in function
@@ -89,6 +93,6 @@ func (fn *PureFunction) AddPackageReference(refs ...astmodel.PackageReference) {
 func (fn *PureFunction) AddReferencedTypes(types ...astmodel.TypeName) {
 	for _, t := range types {
 		fn.referencedTypes.Add(t)
-		fn.requiredPackages.AddReference(t.PackageReference)
+		fn.requiredPackages.AddReference(t.PackageReference())
 	}
 }

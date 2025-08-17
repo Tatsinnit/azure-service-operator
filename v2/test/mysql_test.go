@@ -9,17 +9,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Azure/go-autorest/autorest/to"
-	_ "github.com/go-sql-driver/mysql" //sql drive link
 	. "github.com/onsi/gomega"
+
+	_ "github.com/go-sql-driver/mysql" // sql drive link
 	v1 "k8s.io/api/core/v1"
 
-	mysqlbeta1 "github.com/Azure/azure-service-operator/v2/api/dbformysql/v1beta1"
-	mysql "github.com/Azure/azure-service-operator/v2/api/dbformysql/v1beta20210501"
-	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
+	mysqlv1 "github.com/Azure/azure-service-operator/v2/api/dbformysql/v1"
+	mysql "github.com/Azure/azure-service-operator/v2/api/dbformysql/v1api20210501"
+	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1api20200601"
 	"github.com/Azure/azure-service-operator/v2/internal/set"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 	mysqlutil "github.com/Azure/azure-service-operator/v2/internal/util/mysql"
+	"github.com/Azure/azure-service-operator/v2/internal/util/to"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
 
@@ -62,17 +63,17 @@ func Test_MySQL_Combined(t *testing.T) {
 		testcommon.Subtest{
 			Name: "MySQL Secret Rollover",
 			Test: func(testContext *testcommon.KubePerTestContext) {
-				MySQL_AdminSecret_Rollvoer(testContext, fqdn, adminUsername, adminPasswordKey, adminPassword, secret)
+				MySQL_AdminSecret_Rollover(testContext, fqdn, adminUsername, adminPasswordKey, adminPassword, secret)
 			},
 		},
 	)
 }
 
-// MySQL_AdminSecret_Rollvoer ensures that when a secret is modified, the modified value
+// MySQL_AdminSecret_Rollover ensures that when a secret is modified, the modified value
 // is sent to Azure. This cannot be tested in the recording tests because they do not use
 // a cached client. The index functionality used to check if a secret is being used by an
 // ASO resource requires the cached client (the indexes are local to the cache).
-func MySQL_AdminSecret_Rollvoer(tc *testcommon.KubePerTestContext, fqdn string, adminUsername string, adminPasswordKey string, adminPassword string, secret *v1.Secret) {
+func MySQL_AdminSecret_Rollover(tc *testcommon.KubePerTestContext, fqdn string, adminUsername string, adminPasswordKey string, adminPassword string, secret *v1.Secret) {
 	// Connect to the DB
 	conn, err := mysqlutil.ConnectToDB(
 		tc.Ctx,
@@ -181,16 +182,16 @@ func MySQL_User_CRUD(tc *testcommon.KubePerTestContext, server *mysql.FlexibleSe
 	tc.CreateResource(userSecret)
 
 	username := tc.NoSpaceNamer.GenerateName("user")
-	user := &mysqlbeta1.User{
+	user := &mysqlv1.User{
 		ObjectMeta: tc.MakeObjectMetaWithName(username),
-		Spec: mysqlbeta1.UserSpec{
-			Owner: testcommon.AsOwner(server),
+		Spec: mysqlv1.UserSpec{
+			Owner: testcommon.AsKubernetesOwner(server),
 			Privileges: []string{
 				"CREATE USER",
 				"PROCESS",
 			},
-			LocalUser: &mysqlbeta1.LocalUserSpec{
-				ServerAdminUsername: to.String(server.Spec.AdministratorLogin),
+			LocalUser: &mysqlv1.LocalUserSpec{
+				ServerAdminUsername: to.Value(server.Spec.AdministratorLogin),
 				ServerAdminPassword: server.Spec.AdministratorLoginPassword,
 				Password: &genruntime.SecretReference{
 					Name: userSecret.Name,
@@ -203,13 +204,13 @@ func MySQL_User_CRUD(tc *testcommon.KubePerTestContext, server *mysql.FlexibleSe
 
 	// Connect to the DB
 	ctx := tc.Ctx
-	fqdn := to.String(server.Status.FullyQualifiedDomainName)
+	fqdn := to.Value(server.Status.FullyQualifiedDomainName)
 	conn, err := mysqlutil.ConnectToDB(
 		ctx,
 		fqdn,
 		mysqlutil.SystemDatabase,
 		mysqlutil.ServerPort,
-		to.String(server.Spec.AdministratorLogin),
+		to.Value(server.Spec.AdministratorLogin),
 		adminPassword)
 	tc.Expect(err).ToNot(HaveOccurred())
 	defer conn.Close()
@@ -277,7 +278,49 @@ func MySQL_User_CRUD(tc *testcommon.KubePerTestContext, server *mysql.FlexibleSe
 		2*time.Minute, // We expect this to pass pretty quickly
 	).Should(Succeed())
 
+	originalUser := user.DeepCopy()
+
+	// Confirm that we cannot change the user owner
+	old = user.DeepCopy()
+	user.Spec.Owner.Name = "adifferentowner"
+	err = tc.PatchAndExpectError(old, user)
+	tc.Expect(err).To(HaveOccurred())
+	tc.Expect(err.Error()).To(ContainSubstring("updating 'Owner.Name' is not allowed"))
+
+	// Confirm that we cannot change the user AzureName
+	user = originalUser.DeepCopy()
+	old = user.DeepCopy()
+	user.Spec.AzureName = "adifferentname"
+	err = tc.PatchAndExpectError(old, user)
+	tc.Expect(err).To(HaveOccurred())
+	tc.Expect(err.Error()).To(ContainSubstring("updating 'AzureName' is not allowed"))
+
+	// Confirm that we cannot change the user type from local to AAD
+	user = originalUser.DeepCopy()
+	old = user.DeepCopy()
+	user.Spec.LocalUser = nil
+	user.Spec.AADUser = &mysqlv1.AADUserSpec{
+		ServerAdminUsername: "someadminuser",
+	}
+	err = tc.PatchAndExpectError(old, user)
+	tc.Expect(err).To(HaveOccurred())
+	tc.Expect(err.Error()).To(ContainSubstring("cannot change from local user to AAD user"))
+
+	user = originalUser.DeepCopy()
 	tc.DeleteResourceAndWait(user)
+
+	conn, err = mysqlutil.ConnectToDB(
+		ctx,
+		fqdn,
+		mysqlutil.SystemDatabase,
+		mysqlutil.ServerPort,
+		to.Value(server.Spec.AdministratorLogin),
+		adminPassword)
+	tc.Expect(err).ToNot(HaveOccurred())
+
+	exists, err := mysqlutil.DoesUserExist(ctx, conn, user.Name)
+	tc.Expect(err).ToNot(HaveOccurred())
+	tc.Expect(exists).To(BeFalse())
 }
 
 //func Test_MySQL_Helpers(t *testing.T) {
@@ -356,56 +399,9 @@ func MySQL_User_CRUD(tc *testcommon.KubePerTestContext, server *mysql.FlexibleSe
 //	tc.Expect(exists).To(BeFalse())
 //}
 
-func Test_MySQL_User(t *testing.T) {
-	t.Parallel()
-	tc := globalTestContext.ForTest(t)
-
-	rg := tc.CreateTestResourceGroupAndWait()
-
-	adminUsername := "myadmin"
-	adminPasswordKey := "adminPassword"
-	adminPassword := tc.Namer.GeneratePassword()
-	adminSecret := newSecret(tc, adminPasswordKey, adminPassword)
-
-	passwordKey := "password"
-	password := tc.Namer.GeneratePassword()
-	userSecret := newSecret(tc, passwordKey, password)
-
-	tc.CreateResource(adminSecret)
-	tc.CreateResource(userSecret)
-
-	flexibleServer := newMySQLServer(tc, rg, adminUsername, adminPasswordKey, adminSecret.Name)
-	firewallRule := newMySQLServerOpenFirewallRule(tc, flexibleServer)
-
-	user := &mysqlbeta1.User{
-		ObjectMeta: tc.MakeObjectMetaWithName(tc.NoSpaceNamer.GenerateName("user")),
-		Spec: mysqlbeta1.UserSpec{
-			Owner: testcommon.AsOwner(flexibleServer),
-			Privileges: []string{
-				"CREATE USER",
-				"PROCESS",
-			},
-			LocalUser: &mysqlbeta1.LocalUserSpec{
-				ServerAdminUsername: adminUsername,
-				ServerAdminPassword: flexibleServer.Spec.AdministratorLoginPassword,
-				Password: &genruntime.SecretReference{
-					Name: userSecret.Name,
-					Key:  passwordKey,
-				},
-			},
-		},
-	}
-	tc.CreateResourcesAndWait(flexibleServer, firewallRule, user)
-
-	// TODO: Test other stuff?
-	// TODO: Password rollover?
-
-	tc.DeleteResourceAndWait(user)
-}
-
 func newSecret(tc *testcommon.KubePerTestContext, key string, password string) *v1.Secret {
 	secret := &v1.Secret{
-		ObjectMeta: tc.MakeObjectMeta("mysqlsecret"),
+		ObjectMeta: tc.MakeObjectMeta("secret"),
 		StringData: map[string]string{
 			key: password,
 		},
@@ -417,7 +413,7 @@ func newSecret(tc *testcommon.KubePerTestContext, key string, password string) *
 func newMySQLServer(tc *testcommon.KubePerTestContext, rg *resources.ResourceGroup, adminUsername string, adminKey string, adminSecretName string) *mysql.FlexibleServer {
 	// Force this test to run in a region that is not capacity constrained.
 	// location := tc.AzureRegion TODO: Uncomment this line when West US 2 is no longer constrained
-	location := to.StringPtr("australiaeast")
+	location := to.Ptr("australiaeast")
 
 	version := mysql.ServerVersion_8021
 	secretRef := genruntime.SecretReference{
@@ -432,13 +428,13 @@ func newMySQLServer(tc *testcommon.KubePerTestContext, rg *resources.ResourceGro
 			Owner:    testcommon.AsOwner(rg),
 			Version:  &version,
 			Sku: &mysql.Sku{
-				Name: to.StringPtr("Standard_D4ds_v4"),
+				Name: to.Ptr("Standard_D4ds_v4"),
 				Tier: &tier,
 			},
-			AdministratorLogin:         to.StringPtr(adminUsername),
+			AdministratorLogin:         to.Ptr(adminUsername),
 			AdministratorLoginPassword: &secretRef,
 			Storage: &mysql.Storage{
-				StorageSizeGB: to.IntPtr(128),
+				StorageSizeGB: to.Ptr(128),
 			},
 		},
 	}
@@ -451,10 +447,10 @@ func newMySQLServerOpenFirewallRule(tc *testcommon.KubePerTestContext, flexibleS
 	// because there's no data in the database anyway
 	firewallRule := &mysql.FlexibleServersFirewallRule{
 		ObjectMeta: tc.MakeObjectMeta("firewall"),
-		Spec: mysql.FlexibleServers_FirewallRule_Spec{
+		Spec: mysql.FlexibleServersFirewallRule_Spec{
 			Owner:          testcommon.AsOwner(flexibleServer),
-			StartIpAddress: to.StringPtr("0.0.0.0"),
-			EndIpAddress:   to.StringPtr("255.255.255.255"),
+			StartIpAddress: to.Ptr("0.0.0.0"),
+			EndIpAddress:   to.Ptr("255.255.255.255"),
 		},
 	}
 

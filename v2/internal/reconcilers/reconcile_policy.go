@@ -8,58 +8,28 @@ package reconcilers
 import (
 	"reflect"
 
-	"github.com/Azure/go-autorest/autorest/to"
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
+
+	"github.com/Azure/azure-service-operator/v2/internal/util/to"
+	"github.com/Azure/azure-service-operator/v2/pkg/common/annotations"
 )
 
-// ReconcilePolicyAnnotation describes the reconcile policy for the resource in question.
-// A reconcile policy describes what action (if any) the operator is allowed to take when
-// reconciling the resource.
-// If no reconcile policy is specified, the default is "run"
-const ReconcilePolicyAnnotation = "serviceoperator.azure.com/reconcile-policy"
-
-type ReconcilePolicy string
-
-const (
-	// ReconcilePolicyManage instructs the operator to manage the resource in question.
-	// This includes issuing PUTs to update it and DELETE's to delete it from Azure if deleted in Kuberentes.
-	// This is the default policy when no policy is specified.
-	ReconcilePolicyManage = ReconcilePolicy("manage")
-
-	// ReconcilePolicySkip instructs the operator to skip all reconciliation actions. This includes creating
-	// the resource.
-	ReconcilePolicySkip = ReconcilePolicy("skip")
-
-	// ReconcilePolicyDetachOnDelete instructs the operator to skip deletion of resources in Azure. This allows
-	// deletion of the resource in Kubernetes to go through but does not delete the underlying Azure resource.
-	ReconcilePolicyDetachOnDelete = ReconcilePolicy("detach-on-delete")
-)
-
-// ParseReconcilePolicy parses the provided reconcile policy.
-func ParseReconcilePolicy(policy string) (ReconcilePolicy, error) {
+// ParseReconcilePolicy parses provided reconcile policy.
+// defaultPolicyValue is read from DEFAULT_RECONCILE_POLICY env variable or set to 'manage' when missing
+func ParseReconcilePolicy(policy string, defaultReconcilePolicy annotations.ReconcilePolicyValue) (annotations.ReconcilePolicyValue, error) {
+	// policy is read from CR annotation, if it's empty it being read from defaultReconcilePolicy
 	switch policy {
 	case "":
-		return ReconcilePolicyManage, nil
-	case string(ReconcilePolicyManage):
-		return ReconcilePolicyManage, nil
-	case string(ReconcilePolicySkip):
-		return ReconcilePolicySkip, nil
-	case string(ReconcilePolicyDetachOnDelete):
-		return ReconcilePolicyDetachOnDelete, nil
+		return defaultReconcilePolicy, nil
+	case string(annotations.ReconcilePolicyManage):
+		return annotations.ReconcilePolicyManage, nil
+	case string(annotations.ReconcilePolicySkip):
+		return annotations.ReconcilePolicySkip, nil
+	case string(annotations.ReconcilePolicyDetachOnDelete):
+		return annotations.ReconcilePolicyDetachOnDelete, nil
 	default:
-		// Defaulting to manage.
-		return ReconcilePolicyManage, errors.Errorf("%q is not a known reconcile policy", policy)
+		return defaultReconcilePolicy, eris.Errorf("%q is not a known reconcile policy", policy)
 	}
-}
-
-// AllowsDelete determines if the policy allows deletion of the backing Azure resource
-func (r ReconcilePolicy) AllowsDelete() bool {
-	return r == ReconcilePolicyManage
-}
-
-// AllowsModify determines if the policy allows modification of the backing Azure resource
-func (r ReconcilePolicy) AllowsModify() bool {
-	return r == ReconcilePolicyManage || r == ReconcilePolicyDetachOnDelete
 }
 
 // HasReconcilePolicyAnnotationChanged returns true if the reconcile-policy annotation has
@@ -71,11 +41,11 @@ func HasReconcilePolicyAnnotationChanged(old *string, new *string) bool {
 		return false
 	}
 
-	oldStr := to.String(old)
-	newStr := to.String(new)
+	oldStr := to.Value(old)
+	newStr := to.Value(new)
 
 	// We only care about transitions to or from ReconcilePolicySkip. We don't need to
 	// trigger an event if ReconcilePolicyDetachOnDelete is added or removed, as that annotation
 	// only applies on delete (which we will always run reconcile on).
-	return oldStr == string(ReconcilePolicySkip) || newStr == string(ReconcilePolicySkip)
+	return oldStr == string(annotations.ReconcilePolicySkip) || newStr == string(annotations.ReconcilePolicySkip)
 }

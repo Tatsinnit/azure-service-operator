@@ -8,11 +8,12 @@ package extensions
 import (
 	"context"
 
+	. "github.com/Azure/azure-service-operator/v2/internal/logging"
+
 	"github.com/go-logr/logr"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/Azure/azure-service-operator/v2/internal/genericarmclient"
-	. "github.com/Azure/azure-service-operator/v2/internal/logging"
 	"github.com/Azure/azure-service-operator/v2/internal/resolver"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
@@ -41,8 +42,8 @@ type DeleteFunc = func(
 // the provided default DeleteFunc is run by default.
 func CreateDeleter(
 	host genruntime.ResourceExtension,
-	next DeleteFunc) DeleteFunc {
-
+	next DeleteFunc,
+) DeleteFunc {
 	impl, ok := host.(Deleter)
 	if !ok {
 		return next

@@ -8,41 +8,50 @@ package astmodel
 import (
 	"bytes"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"strings"
 	"text/template"
 
+	"github.com/rotisserie/eris"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
-
-	"github.com/pkg/errors"
-	"k8s.io/klog/v2"
 )
 
 // PackageDefinition is the definition of a package
 type PackageDefinition struct {
-	GroupName   string
-	PackageName string
-	definitions TypeDefinitionSet
+	PackageName string                   // Name  of the package
+	GroupName   string                   // Group to which the package belongs
+	Version     string                   // Kubernetes version of this package
+	Path        string                   // relative Path to the package
+	definitions TypeDefinitionSet        // set of definitions in this package
+	ref         InternalPackageReference // Internal package reference used to reference this package
 }
 
 // NewPackageDefinition constructs a new package definition
-func NewPackageDefinition(groupName string, packageName string) *PackageDefinition {
-	return &PackageDefinition{groupName, packageName, make(TypeDefinitionSet)}
+func NewPackageDefinition(ref InternalPackageReference) *PackageDefinition {
+	result := &PackageDefinition{
+		PackageName: ref.PackageName(),
+		GroupName:   ref.Group(),
+		Path:        ref.FolderPath(),
+		definitions: make(TypeDefinitionSet),
+		ref:         ref,
+	}
+
+	result.Version = result.createVersion(ref)
+
+	return result
 }
 
 func (p *PackageDefinition) Definitions() TypeDefinitionSet {
 	return p.definitions
 }
 
-func (p *PackageDefinition) GetDefinition(typeName TypeName) (TypeDefinition, error) {
-	for _, def := range p.definitions {
-		if TypeEquals(def.Name(), typeName) {
-			return def, nil
-		}
+func (p *PackageDefinition) GetDefinition(typeName InternalTypeName) (TypeDefinition, error) {
+	if def, ok := p.definitions[typeName]; ok {
+		return def, nil
 	}
 
-	return TypeDefinition{}, errors.Errorf("no type with name %s found", typeName)
+	return TypeDefinition{}, eris.Errorf("no type with name %s found", typeName)
 }
 
 // AddDefinition adds a Definition to the PackageDefinition
@@ -51,7 +60,11 @@ func (p *PackageDefinition) AddDefinition(def TypeDefinition) {
 }
 
 // EmitDefinitions emits the PackageDefinition to an output directory
-func (p *PackageDefinition) EmitDefinitions(outputDir string, generatedPackages map[PackageReference]*PackageDefinition, emitDocFiles bool) (int, error) {
+func (p *PackageDefinition) EmitDefinitions(
+	outputDir string,
+	generatedPackages map[InternalPackageReference]*PackageDefinition,
+	emitDocFiles bool,
+) (int, error) {
 	filesToGenerate := allocateTypesToFiles(p.definitions)
 
 	err := p.emitFiles(filesToGenerate, outputDir, generatedPackages)
@@ -59,18 +72,29 @@ func (p *PackageDefinition) EmitDefinitions(outputDir string, generatedPackages 
 		return 0, err
 	}
 
-	// Check if current package contains resources
-	if resources := FindResourceDefinitions(p.definitions); len(resources) > 0 {
+	packageContainsResources := p.containsResources()
+	isStoragePackage := IsStoragePackageReference(p.ref)
+	isCompatPackage := IsCompatPackageReference(p.ref)
 
-		// If package contains resources, then we generate GroupVersion file for the package
-		err = emitGroupVersionFile(p, outputDir)
+	// Check if current package contains resources
+	if packageContainsResources {
+		// generate GroupVersion file for the package
+		err = p.emitGroupVersionFile(outputDir)
 		if err != nil {
 			return 0, err
 		}
+	} else if isCompatPackage {
+		// If it is a compat package, then we generate a stub GroupVersion file
+		err = p.emitSubpackageStub(outputDir)
+		if err != nil {
+			return 0, err
+		}
+	}
 
+	if emitDocFiles && packageContainsResources && !isStoragePackage {
 		// If emitDocFiles is true from config and is not Storage package, then we generate doc file for the package
-		if !strings.HasSuffix(p.PackageName, StoragePackageSuffix) && emitDocFiles {
-			if err = emitDocFile(p, outputDir); err != nil {
+		if !strings.HasSuffix(p.PackageName, StoragePackageName) && emitDocFiles {
+			if err = p.emitDocFile(outputDir); err != nil {
 				return 0, err
 			}
 		}
@@ -84,7 +108,11 @@ func (p *PackageDefinition) DefinitionCount() int {
 	return len(p.definitions)
 }
 
-func (p *PackageDefinition) emitFiles(filesToGenerate map[string][]TypeDefinition, outputDir string, generatedPackages map[PackageReference]*PackageDefinition) error {
+func (p *PackageDefinition) emitFiles(
+	filesToGenerate map[string][]TypeDefinition,
+	outputDir string,
+	generatedPackages map[InternalPackageReference]*PackageDefinition,
+) error {
 	var errs []error
 
 	for fileName, defs := range filesToGenerate {
@@ -117,16 +145,15 @@ func (p *PackageDefinition) emitFiles(filesToGenerate map[string][]TypeDefinitio
 func (p *PackageDefinition) writeCodeFile(
 	outputFile string,
 	defs []TypeDefinition,
-	packages map[PackageReference]*PackageDefinition,
+	packages map[InternalPackageReference]*PackageDefinition,
 ) error {
-	ref := defs[0].Name().PackageReference
+	ref := defs[0].Name().InternalPackageReference()
 	genFile := NewFileDefinition(ref, defs, packages)
 
-	klog.V(5).Infof("Writing code file %q\n", outputFile)
 	fileWriter := NewGoSourceFileWriter(genFile)
 	err := fileWriter.SaveToFile(outputFile)
 	if err != nil {
-		return errors.Wrapf(err, "saving definitions to file %q", outputFile)
+		return eris.Wrapf(err, "saving definitions to file %q", outputFile)
 	}
 
 	return nil
@@ -135,7 +162,7 @@ func (p *PackageDefinition) writeCodeFile(
 func (p *PackageDefinition) writeTestFile(
 	outputFile string,
 	defs []TypeDefinition,
-	packages map[PackageReference]*PackageDefinition,
+	packages map[InternalPackageReference]*PackageDefinition,
 ) error {
 	// First check to see if we have test cases to write
 	haveTestCases := false
@@ -151,14 +178,65 @@ func (p *PackageDefinition) writeTestFile(
 		return nil
 	}
 
-	ref := defs[0].Name().PackageReference
+	ref := defs[0].Name().InternalPackageReference()
 	genFile := NewTestFileDefinition(ref, defs, packages)
 
-	klog.V(5).Infof("Writing test case file %q\n", outputFile)
 	fileWriter := NewGoSourceFileWriter(genFile)
 	err := fileWriter.SaveToFile(outputFile)
 	if err != nil {
-		return errors.Wrapf(err, "writing test cases to file %q", outputFile)
+		return eris.Wrapf(err, "writing test cases to file %q", outputFile)
+	}
+
+	return nil
+}
+
+func (p *PackageDefinition) createVersion(ref InternalPackageReference) string {
+	switch r := ref.(type) {
+	case LocalPackageReference:
+		return r.Version()
+	case DerivedPackageReference:
+		return p.createVersion(r.Base()) + ref.PackageName()
+	}
+
+	return ""
+}
+
+// containsResources returns true if this package contains any resources
+func (p *PackageDefinition) containsResources() bool {
+	for range p.definitions.AllResources() {
+		return true
+	}
+
+	return false
+}
+
+// emitGroupVersionFile writes a `groupversion_info.go` file for the package
+func (p *PackageDefinition) emitGroupVersionFile(outputDir string) error {
+	gvFile := filepath.Join(outputDir, "groupversion_info"+CodeGeneratedFileSuffix+".go")
+	return p.emitTemplateFile(groupVersionFileTemplate, gvFile)
+}
+
+// emitSubpackageStub writes a `subpackage_info_gen.go` stub for subpackages
+func (p *PackageDefinition) emitSubpackageStub(outputDir string) error {
+	gvFile := filepath.Join(outputDir, "subpackage_info"+CodeGeneratedFileSuffix+".go")
+	return p.emitTemplateFile(subpackageStubTemplate, gvFile)
+}
+
+func (p *PackageDefinition) emitDocFile(outputDir string) error {
+	docFile := filepath.Join(outputDir, "doc.go")
+	return p.emitTemplateFile(docFileTemplate, docFile)
+}
+
+func (pkgDef *PackageDefinition) emitTemplateFile(template *template.Template, fileRef string) error {
+	buf := &bytes.Buffer{}
+	err := template.Execute(buf, pkgDef)
+	if err != nil {
+		return err
+	}
+
+	err = os.WriteFile(fileRef, buf.Bytes(), 0o600)
+	if err != nil {
+		return eris.Wrapf(err, "error writing file %q", fileRef)
 	}
 
 	return nil
@@ -207,6 +285,8 @@ func allocateTypesToFiles(definitions TypeDefinitionSet) map[string][]TypeDefini
 	return filesToGenerate
 }
 
+// groupVersionFileTemplate is a template for the `groupversion_info_gen.go` file generated
+// for each API package.
 var groupVersionFileTemplate = template.Must(template.New("groupVersionFile").Parse(`/*
 Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
@@ -219,6 +299,7 @@ Licensed under the MIT license.
 // All object properties are optional by default, this will be overridden when needed:
 // +kubebuilder:validation:Optional
 // +groupName={{.GroupName}}.azure.com
+// +versionName={{.Version}}
 package {{.PackageName}}
 
 import (
@@ -228,7 +309,7 @@ import (
 
 var (
 	// GroupVersion is group version used to register these objects
-	GroupVersion = schema.GroupVersion{Group: "{{.GroupName}}.azure.com", Version: "{{.PackageName}}"}
+	GroupVersion = schema.GroupVersion{Group: "{{.GroupName}}.azure.com", Version: "{{.Version}}"}
 
 	// SchemeBuilder is used to add go types to the GroupVersionKind scheme
 	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
@@ -240,11 +321,20 @@ var (
 )
 `))
 
-func emitGroupVersionFile(pkgDef *PackageDefinition, outputDir string) error {
-	gvFile := filepath.Join(outputDir, "groupversion_info"+CodeGeneratedFileSuffix+".go")
-	return emitTemplateFile(pkgDef, groupVersionFileTemplate, gvFile)
-}
+// subpackageStubTemplate is a template for the `groupversion_info.go` file generated for
+// subpackages within each API package.
+var subpackageStubTemplate = template.Must(template.New("groupVersionFile").Parse(`/*
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT license.
+*/
 
+// Code generated by azure-service-operator-codegen. DO NOT EDIT.
+
+// +kubebuilder:object:generate=true
+package {{.PackageName}}
+`))
+
+// docFileTemplate is a template for the `doc.go` file we generate for each API package.
 var docFileTemplate = template.Must(template.New("docFile").Parse(`/*
 Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
@@ -252,27 +342,7 @@ Licensed under the MIT license.
 
 // Code generated by azure-service-operator-codegen. DO NOT EDIT.
 
-// Package {{.PackageName}} contains API Schema definitions for the {{.GroupName}} {{.PackageName}} API group
+// Package {{.PackageName}} contains API Schema definitions for the {{.GroupName}} {{.Version}} API group
 // +groupName={{.GroupName}}.azure.com
 package {{.PackageName}}
 `))
-
-func emitDocFile(pkgDef *PackageDefinition, outputDir string) error {
-	docFile := filepath.Join(outputDir, "doc.go")
-	return emitTemplateFile(pkgDef, docFileTemplate, docFile)
-}
-
-func emitTemplateFile(pkgDef *PackageDefinition, template *template.Template, fileRef string) error {
-	buf := &bytes.Buffer{}
-	err := template.Execute(buf, pkgDef)
-	if err != nil {
-		return err
-	}
-
-	err = ioutil.WriteFile(fileRef, buf.Bytes(), 0o600)
-	if err != nil {
-		return errors.Wrapf(err, "error writing file %q", fileRef)
-	}
-
-	return nil
-}

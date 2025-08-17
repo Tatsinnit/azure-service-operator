@@ -6,7 +6,7 @@
 package astmodel
 
 import (
-	"sort"
+	"iter"
 )
 
 // PackageReferenceSet represents a set of distinct PackageReferences
@@ -27,7 +27,7 @@ func NewPackageReferenceSet(refs ...PackageReference) *PackageReferenceSet {
 	return result
 }
 
-// AddReference ensures the set includes an specified Reference
+// AddReference ensures the set includes a specified Reference
 func (set *PackageReferenceSet) AddReference(ref PackageReference) {
 	set.references[ref] = struct{}{}
 }
@@ -56,26 +56,15 @@ func (set *PackageReferenceSet) Contains(ref PackageReference) bool {
 	return ok
 }
 
-// AsSlice returns a slice containing all the imports
-func (set *PackageReferenceSet) AsSlice() []PackageReference {
-	result := make([]PackageReference, 0, len(set.references))
-	for ref := range set.references {
-		result = append(result, ref)
+// All returns an iterator over all the references in the set
+func (set *PackageReferenceSet) All() iter.Seq[PackageReference] {
+	return func(yield func(ref PackageReference) bool) {
+		for ref := range set.references {
+			if !yield(ref) {
+				break
+			}
+		}
 	}
-
-	return result
-}
-
-// AsSortedSlice return a sorted slice containing all the references
-// less specifies how to order the imports
-func (set *PackageReferenceSet) AsSortedSlice(less func(i PackageReference, j PackageReference) bool) []PackageReference {
-	result := set.AsSlice()
-
-	sort.Slice(result, func(i int, j int) bool {
-		return less(result[i], result[j])
-	})
-
-	return result
 }
 
 // Length returns the number of unique imports in this set

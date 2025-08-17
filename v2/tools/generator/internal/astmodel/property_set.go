@@ -9,6 +9,7 @@ import (
 	"sort"
 
 	"golang.org/x/exp/maps"
+	kerrors "k8s.io/apimachinery/pkg/util/errors"
 )
 
 // PropertySet wraps a set of property definitions, indexed by name, along with some convenience methods
@@ -24,8 +25,10 @@ type ReadOnlyPropertySet interface {
 	Equals(other ReadOnlyPropertySet, overrides EqualityOverrides) bool
 	First() *PropertyDefinition
 	ForEach(func(def *PropertyDefinition))
+	ForEachError(func(def *PropertyDefinition) error) error
 	IsEmpty() bool
 	Len() int
+	Intersect(other ReadOnlyPropertySet) PropertySet
 }
 
 var _ ReadOnlyPropertySet = PropertySet{} // assert satisfies
@@ -104,6 +107,18 @@ func (p PropertySet) ForEach(f func(*PropertyDefinition)) {
 	}
 }
 
+func (p PropertySet) ForEachError(f func(*PropertyDefinition) error) error {
+	var errs []error
+	for _, v := range p {
+		err := f(v)
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return kerrors.NewAggregate(errs)
+}
+
 func (p PropertySet) Len() int {
 	return len(p)
 }
@@ -126,11 +141,30 @@ func (p PropertySet) Add(property *PropertyDefinition) {
 	p[property.propertyName] = property
 }
 
+// AddSet updates the set by including all the properties in the provided set
+func (p PropertySet) AddSet(properties PropertySet) {
+	for _, prop := range properties {
+		p.Add(prop)
+	}
+}
+
 // Copy returns a new property set with the same properties as this one
 func (p PropertySet) Copy() PropertySet {
 	result := make(PropertySet, len(p))
 	for name, prop := range p {
 		result[name] = prop
+	}
+
+	return result
+}
+
+// Intersect returns a new property set containing only the properties that are in both sets
+func (p PropertySet) Intersect(other ReadOnlyPropertySet) PropertySet {
+	result := make(PropertySet, len(p))
+	for name, prop := range p {
+		if _, ok := other.Get(name); ok {
+			result[name] = prop
+		}
 	}
 
 	return result

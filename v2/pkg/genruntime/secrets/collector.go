@@ -6,9 +6,10 @@
 package secrets
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	"golang.org/x/exp/maps"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -53,11 +54,11 @@ func (c *Collector) get(dest *genruntime.SecretDestination) *v1.Secret {
 
 func (c *Collector) errIfKeyExists(val *v1.Secret, key string) error {
 	if _, ok := val.StringData[key]; ok {
-		return errors.Errorf("key collision, entry exists for key %s in StringData", key)
+		return eris.Errorf("key collision, entry exists for key '%s' in StringData", key)
 	}
 
 	if _, ok := val.Data[key]; ok {
-		return errors.Errorf("key collision, entry exists for key %s in Data", key)
+		return eris.Errorf("key collision, entry exists for key '%s' in Data", key)
 	}
 
 	return nil
@@ -67,7 +68,13 @@ func (c *Collector) errIfKeyExists(val *v1.Secret, key string) error {
 // been added going to the same secret (but with a different key) the new key is merged into the
 // existing secret.
 func (c *Collector) AddValue(dest *genruntime.SecretDestination, value string) {
-	if dest == nil || value == "" {
+	if dest == nil {
+		return
+	}
+
+	if value == "" {
+		// A dest was provided, but we couldn't find the key to match. This is an error
+		c.errors = append(c.errors, eris.Errorf("could not find secret to save to '%s'", dest.String()))
 		return
 	}
 
@@ -109,11 +116,12 @@ func (c *Collector) Values() ([]*v1.Secret, error) {
 	result := maps.Values(c.secrets)
 
 	// Force a deterministic ordering
-	sort.Slice(result, func(i, j int) bool {
-		left := result[i]
-		right := result[j]
+	slices.SortFunc(result, func(left, right *v1.Secret) int {
+		if c := cmp.Compare(left.Namespace, right.Namespace); c != 0 {
+			return c
+		}
 
-		return left.Namespace < right.Namespace || (left.Namespace == right.Namespace && left.Name < right.Name)
+		return cmp.Compare(left.Name, right.Name)
 	})
 
 	return result, nil

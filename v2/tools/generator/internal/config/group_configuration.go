@@ -9,12 +9,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	"gopkg.in/yaml.v3"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 
 	"github.com/Azure/azure-service-operator/v2/internal/set"
-
+	"github.com/Azure/azure-service-operator/v2/internal/util/typo"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
 
@@ -29,15 +29,33 @@ import (
 type GroupConfiguration struct {
 	name     string
 	versions map[string]*VersionConfiguration
-	advisor  *TypoAdvisor
+	advisor  *typo.Advisor
+	// Configurable properties here (alphabetical, please)
+	PayloadType configurable[PayloadType] // Specify how this property should be serialized for ARM
 }
+
+type PayloadType string
+
+const (
+	OmitEmptyProperties      PayloadType = "omitempty"                // Omit all empty properties even collections
+	ExplicitCollections      PayloadType = "explicitcollections"      // Always include collections (as null), omit other empty properties
+	ExplicitEmptyCollections PayloadType = "explicitemptycollections" // Always include collections (as empty map/array), omit other empty properties
+	ExplicitProperties       PayloadType = "explicitproperties"       // Always include all properties
+)
+
+const (
+	payloadTypeTag = "$payloadType" // Enumeration specifying what kind of payload to send to ARM.
+)
 
 // NewGroupConfiguration returns a new (empty) GroupConfiguration
 func NewGroupConfiguration(name string) *GroupConfiguration {
+	scope := "group " + name
 	return &GroupConfiguration{
 		name:     name,
 		versions: make(map[string]*VersionConfiguration),
-		advisor:  NewTypoAdvisor(),
+		advisor:  typo.NewAdvisor(),
+		// Initialize configurable properties here (alphabetical, please)
+		PayloadType: makeConfigurable[PayloadType](payloadTypeTag, scope),
 	}
 }
 
@@ -61,14 +79,14 @@ func (gc *GroupConfiguration) visitVersion(
 	ref astmodel.PackageReference,
 	visitor *configurationVisitor,
 ) error {
-	vc, err := gc.findVersion(ref)
-	if err != nil {
-		return err
+	vc := gc.findVersion(ref)
+	if vc == nil {
+		return nil
 	}
 
-	err = visitor.visitVersion(vc)
+	err := visitor.visitVersion(vc)
 	if err != nil {
-		return errors.Wrapf(err, "configuration of group %s", gc.name)
+		return eris.Wrapf(err, "configuration of group %s", gc.name)
 	}
 
 	return nil
@@ -79,7 +97,7 @@ func (gc *GroupConfiguration) visitVersions(visitor *configurationVisitor) error
 	// All our versions are listed under multiple keys, so we hedge against processing them multiple times
 	versionsSeen := set.Make[string]()
 
-	errs := make([]error, 0)
+	errs := make([]error, 0, len(gc.versions))
 	for _, v := range gc.versions {
 		if versionsSeen.Contains(v.name) {
 			continue
@@ -93,17 +111,17 @@ func (gc *GroupConfiguration) visitVersions(visitor *configurationVisitor) error
 	}
 
 	// Both errors.Wrapf() and kerrors.NewAggregate() return nil if nothing went wrong
-	return errors.Wrapf(
+	return eris.Wrapf(
 		kerrors.NewAggregate(errs),
 		"group %s",
 		gc.name)
 }
 
 // findVersion uses the provided PackageReference to work out which nested VersionConfiguration should be used
-func (gc *GroupConfiguration) findVersion(ref astmodel.PackageReference) (*VersionConfiguration, error) {
+func (gc *GroupConfiguration) findVersion(ref astmodel.PackageReference) *VersionConfiguration {
 	switch r := ref.(type) {
-	case astmodel.StoragePackageReference:
-		return gc.findVersion(r.Local())
+	case astmodel.DerivedPackageReference:
+		return gc.findVersion(r.Base())
 	case astmodel.LocalPackageReference:
 		return gc.findVersionForLocalPackageReference(r)
 	}
@@ -112,16 +130,16 @@ func (gc *GroupConfiguration) findVersion(ref astmodel.PackageReference) (*Versi
 }
 
 // findVersion uses the provided LocalPackageReference to work out which nested VersionConfiguration should be used
-func (gc *GroupConfiguration) findVersionForLocalPackageReference(ref astmodel.LocalPackageReference) (*VersionConfiguration, error) {
-	gc.advisor.AddTerm(ref.ApiVersion())
+func (gc *GroupConfiguration) findVersionForLocalPackageReference(ref astmodel.LocalPackageReference) *VersionConfiguration {
+	gc.advisor.AddTerm(ref.APIVersion())
 	gc.advisor.AddTerm(ref.PackageName())
 
 	// Check based on the ApiVersion alone
-	apiKey := strings.ToLower(ref.ApiVersion())
+	apiKey := strings.ToLower(ref.APIVersion())
 	if version, ok := gc.versions[apiKey]; ok {
 		// make sure there's an exact match on the actual version name, so we don't generate a recommendation
 		gc.advisor.AddTerm(version.name)
-		return version, nil
+		return version
 	}
 
 	// Also check the entire package name (allows config to specify just a particular generator version if needed)
@@ -129,67 +147,64 @@ func (gc *GroupConfiguration) findVersionForLocalPackageReference(ref astmodel.L
 	if version, ok := gc.versions[pkgKey]; ok {
 		// make sure there's an exact match on the actual version name, so we don't generate a recommendation
 		gc.advisor.AddTerm(version.name)
-		return version, nil
+		return version
 	}
 
-	msg := fmt.Sprintf(
-		"configuration of group %s has no detail for version %s",
-		gc.name,
-		ref.PackageName())
-	return nil, NewNotConfiguredError(msg).WithOptions("versions", gc.configuredVersions())
+	return nil
 }
 
 // UnmarshalYAML populates our instance from the YAML.
 // The slice node.Content contains pairs of nodes, first one for an ID, then one for the value.
 func (gc *GroupConfiguration) UnmarshalYAML(value *yaml.Node) error {
 	if value.Kind != yaml.MappingNode {
-		return errors.New("expected mapping")
+		return eris.New("expected mapping")
 	}
 
 	gc.versions = make(map[string]*VersionConfiguration)
-	var lastId string
+	var lastID string
 
 	for i, c := range value.Content {
 		// Grab identifiers and loop to handle the associated value
 		if i%2 == 0 {
-			lastId = c.Value
+			lastID = c.Value
 			continue
 		}
 
 		// Handle nested version metadata
 		if c.Kind == yaml.MappingNode {
-			v := NewVersionConfiguration(lastId)
+			v := NewVersionConfiguration(lastID)
 			err := c.Decode(&v)
 			if err != nil {
-				return errors.Wrapf(err, "decoding yaml for %q", lastId)
+				return eris.Wrapf(err, "decoding yaml for %q", lastID)
 			}
 
-			gc.addVersion(lastId, v)
+			gc.addVersion(lastID, v)
+			continue
+		}
+
+		// $payloadType: <string>
+		if strings.EqualFold(lastID, payloadTypeTag) && c.Kind == yaml.ScalarNode {
+			switch strings.ToLower(c.Value) {
+			case string(OmitEmptyProperties):
+				gc.PayloadType.Set(OmitEmptyProperties)
+			case string(ExplicitCollections):
+				gc.PayloadType.Set(ExplicitCollections)
+			case string(ExplicitEmptyCollections):
+				gc.PayloadType.Set(ExplicitEmptyCollections)
+			case string(ExplicitProperties):
+				gc.PayloadType.Set(ExplicitProperties)
+			default:
+				return eris.Errorf("unknown %s value: %s.", payloadTypeTag, c.Value)
+			}
+
 			continue
 		}
 
 		// No handler for this value, return an error
-		return errors.Errorf(
-			"group configuration, unexpected yaml value %s: %s (line %d col %d)", lastId, c.Value, c.Line, c.Column)
+		return eris.Errorf(
+			"group configuration, unexpected yaml value %s: %s (line %d col %d)", lastID, c.Value, c.Line, c.Column)
+
 	}
 
 	return nil
-}
-
-// configuredVersions returns a sorted slice containing all the versions configured in this group
-func (gc *GroupConfiguration) configuredVersions() []string {
-	// All our versions are listed twice, under two different keys, so we hedge against processing them multiple times
-	versionsSeen := set.Make[string]()
-	result := make([]string, 0, len(gc.versions))
-	for _, v := range gc.versions {
-		if versionsSeen.Contains(v.name) {
-			continue
-		}
-
-		// Use the actual names of the versions, not the lower-cased keys of the map
-		result = append(result, v.name)
-		versionsSeen.Add(v.name)
-	}
-
-	return result
 }

@@ -10,13 +10,14 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	authorization "github.com/Azure/azure-service-operator/v2/api/authorization/v1beta20200801preview"
-	managedidentity "github.com/Azure/azure-service-operator/v2/api/managedidentity/v1beta20181130"
+	authorization "github.com/Azure/azure-service-operator/v2/api/authorization/v1api20200801preview"
+	managedidentity "github.com/Azure/azure-service-operator/v2/api/managedidentity/v1api20181130"
 	"github.com/Azure/azure-service-operator/v2/internal/genericarmclient"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
@@ -52,12 +53,8 @@ func Test_MissingConfigMap_ReturnsError(t *testing.T) {
 	tc.Expect(mi.Status.TenantId).ToNot(BeNil())
 	tc.Expect(mi.Status.PrincipalId).ToNot(BeNil())
 
-	// Now assign that managed identity to a new role
-	roleAssignmentGUID, err := tc.Namer.GenerateUUID()
-	tc.Expect(err).ToNot(HaveOccurred())
-
 	roleAssignment := &authorization.RoleAssignment{
-		ObjectMeta: tc.MakeObjectMetaWithName(roleAssignmentGUID.String()),
+		ObjectMeta: tc.MakeObjectMeta("assignment"),
 		Spec: authorization.RoleAssignment_Spec{
 			Owner: tc.AsExtensionOwner(rg),
 			PrincipalIdFromConfig: &genruntime.ConfigMapReference{
@@ -71,10 +68,14 @@ func Test_MissingConfigMap_ReturnsError(t *testing.T) {
 	}
 
 	tc.CreateResourceAndWaitForState(roleAssignment, metav1.ConditionFalse, conditions.ConditionSeverityWarning)
+
 	// We expect the ready condition to include details of the error
-	tc.Expect(roleAssignment.Status.Conditions[0].Reason).To(Equal(conditions.ReasonConfigMapNotFound.Name))
-	tc.Expect(roleAssignment.Status.Conditions[0].Message).To(
-		ContainSubstring("failed resolving config map references: %s/%s does not exist", tc.Namespace, configMapName))
+	reason := roleAssignment.Status.Conditions[0].Reason
+	tc.Expect(reason).To(Equal(conditions.ReasonConfigMapNotFound.Name))
+
+	message := roleAssignment.Status.Conditions[0].Message
+	tc.Expect(message).To(ContainSubstring("failed resolving config map references"))
+	tc.Expect(message).To(ContainSubstring("%s/%s does not exist", tc.Namespace, configMapName))
 }
 
 func Test_ConfigMapUpdated_TriggersReconcile(t *testing.T) {
@@ -102,10 +103,6 @@ func Test_ConfigMapUpdated_TriggersReconcile(t *testing.T) {
 	tc.Expect(mi.Status.TenantId).ToNot(BeNil())
 	tc.Expect(mi.Status.PrincipalId).ToNot(BeNil())
 
-	// Now assign that managed identity to a new role
-	roleAssignmentGUID, err := tc.Namer.GenerateUUID()
-	tc.Expect(err).ToNot(HaveOccurred())
-
 	// Now create the configMap
 	configMap := &v1.ConfigMap{
 		ObjectMeta: tc.MakeObjectMetaWithName(configMapName),
@@ -116,7 +113,7 @@ func Test_ConfigMapUpdated_TriggersReconcile(t *testing.T) {
 	tc.CreateResource(configMap)
 
 	roleAssignment := &authorization.RoleAssignment{
-		ObjectMeta: tc.MakeObjectMetaWithName(roleAssignmentGUID.String()),
+		ObjectMeta: tc.MakeObjectMeta("assignment"),
 		Spec: authorization.RoleAssignment_Spec{
 			Owner: tc.AsExtensionOwner(rg),
 			PrincipalIdFromConfig: &genruntime.ConfigMapReference{
@@ -162,11 +159,8 @@ func Test_MissingConfigMapKey_ReturnsError(t *testing.T) {
 	}
 	tc.CreateResource(configMap)
 
-	roleAssignmentGUID, err := tc.Namer.GenerateUUID()
-	tc.Expect(err).ToNot(HaveOccurred())
-
 	roleAssignment := &authorization.RoleAssignment{
-		ObjectMeta: tc.MakeObjectMetaWithName(roleAssignmentGUID.String()),
+		ObjectMeta: tc.MakeObjectMeta("assignment"),
 		Spec: authorization.RoleAssignment_Spec{
 			Owner: tc.AsExtensionOwner(rg),
 			PrincipalIdFromConfig: &genruntime.ConfigMapReference{
@@ -204,7 +198,7 @@ func Test_ConfigMapInDifferentNamespace_ConfigMapNotFound(t *testing.T) {
 
 	configMap := &v1.ConfigMap{
 		ObjectMeta: ctrl.ObjectMeta{
-			Namespace: tc.Namespace,
+			Namespace: namespaceName,
 			Name:      configMapName,
 		},
 		Data: map[string]string{
@@ -213,11 +207,8 @@ func Test_ConfigMapInDifferentNamespace_ConfigMapNotFound(t *testing.T) {
 	}
 	tc.CreateResource(configMap)
 
-	roleAssignmentGUID, err := tc.Namer.GenerateUUID()
-	tc.Expect(err).ToNot(HaveOccurred())
-
 	roleAssignment := &authorization.RoleAssignment{
-		ObjectMeta: tc.MakeObjectMetaWithName(roleAssignmentGUID.String()),
+		ObjectMeta: tc.MakeObjectMeta("assignment"),
 		Spec: authorization.RoleAssignment_Spec{
 			Owner: tc.AsExtensionOwner(rg),
 			PrincipalIdFromConfig: &genruntime.ConfigMapReference{
@@ -232,9 +223,12 @@ func Test_ConfigMapInDifferentNamespace_ConfigMapNotFound(t *testing.T) {
 
 	tc.CreateResourceAndWaitForState(roleAssignment, metav1.ConditionFalse, conditions.ConditionSeverityWarning)
 	// We expect the ready condition to include details of the error
-	tc.Expect(roleAssignment.Status.Conditions[0].Reason).To(Equal(conditions.ReasonConfigMapNotFound.Name))
-	tc.Expect(roleAssignment.Status.Conditions[0].Message).To(
-		ContainSubstring("failed resolving config map references: %s/%s does not exist", tc.Namespace, configMapName))
+	reason := roleAssignment.Status.Conditions[0].Reason
+	tc.Expect(reason).To(Equal(conditions.ReasonConfigMapNotFound.Name))
+
+	message := roleAssignment.Status.Conditions[0].Message
+	tc.Expect(message).To(ContainSubstring("failed resolving config map references"))
+	tc.Expect(message).To(ContainSubstring("%s/%s does not exist", tc.Namespace, configMapName))
 
 	tc.DeleteResourceAndWait(rg)
 }
@@ -262,11 +256,11 @@ func Test_UserConfigMapInDifferentNamespace_ShouldNotTriggerReconcile(t *testing
 
 	rg := tc.NewTestResourceGroup()
 	rg.Namespace = ns1
-	tc.CreateResourceGroupAndWait(rg)
+	tc.CreateResourceAndWait(rg)
 
 	rg2 := tc.NewTestResourceGroup()
 	rg2.Namespace = ns2
-	tc.CreateResourceGroupAndWait(rg2)
+	tc.CreateResourceAndWait(rg2)
 
 	mi := &managedidentity.UserAssignedIdentity{
 		ObjectMeta: metav1.ObjectMeta{

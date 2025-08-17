@@ -7,18 +7,18 @@ package jsonast
 
 import (
 	"fmt"
-	"github.com/Azure/azure-service-operator/v2/internal/set"
 	"math/big"
 	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/go-logr/logr"
 	"github.com/go-openapi/jsonpointer"
 	"github.com/go-openapi/spec"
-	"github.com/pkg/errors"
-	"k8s.io/klog/v2"
+	"github.com/rotisserie/eris"
 
+	"github.com/Azure/azure-service-operator/v2/internal/set"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
 
@@ -30,6 +30,7 @@ type OpenAPISchema struct {
 	outputPackage astmodel.LocalPackageReference
 	idFactory     astmodel.IdentifierFactory
 	loader        OpenAPIFileLoader
+	log           logr.Logger
 }
 
 // MakeOpenAPISchema wraps a spec.Swagger to conform to the Schema abstraction
@@ -39,14 +40,18 @@ func MakeOpenAPISchema(
 	fileName string,
 	outputPackage astmodel.LocalPackageReference,
 	idFactory astmodel.IdentifierFactory,
-	cache OpenAPIFileLoader) Schema {
+	cache OpenAPIFileLoader,
+	log logr.Logger,
+) Schema {
 	return &OpenAPISchema{
 		name:          name,
 		inner:         schema,
 		fileName:      fileName,
 		outputPackage: outputPackage,
 		idFactory:     idFactory,
-		loader:        cache}
+		loader:        cache,
+		log:           log,
+	}
 }
 
 func (schema *OpenAPISchema) withNewSchema(newSchema spec.Schema) Schema {
@@ -72,7 +77,7 @@ func (schema *OpenAPISchema) transformOpenAPISlice(slice []spec.Schema) []Schema
 	return result
 }
 
-func (schema *OpenAPISchema) Id() string {
+func (schema *OpenAPISchema) ID() string {
 	return schema.name
 }
 
@@ -188,7 +193,9 @@ func (schema *OpenAPISchema) pattern() *regexp.Regexp {
 
 	result, err := regexp.Compile(p)
 	if err != nil {
-		klog.Warningf("Unable to compile regexp, ignoring: %s", p) // use %s instead of %q or everything gets re-escaped
+		schema.log.V(1).Info(
+			"Ignoring regexp we can't compile",
+			"pattern", p)
 		return nil
 	}
 
@@ -323,10 +330,10 @@ func (schema *OpenAPISchema) isRef() bool {
 	return schema.inner.Ref.GetURL() != nil
 }
 
-func (schema *OpenAPISchema) refTypeName() (astmodel.TypeName, error) {
+func (schema *OpenAPISchema) refTypeName() (astmodel.InternalTypeName, error) {
 	absRefPath, err := findFileForRef(schema.fileName, schema.inner.Ref)
 	if err != nil {
-		return astmodel.EmptyTypeName, err
+		return astmodel.InternalTypeName{}, err
 	}
 
 	// this is the basic type name for the reference
@@ -335,7 +342,7 @@ func (schema *OpenAPISchema) refTypeName() (astmodel.TypeName, error) {
 	// now locate the package name for the reference
 	packageAndSwagger, err := schema.loader.loadFile(absRefPath)
 	if err != nil {
-		return astmodel.EmptyTypeName, err
+		return astmodel.InternalTypeName{}, err
 	}
 
 	// default to using same package as the referring type
@@ -363,19 +370,18 @@ func (schema *OpenAPISchema) refTypeName() (astmodel.TypeName, error) {
 			// or is nil (so could be set to the pulling-in package)
 			if otherSchema.Package == nil || otherSchema.Package.Equals(schema.outputPackage) {
 				if _, ok := otherSchema.Swagger.Definitions[name]; ok {
-					return astmodel.EmptyTypeName, errors.Errorf(
+					return astmodel.InternalTypeName{}, eris.Errorf(
 						"importing type %s from file %s into package %s could generate collision with type in %s",
 						name,
 						absRefPath,
 						pkg,
-						otherFile,
-					)
+						otherFile)
 				}
 			}
 		}
 	}
 
-	return astmodel.MakeTypeName(pkg, schema.idFactory.CreateIdentifier(name, astmodel.Exported)), nil
+	return astmodel.MakeInternalTypeName(pkg, schema.idFactory.CreateIdentifier(name, astmodel.Exported)), nil
 }
 
 func (schema *OpenAPISchema) readOnly() bool {
@@ -401,7 +407,8 @@ func (schema *OpenAPISchema) refSchema() Schema {
 		fileName,
 		outputPackage,
 		schema.idFactory,
-		schema.loader)
+		schema.loader,
+		schema.log)
 }
 
 // findFileForRef identifies the schema path for a ref, relative to the give schema path
@@ -466,7 +473,7 @@ func objectNameFromPointer(ptr *jsonpointer.Pointer) string {
 // resolveAbsolutePath makes an absolute path by combining 'baseFileName' and 'url'
 func resolveAbsolutePath(baseFileName string, url *url.URL) (string, error) {
 	if url.IsAbs() {
-		return "", errors.Errorf("absolute path %q not supported (only relative URLs)", url)
+		return "", eris.Errorf("absolute path %q not supported (only relative URLs)", url)
 	}
 
 	dir := filepath.Dir(baseFileName)

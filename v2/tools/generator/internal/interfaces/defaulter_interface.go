@@ -6,30 +6,29 @@
 package interfaces
 
 import (
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/functions"
 )
 
 func AddDefaulterInterface(
-	resourceDef astmodel.TypeDefinition,
+	resourceName astmodel.InternalTypeName,
+	webhookDef astmodel.TypeDefinition,
 	idFactory astmodel.IdentifierFactory,
-	definitions astmodel.TypeDefinitionSet) (astmodel.TypeDefinition, error) {
-
-	resolved, err := definitions.ResolveResourceSpecAndStatus(resourceDef)
-	if err != nil {
-		return astmodel.TypeDefinition{}, errors.Wrapf(err, "unable to resolve resource %s", resourceDef.Name())
+	defaultFunctions []*functions.DefaultFunction,
+) (astmodel.TypeDefinition, error) {
+	webhhookObject, ok := webhookDef.Type().(*astmodel.ObjectType)
+	if !ok {
+		return astmodel.TypeDefinition{}, eris.Errorf("cannot add defaulter interface to non-object type: %s %T", webhookDef.Name(), webhookDef.Type())
 	}
 
-	defaulterBuilder := functions.NewDefaulterBuilder(resourceDef.Name(), resolved.ResourceType, idFactory)
-
-	// Determine if the resource has a SetName function
-	if resolved.SpecType.HasFunctionWithName(astmodel.SetAzureNameFunc) {
-		defaulterBuilder.AddDefault(functions.NewDefaultAzureNameFunction(resolved.ResourceType, idFactory))
+	defaulterBuilder := functions.NewDefaulterBuilder(resourceName, idFactory)
+	for _, f := range defaultFunctions {
+		defaulterBuilder.AddDefault(f)
 	}
 
-	resourceType := resolved.ResourceType.WithInterface(defaulterBuilder.ToInterfaceImplementation())
+	webhhookObject = webhhookObject.WithInterface(defaulterBuilder.ToInterfaceImplementation())
 
-	return resourceDef.WithType(resourceType), nil
+	return webhookDef.WithType(webhhookObject), nil
 }

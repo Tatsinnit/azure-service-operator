@@ -4,10 +4,10 @@
 package customizations
 
 import (
-	alpha20201101 "github.com/Azure/azure-service-operator/v2/api/network/v1alpha1api20201101"
-	alpha20201101s "github.com/Azure/azure-service-operator/v2/api/network/v1alpha1api20201101storage"
-	v20201101 "github.com/Azure/azure-service-operator/v2/api/network/v1beta20201101"
-	v20201101s "github.com/Azure/azure-service-operator/v2/api/network/v1beta20201101storage"
+	v20201101 "github.com/Azure/azure-service-operator/v2/api/network/v1api20201101"
+	v20201101s "github.com/Azure/azure-service-operator/v2/api/network/v1api20201101/storage"
+	v20240301 "github.com/Azure/azure-service-operator/v2/api/network/v1api20240301"
+	v20240301s "github.com/Azure/azure-service-operator/v2/api/network/v1api20240301/storage"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
 
@@ -17,8 +17,8 @@ type LoadBalancerExtension struct {
 // GetExtendedResources Returns the KubernetesResource slice for Resource versions
 func (extension *LoadBalancerExtension) GetExtendedResources() []genruntime.KubernetesResource {
 	return []genruntime.KubernetesResource{
-		&alpha20201101.LoadBalancer{},
-		&alpha20201101s.LoadBalancer{},
 		&v20201101.LoadBalancer{},
-		&v20201101s.LoadBalancer{}}
+		&v20201101s.LoadBalancer{},
+		&v20240301.LoadBalancer{},
+		&v20240301s.LoadBalancer{}}
 }

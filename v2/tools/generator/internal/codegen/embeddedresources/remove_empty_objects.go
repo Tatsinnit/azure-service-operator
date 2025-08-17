@@ -6,23 +6,26 @@
 package embeddedresources
 
 import (
-	"github.com/pkg/errors"
+	"github.com/go-logr/logr"
+	"github.com/rotisserie/eris"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
-	"k8s.io/klog/v2"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
 
-func RemoveEmptyObjects(definitions astmodel.TypeDefinitionSet) (astmodel.TypeDefinitionSet, error) {
+func RemoveEmptyObjects(
+	definitions astmodel.TypeDefinitionSet,
+	log logr.Logger,
+) (astmodel.TypeDefinitionSet, error) {
 	result := definitions
 	for {
-		toRemove := findEmptyObjectTypes(result)
+		toRemove := findEmptyObjectTypes(result, log)
 		if len(toRemove) == 0 {
 			break
 		}
 
 		var err error
-		result, err = removeReferencesToTypes(result, toRemove)
+		result, err = removeReferencesToTypes(result, toRemove, log)
 		if err != nil {
 			return nil, err
 		}
@@ -31,8 +34,15 @@ func RemoveEmptyObjects(definitions astmodel.TypeDefinitionSet) (astmodel.TypeDe
 	return result, nil
 }
 
-func findEmptyObjectTypes(definitions astmodel.TypeDefinitionSet) astmodel.TypeNameSet {
+func findEmptyObjectTypes(
+	definitions astmodel.TypeDefinitionSet,
+	log logr.Logger,
+) astmodel.TypeNameSet {
 	result := astmodel.NewTypeNameSet()
+
+	// Get all top level spec and status types
+	specs := astmodel.FindSpecDefinitions(definitions)
+	statuses := astmodel.FindStatusDefinitions(definitions)
 
 	for _, def := range definitions {
 		ot, ok := astmodel.AsObjectType(def.Type())
@@ -45,16 +55,32 @@ func findEmptyObjectTypes(definitions astmodel.TypeDefinitionSet) astmodel.TypeN
 			continue
 		}
 
-		klog.V(4).Infof("Removing %q as it has no properties", def.Name())
+		if astmodel.DoNotPrune.IsOn(def.Type()) {
+			continue
+		}
+
+		// Don't prune top level status or spec types, they are allowed to be empty
+		if specs.Contains(def.Name()) || statuses.Contains(def.Name()) {
+			continue
+		}
+
+		log.V(1).Info(
+			"Removing empty type",
+			"name", def.Name())
+
 		result.Add(def.Name())
 	}
 
 	return result
 }
 
-func removeReferencesToTypes(definitions astmodel.TypeDefinitionSet, toRemove astmodel.TypeNameSet) (astmodel.TypeDefinitionSet, error) {
+func removeReferencesToTypes(
+	definitions astmodel.TypeDefinitionSet,
+	toRemove astmodel.TypeNameSet,
+	log logr.Logger,
+) (astmodel.TypeDefinitionSet, error) {
 	result := make(astmodel.TypeDefinitionSet)
-	visitor := makeRemovedTypeVisitor(toRemove)
+	visitor := makeRemovedTypeVisitor(toRemove, log)
 
 	for _, def := range definitions {
 		if toRemove.Contains(def.Name()) {
@@ -63,7 +89,7 @@ func removeReferencesToTypes(definitions astmodel.TypeDefinitionSet, toRemove as
 
 		updatedDef, err := visitor.VisitDefinition(def, nil)
 		if err != nil {
-			return nil, errors.Wrapf(err, "visiting definition %q", def.Name())
+			return nil, eris.Wrapf(err, "visiting definition %q", def.Name())
 		}
 		result.Add(updatedDef)
 	}
@@ -72,12 +98,19 @@ func removeReferencesToTypes(definitions astmodel.TypeDefinitionSet, toRemove as
 }
 
 type visitorCtx struct {
-	typeName *astmodel.TypeName
+	typeName astmodel.InternalTypeName
 }
 
-func makeRemovedTypeVisitor(toRemove astmodel.TypeNameSet) astmodel.TypeVisitor {
+func makeRemovedTypeVisitor(
+	toRemove astmodel.TypeNameSet,
+	log logr.Logger,
+) astmodel.TypeVisitor[*visitorCtx] {
 	// This is basically copied from IdentityVisitOfObjectType, but since it has/needs a per-property context we can't use that
-	removeReferencesToEmptyTypes := func(this *astmodel.TypeVisitor, it *astmodel.ObjectType, ctx interface{}) (astmodel.Type, error) {
+	removeReferencesToEmptyTypes := func(
+		this *astmodel.TypeVisitor[*visitorCtx],
+		it *astmodel.ObjectType,
+		ctx *visitorCtx,
+	) (astmodel.Type, error) {
 		// just map the property types
 		var errs []error
 		var newProps []*astmodel.PropertyDefinition
@@ -86,10 +119,13 @@ func makeRemovedTypeVisitor(toRemove astmodel.TypeNameSet) astmodel.TypeVisitor 
 			p, err := this.Visit(prop.PropertyType(), ctx)
 			if err != nil {
 				errs = append(errs, err)
-			} else if ctx.typeName == nil || !toRemove.Contains(*ctx.typeName) {
+			} else if ctx.typeName.IsEmpty() || !toRemove.Contains(ctx.typeName) {
 				newProps = append(newProps, prop.WithType(p))
-			} else if toRemove.Contains(*ctx.typeName) {
-				klog.V(4).Infof("Removing property %q (referencing %q) as the type has no properties", prop.PropertyName(), *ctx.typeName)
+			} else if toRemove.Contains(ctx.typeName) {
+				log.V(1).Info(
+					"Removing reference to empty type",
+					"property", prop.PropertyName(),
+					"referencing", ctx.typeName)
 			}
 		})
 
@@ -104,7 +140,7 @@ func makeRemovedTypeVisitor(toRemove astmodel.TypeNameSet) astmodel.TypeVisitor 
 			p, err := this.Visit(prop.PropertyType(), ctx)
 			if err != nil {
 				errs = append(errs, err)
-			} else if ctx.typeName != nil && !toRemove.Contains(*ctx.typeName) {
+			} else if !ctx.typeName.IsEmpty() && !toRemove.Contains(ctx.typeName) {
 				newEmbeddedProps = append(newEmbeddedProps, prop.WithType(p))
 			}
 		}
@@ -124,21 +160,26 @@ func makeRemovedTypeVisitor(toRemove astmodel.TypeNameSet) astmodel.TypeVisitor 
 		return result, nil
 	}
 
-	typeNameVisitWithSafetyCheck := func(this *astmodel.TypeVisitor, it astmodel.TypeName, ctx interface{}) (astmodel.Type, error) {
-		typedCtx, ok := ctx.(*visitorCtx)
-		if ok {
-			// Safety check that we're not overwriting typeName
-			if typedCtx.typeName != nil {
-				return nil, errors.Errorf("would've overwritten ctx.typeName %q", typedCtx.typeName)
+	typeNameVisitWithSafetyCheck := func(
+		this *astmodel.TypeVisitor[*visitorCtx],
+		it astmodel.InternalTypeName,
+		ctx *visitorCtx,
+	) (astmodel.Type, error) {
+		// Safety check that we're not overwriting typeName
+		if ctx != nil {
+			if !ctx.typeName.IsEmpty() {
+				return nil, eris.Errorf("would've overwritten ctx.typeName %q", ctx.typeName)
 			}
-			typedCtx.typeName = &it
+
+			ctx.typeName = it
 		}
+
 		return astmodel.IdentityVisitOfTypeName(this, it, ctx)
 	}
 
-	visitor := astmodel.TypeVisitorBuilder{
-		VisitObjectType: removeReferencesToEmptyTypes,
-		VisitTypeName:   typeNameVisitWithSafetyCheck,
+	visitor := astmodel.TypeVisitorBuilder[*visitorCtx]{
+		VisitObjectType:       removeReferencesToEmptyTypes,
+		VisitInternalTypeName: typeNameVisitWithSafetyCheck,
 	}.Build()
 
 	return visitor

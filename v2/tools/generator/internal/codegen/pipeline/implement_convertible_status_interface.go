@@ -8,19 +8,19 @@ package pipeline
 import (
 	"context"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/conversions"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/functions"
 )
 
-// ImplementConvertibleStatusInterfaceStageId is the unique identifier for this pipeline stage
-const ImplementConvertibleStatusInterfaceStageId = "implementConvertibleStatusInterface"
+// ImplementConvertibleStatusInterfaceStageID is the unique identifier for this pipeline stage
+const ImplementConvertibleStatusInterfaceStageID = "implementConvertibleStatusInterface"
 
 func ImplementConvertibleStatusInterface(idFactory astmodel.IdentifierFactory) *Stage {
 	stage := NewStage(
-		ImplementConvertibleStatusInterfaceStageId,
+		ImplementConvertibleStatusInterfaceStageID,
 		"Inject ConvertStatusTo() and ConvertStatusFrom() to implement genruntime.ConvertibleStatus on each Status type",
 		func(ctx context.Context, state *State) (*State, error) {
 			injector := astmodel.NewInterfaceInjector()
@@ -31,14 +31,13 @@ func ImplementConvertibleStatusInterface(idFactory astmodel.IdentifierFactory) *
 				convertible := createConvertibleStatusInterfaceImplementation(def, idFactory)
 				modified, err := injector.Inject(def, convertible)
 				if err != nil {
-					return nil, errors.Wrapf(err, "injecting Convertible interface into %s", name)
+					return nil, eris.Wrapf(err, "injecting Convertible interface into %s", name)
 				}
 
 				modifiedDefs.Add(modified)
 			}
 
-			defs := state.Definitions().OverlayWith(modifiedDefs)
-			return state.WithDefinitions(defs), nil
+			return state.WithOverlaidDefinitions(modifiedDefs), nil
 		})
 
 	stage.RequiresPrerequisiteStages(InjectPropertyAssignmentFunctionsStageID)
@@ -50,7 +49,8 @@ func ImplementConvertibleStatusInterface(idFactory astmodel.IdentifierFactory) *
 // actual code generated.
 func createConvertibleStatusInterfaceImplementation(
 	status astmodel.TypeDefinition,
-	idFactory astmodel.IdentifierFactory) *astmodel.InterfaceImplementation {
+	idFactory astmodel.IdentifierFactory,
+) *astmodel.InterfaceImplementation {
 	container, ok := astmodel.AsFunctionContainer(status.Type())
 	if !ok {
 		// This shouldn't happen due to earlier filtering
@@ -72,8 +72,8 @@ func createConvertibleStatusInterfaceImplementation(
 func createConvertibleStatusFunction(
 	direction conversions.Direction,
 	container astmodel.FunctionContainer,
-	idFactory astmodel.IdentifierFactory) astmodel.Function {
-
+	idFactory astmodel.IdentifierFactory,
+) astmodel.Function {
 	for _, fn := range container.Functions() {
 		if propertyAssignmentFn, ok := fn.(*functions.PropertyAssignmentFunction); ok {
 			if propertyAssignmentFn.Direction() != direction {

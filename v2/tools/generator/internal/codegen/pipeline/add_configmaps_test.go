@@ -40,7 +40,7 @@ func TestAddConfigMaps_AddsSpecWithRequiredConfigMaps(t *testing.T) {
 			spec.Name(),
 			test.FullNameProperty.PropertyName(),
 			func(pc *config.PropertyConfiguration) error {
-				pc.SetImportConfigMapMode(config.ImportConfigMapModeRequired)
+				pc.ImportConfigMapMode.Set(config.ImportConfigMapModeRequired)
 				return nil
 			})).
 		To(Succeed())
@@ -49,7 +49,7 @@ func TestAddConfigMaps_AddsSpecWithRequiredConfigMaps(t *testing.T) {
 			spec.Name(),
 			test.FamilyNameProperty.PropertyName(),
 			func(pc *config.PropertyConfiguration) error {
-				pc.SetImportConfigMapMode(config.ImportConfigMapModeOptional)
+				pc.ImportConfigMapMode.Set(config.ImportConfigMapModeOptional)
 				return nil
 			})).
 		To(Succeed())
@@ -58,7 +58,7 @@ func TestAddConfigMaps_AddsSpecWithRequiredConfigMaps(t *testing.T) {
 			spec.Name(),
 			test.RestrictedNameProperty.PropertyName(),
 			func(pc *config.PropertyConfiguration) error {
-				pc.SetImportConfigMapMode(config.ImportConfigMapModeOptional)
+				pc.ImportConfigMapMode.Set(config.ImportConfigMapModeOptional)
 				return nil
 			})).
 		To(Succeed())
@@ -69,7 +69,7 @@ func TestAddConfigMaps_AddsSpecWithRequiredConfigMaps(t *testing.T) {
 	addConfigMaps := AddConfigMaps(configuration)
 
 	// Don't need a context when testing
-	state := NewState().WithDefinitions(defs)
+	state := NewState(defs)
 	finalState, err := addConfigMaps.Run(context.TODO(), state)
 
 	g.Expect(err).To(Succeed())

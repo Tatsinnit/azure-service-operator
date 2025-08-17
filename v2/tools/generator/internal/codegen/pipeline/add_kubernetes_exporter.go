@@ -8,7 +8,7 @@ package pipeline
 import (
 	"context"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/functions"
@@ -24,12 +24,15 @@ func AddKubernetesExporter(idFactory astmodel.IdentifierFactory) *Stage {
 			defs := state.Definitions()
 			updatedDefs := make(astmodel.TypeDefinitionSet)
 
-			mappings := state.GeneratedConfigMaps()
+			mappings, err := GetStateData[*ExportedTypeNameProperties](state, ExportedConfigMaps)
+			if err != nil {
+				return nil, eris.Wrapf(err, "couldn't find exported config maps")
+			}
 
-			for _, def := range astmodel.FindResourceDefinitions(defs) {
+			for _, def := range defs.AllResources() {
 				resourceType, ok := astmodel.AsResourceType(def.Type())
 				if !ok {
-					return nil, errors.Errorf("%s definition type wasn't a resource", def.Name())
+					return nil, eris.Errorf("%s definition type wasn't a resource", def.Name())
 				}
 
 				configMapMappings, ok := mappings.Get(def.Name())
@@ -37,15 +40,13 @@ func AddKubernetesExporter(idFactory astmodel.IdentifierFactory) *Stage {
 					continue
 				}
 
-				builder := functions.NewKubernetesExporterBuilder(def.Name(), resourceType, idFactory, configMapMappings)
+				builder := functions.NewKubernetesConfigExporterBuilder(def.Name(), resourceType, idFactory, configMapMappings)
 
 				resourceType = resourceType.WithInterface(builder.ToInterfaceImplementation())
 				updatedDef := def.WithType(resourceType)
 				updatedDefs.Add(updatedDef)
 			}
 
-			result := defs.OverlayWith(updatedDefs)
-
-			return state.WithDefinitions(result), nil
+			return state.WithOverlaidDefinitions(updatedDefs), nil
 		})
 }

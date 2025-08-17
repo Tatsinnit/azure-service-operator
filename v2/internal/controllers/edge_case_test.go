@@ -8,16 +8,20 @@ package controllers_test
 import (
 	"testing"
 
-	"github.com/Azure/go-autorest/autorest/to"
 	. "github.com/onsi/gomega"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	network "github.com/Azure/azure-service-operator/v2/api/network/v1beta20201101"
-	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
+	network "github.com/Azure/azure-service-operator/v2/api/network/v1api20201101"
+	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1api20200601"
+	storage "github.com/Azure/azure-service-operator/v2/api/storage/v1api20210401"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
+	"github.com/Azure/azure-service-operator/v2/internal/util/to"
+	"github.com/Azure/azure-service-operator/v2/pkg/common/annotations"
+	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
 )
 
@@ -50,8 +54,7 @@ func storageAccountAndResourceGroupProvisionedOutOfOrderHelper(t *testing.T, wai
 	waitHelper(tc, acct)
 
 	// The resource group should be created successfully
-	_, err := tc.CreateResourceGroup(rg)
-	tc.Expect(err).ToNot(HaveOccurred())
+	tc.CreateResource(rg)
 
 	// The storage account should also be created successfully
 	tc.Eventually(acct).Should(tc.Match.BeProvisioned(0))
@@ -74,9 +77,9 @@ func subnetAndVNETCreatedProvisionedOutOfOrder(t *testing.T, waitHelper func(tc 
 
 	subnet := &network.VirtualNetworksSubnet{
 		ObjectMeta: tc.MakeObjectMeta("subnet"),
-		Spec: network.VirtualNetworks_Subnet_Spec{
+		Spec: network.VirtualNetworksSubnet_Spec{
 			Owner:         testcommon.AsOwner(vnet),
-			AddressPrefix: to.StringPtr("10.0.0.0/24"),
+			AddressPrefix: to.Ptr("10.0.0.0/24"),
 		},
 	}
 
@@ -216,7 +219,42 @@ func Test_Owner_IsImmutableOnceSuccessfullyCreated(t *testing.T) {
 	acct.Spec.Owner = testcommon.AsOwner(rg2)
 	err := tc.PatchAndExpectError(old, acct)
 
-	tc.Expect(err).ToNot(BeNil())
+	tc.Expect(err).To(MatchError(ContainSubstring("updating 'spec.owner.name' is not allowed")))
+	tc.Expect(old.Owner().Name).ToNot(BeIdenticalTo(rg2.Name))
+
+	// Delete the account
+	tc.DeleteResourceAndWait(acct)
+}
+
+func Test_OwnerARMID_IsImmutableOnceSuccessfullyCreated(t *testing.T) {
+	t.Parallel()
+
+	tc := globalTestContext.ForTest(t)
+
+	rg := tc.CreateTestResourceGroupAndWait()
+
+	// Ensure that the RG has an ARM ID set
+	tc.Expect(rg.Status.Id).ToNot(BeNil())
+	tc.Expect(to.Value(rg.Status.Id)).ToNot(BeEmpty())
+
+	acct := newStorageAccount(tc, rg)
+	// Manually set the ARM ID of the owner:
+	acct.Spec.Owner.Name = ""
+	acct.Spec.Owner.ARMID = to.Value(rg.Status.Id)
+	tc.CreateResourcesAndWait(acct)
+
+	rg2 := tc.CreateTestResourceGroupAndWait()
+
+	// Ensure that the RG has an ARM ID set
+	tc.Expect(rg2.Status.Id).ToNot(BeNil())
+	tc.Expect(to.Value(rg2.Status.Id)).ToNot(BeEmpty())
+
+	// Patch the account to change Owner
+	old := acct.DeepCopy()
+	acct.Spec.Owner.ARMID = to.Value(rg2.Status.Id)
+	err := tc.PatchAndExpectError(old, acct)
+
+	tc.Expect(err).To(MatchError(ContainSubstring("updating 'spec.owner.armId' is not allowed")))
 	tc.Expect(old.Owner().Name).ToNot(BeIdenticalTo(rg2.Name))
 
 	// Delete the account
@@ -240,7 +278,7 @@ func Test_AzureName_IsImmutable_IfAzureHasBeenCommunicatedWith(t *testing.T) {
 	acct.Spec.AzureName = tc.NoSpaceNamer.GenerateName("stor")
 	err := tc.PatchAndExpectError(old, acct)
 	tc.Expect(err).To(HaveOccurred())
-	tc.Expect(err.Error()).To(ContainSubstring("updating 'AzureName' is not allowed"))
+	tc.Expect(err.Error()).To(ContainSubstring("updating 'spec.azureName' is not allowed"))
 
 	// Delete the account
 	tc.DeleteResourceAndWait(acct)
@@ -276,4 +314,36 @@ func Test_Owner_IsMutableIfNotSuccessfullyCreated(t *testing.T) {
 	tc.Expect(acct.Owner().Name).ToNot(BeIdenticalTo(invalidOwnerName))
 	// Delete the account
 	tc.DeleteResourceAndWait(acct)
+}
+
+func Test_CreateStorageAccountWithSkipReconcile_SecretsAreWritten(t *testing.T) {
+	t.Parallel()
+	tc := globalTestContext.ForTest(t)
+
+	rg := tc.CreateTestResourceGroupAndWait()
+	secret1 := "keys1"
+
+	acct := newStorageAccount(tc, rg)
+	acct.Spec.OperatorSpec = &storage.StorageAccountOperatorSpec{
+		Secrets: &storage.StorageAccountOperatorSecrets{
+			Key1: &genruntime.SecretDestination{
+				Name: secret1,
+				Key:  "key",
+			},
+		},
+	}
+
+	secret2 := "keys2"
+	skipAcct := acct.DeepCopy()
+	skipAcct.Spec.AzureName = skipAcct.Name
+	skipAcct.Name = skipAcct.Name + "-skip" // So we don't collide
+	skipAcct.Spec.OperatorSpec.Secrets.Key1.Name = secret2
+	skipAcct.Annotations = map[string]string{
+		annotations.ReconcilePolicy: string(annotations.ReconcilePolicySkip),
+	}
+
+	tc.CreateResourcesAndWait(acct, skipAcct)
+
+	tc.ExpectSecretHasKeys(secret1, "key")
+	tc.ExpectSecretHasKeys(secret2, "key")
 }

@@ -9,9 +9,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gobuffalo/flect"
-
 	"github.com/Azure/azure-service-operator/v2/internal/set"
+	"github.com/Azure/azure-service-operator/v2/tools/generator/pkg/names"
 )
 
 type KnownLocalsSet struct {
@@ -30,14 +29,12 @@ func NewKnownLocalsSet(idFactory IdentifierFactory) *KnownLocalsSet {
 
 // CreateSingularLocal creates a new unique Go local variable for a single value with one of the specified suffixes.
 func (locals *KnownLocalsSet) CreateSingularLocal(nameHint string, suffixes ...string) string {
-	hint := flect.Singularize(nameHint)
-	return locals.CreateLocal(hint, suffixes...)
+	return locals.CreateLocal(names.Singularize(nameHint), suffixes...)
 }
 
 // CreatePluralLocal creates a new unique Go local variable for multiple values with one of the specified suffixes.
 func (locals *KnownLocalsSet) CreatePluralLocal(nameHint string, suffixes ...string) string {
-	hint := flect.Pluralize(nameHint)
-	return locals.CreateLocal(hint, suffixes...)
+	return locals.CreateLocal(names.Pluralize(nameHint), suffixes...)
 }
 
 // CreateLocal creates a new unique Go local variable with one of the specified suffixes.

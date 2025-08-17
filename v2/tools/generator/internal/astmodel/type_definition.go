@@ -10,24 +10,24 @@ import (
 	"go/token"
 
 	"github.com/dave/dst"
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 )
 
 // TypeDefinition is a name paired with a type
 type TypeDefinition struct {
-	name        TypeName
+	name        InternalTypeName
 	description []string
 	theType     Type
 }
 
-func MakeTypeDefinition(name TypeName, theType Type) TypeDefinition {
+func MakeTypeDefinition(name InternalTypeName, theType Type) TypeDefinition {
 	return TypeDefinition{name: name, theType: theType}
 }
 
 // Name returns the name being associated with the type
-func (def TypeDefinition) Name() TypeName {
+func (def TypeDefinition) Name() InternalTypeName {
 	return def.name
 }
 
@@ -67,23 +67,17 @@ func (def TypeDefinition) WithType(t Type) TypeDefinition {
 }
 
 // WithName returns an updated TypeDefinition with the specified name
-func (def TypeDefinition) WithName(typeName TypeName) TypeDefinition {
+func (def TypeDefinition) WithName(typeName InternalTypeName) TypeDefinition {
 	result := def
 	result.name = typeName
 	return result
 }
 
-func (def TypeDefinition) AsDeclarations(codeGenerationContext *CodeGenerationContext) []dst.Decl {
+func (def TypeDefinition) AsDeclarations(codeGenerationContext *CodeGenerationContext) ([]dst.Decl, error) {
 	declContext := DeclarationContext{
 		Name:        def.name,
 		Description: def.description,
 	}
-
-	defer func() {
-		if p := recover(); p != nil {
-			panic(fmt.Sprintf("generating %s: %s", def.name, p))
-		}
-	}()
 
 	return def.theType.AsDeclarations(codeGenerationContext, declContext)
 }
@@ -93,13 +87,18 @@ func AsSimpleDeclarations(
 	codeGenerationContext *CodeGenerationContext,
 	declContext DeclarationContext,
 	theType Type,
-) []dst.Decl {
+) ([]dst.Decl, error) {
 	var docComments dst.Decorations
 	if len(declContext.Description) > 0 {
 		astbuilder.AddWrappedComments(&docComments, declContext.Description)
 	}
 
 	AddValidationComments(&docComments, declContext.Validations)
+
+	theTypeExpr, err := theType.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating simple declaration")
+	}
 
 	result := &dst.GenDecl{
 		Decs: dst.GenDeclDecorations{
@@ -112,17 +111,22 @@ func AsSimpleDeclarations(
 		Specs: []dst.Spec{
 			&dst.TypeSpec{
 				Name: dst.NewIdent(declContext.Name.Name()),
-				Type: theType.AsType(codeGenerationContext),
+				Type: theTypeExpr,
 			},
 		},
 	}
 
-	return []dst.Decl{result}
+	return astbuilder.Declarations(result), nil
 }
 
 // RequiredPackageReferences returns a list of packages required by this type
 func (def TypeDefinition) RequiredPackageReferences() *PackageReferenceSet {
-	return def.theType.RequiredPackageReferences()
+	result := def.theType.RequiredPackageReferences()
+
+	// TypeDefinition should not reference its own package
+	result.Remove(def.name.PackageReference())
+
+	return result
 }
 
 func (def TypeDefinition) HasTestCases() bool {
@@ -139,7 +143,7 @@ func (def TypeDefinition) HasTestCases() bool {
 // FileNameHint returns what a file that contains this name (if any) should be called
 // this is not always used as we often combine multiple definitions into one file
 func FileNameHint(name TypeName) string {
-	return transformToSnakeCase(name.name)
+	return transformToSnakeCase(name.Name())
 }
 
 // ApplyObjectTransformation applies a specific transformation to the ObjectType contained by this
@@ -159,17 +163,17 @@ func (def TypeDefinition) ApplyObjectTransformation(transform func(*ObjectType) 
 		return rt, nil
 	}
 
-	visitor := TypeVisitorBuilder{
+	visitor := TypeVisitorBuilder[any]{
 		VisitObjectType: transformObject,
 	}.Build()
 
 	newType, err := visitor.Visit(def.theType, nil)
 	if err != nil {
-		return TypeDefinition{}, errors.Wrapf(err, "transformation of %s failed", def.name)
+		return TypeDefinition{}, eris.Wrapf(err, "transformation of %s failed", def.name)
 	}
 
 	if !visited {
-		return TypeDefinition{}, errors.Errorf("transformation was not applied to %s (expected object type, found %s)", def.name, def.theType)
+		return TypeDefinition{}, eris.Errorf("transformation was not applied to %s (expected object type, found %s)", def.name, def.theType)
 	}
 
 	result := def.WithType(newType)
@@ -186,7 +190,7 @@ func (def TypeDefinition) ApplyObjectTransformations(transforms ...func(*ObjectT
 		for i, transform := range transforms {
 			rt, err := transform(result)
 			if err != nil {
-				return nil, errors.Wrapf(err, "failed to apply object transformation %d", i)
+				return nil, eris.Wrapf(err, "failed to apply object transformation %d", i)
 			}
 
 			result = rt

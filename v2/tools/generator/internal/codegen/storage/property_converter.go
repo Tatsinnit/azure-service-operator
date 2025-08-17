@@ -8,7 +8,7 @@ package storage
 import (
 	"fmt"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
@@ -16,7 +16,7 @@ import (
 // PropertyConverter is used to convert the properties of object definitions as required for storage variants
 type PropertyConverter struct {
 	// visitor is used to apply the modification
-	visitor astmodel.TypeVisitor
+	visitor astmodel.TypeVisitor[any]
 	// definitions contains all the definitions for this group
 	definitions astmodel.TypeDefinitionSet
 	// propertyConversions is an ordered list of all our conversion rules for creating storage variants
@@ -35,10 +35,10 @@ func NewPropertyConverter(definitions astmodel.TypeDefinitionSet) *PropertyConve
 		result.defaultPropertyConversion,
 	}
 
-	result.visitor = astmodel.TypeVisitorBuilder{
-		VisitEnumType:      result.useBaseTypeForEnumerations,
-		VisitValidatedType: result.stripAllValidations,
-		VisitTypeName:      result.shortCircuitNamesOfSimpleTypes,
+	result.visitor = astmodel.TypeVisitorBuilder[any]{
+		VisitEnumType:         result.useBaseTypeForEnumerations,
+		VisitValidatedType:    result.stripAllValidations,
+		VisitInternalTypeName: result.shortCircuitNamesOfSimpleTypes,
 	}.Build()
 
 	return result
@@ -67,7 +67,8 @@ func (p *PropertyConverter) ConvertProperty(property *astmodel.PropertyDefinitio
 
 // stripAllValidations removes all validations
 func (p *PropertyConverter) stripAllValidations(
-	this *astmodel.TypeVisitor, v *astmodel.ValidatedType, ctx interface{}) (astmodel.Type, error) {
+	this *astmodel.TypeVisitor[any], v *astmodel.ValidatedType, ctx any,
+) (astmodel.Type, error) {
 	// strip all type validations from storage properties
 	// act as if they do not exist
 	return this.Visit(v.ElementType(), ctx)
@@ -75,7 +76,8 @@ func (p *PropertyConverter) stripAllValidations(
 
 // useBaseTypeForEnumerations replaces an enumeration with its underlying base type
 func (p *PropertyConverter) useBaseTypeForEnumerations(
-	tv *astmodel.TypeVisitor, et *astmodel.EnumType, ctx interface{}) (astmodel.Type, error) {
+	tv *astmodel.TypeVisitor[any], et *astmodel.EnumType, ctx any,
+) (astmodel.Type, error) {
 	return tv.Visit(et.BaseType(), ctx)
 }
 
@@ -84,13 +86,13 @@ func (p *PropertyConverter) useBaseTypeForEnumerations(
 //	o  If a TypeName points into an API package, it is redirected into the appropriate storage package
 //	o  If a TypeName references an enumeration, it is replaced with the underlying type of the enumeration as our
 //	   storage definitions don't use enumerations, they use primitive definitions
-//	o  If a TypeName references an alias for a primitive type (these are used to specify validations), it is replace
+//	o  If a TypeName references an alias for a primitive type (these are used to specify validations), it is replaced
 //	   with the primitive type
 func (p *PropertyConverter) shortCircuitNamesOfSimpleTypes(
-	tv *astmodel.TypeVisitor, tn astmodel.TypeName, ctx interface{}) (astmodel.Type, error) {
-
+	tv *astmodel.TypeVisitor[any], tn astmodel.InternalTypeName, ctx any,
+) (astmodel.Type, error) {
 	// for nonlocal packages, preserve the name as is
-	if astmodel.IsExternalPackageReference(tn.PackageReference) {
+	if astmodel.IsExternalPackageReference(tn.PackageReference()) {
 		return tn, nil
 	}
 
@@ -117,15 +119,12 @@ func (p *PropertyConverter) shortCircuitNamesOfSimpleTypes(
 	return tv.Visit(actualType, ctx)
 }
 
-func (_ *PropertyConverter) tryConvertToStoragePackage(name astmodel.TypeName) (astmodel.TypeName, bool) {
+func (*PropertyConverter) tryConvertToStoragePackage(name astmodel.InternalTypeName) (astmodel.InternalTypeName, bool) {
 	// Map the type name into our storage package
-	localRef, ok := name.PackageReference.(astmodel.LocalPackageReference)
-	if !ok {
-		return astmodel.EmptyTypeName, false
-	}
+	localRef := name.InternalPackageReference()
 
 	storageRef := astmodel.MakeStoragePackageReference(localRef)
-	visitedName := astmodel.MakeTypeName(storageRef, name.Name())
+	visitedName := astmodel.MakeInternalTypeName(storageRef, name.Name())
 	return visitedName, true
 }
 
@@ -137,10 +136,17 @@ type propertyConversion = func(property *astmodel.PropertyDefinition) (*astmodel
 // preserveKubernetesResourceStorageProperties preserves properties required by the
 // KubernetesResource interface as they're always required exactly as declared
 func (p *PropertyConverter) preserveKubernetesResourceStorageProperties(
-	prop *astmodel.PropertyDefinition) (*astmodel.PropertyDefinition, error) {
-
+	prop *astmodel.PropertyDefinition,
+) (*astmodel.PropertyDefinition, error) {
 	if astmodel.IsKubernetesResourceProperty(prop.PropertyName()) {
-		// Keep these unchanged
+		// Keep these (mostly) unchanged
+		if vt, ok := prop.PropertyType().(*astmodel.ValidatedType); ok {
+			stripped, err := p.stripAllValidations(&p.visitor, vt, nil)
+			if err != nil {
+				return nil, err
+			}
+			prop = prop.WithType(stripped)
+		}
 		return prop, nil
 	}
 
@@ -151,8 +157,8 @@ func (p *PropertyConverter) preserveKubernetesResourceStorageProperties(
 // preserveResourceReferenceProperties preserves properties required by the
 // KubernetesResource interface as they're always required exactly as declared
 func (p *PropertyConverter) preserveResourceReferenceProperties(
-	prop *astmodel.PropertyDefinition) (*astmodel.PropertyDefinition, error) {
-
+	prop *astmodel.PropertyDefinition,
+) (*astmodel.PropertyDefinition, error) {
 	propertyType := prop.PropertyType()
 	if opt, ok := astmodel.AsOptionalType(propertyType); ok {
 		if astmodel.TypeEquals(opt.Element(), astmodel.ResourceReferenceType) {
@@ -171,11 +177,11 @@ func (p *PropertyConverter) preserveResourceReferenceProperties(
 }
 
 func (p *PropertyConverter) defaultPropertyConversion(
-	property *astmodel.PropertyDefinition) (*astmodel.PropertyDefinition, error) {
-
+	property *astmodel.PropertyDefinition,
+) (*astmodel.PropertyDefinition, error) {
 	propertyType, err := p.visitor.Visit(property.PropertyType(), nil)
 	if err != nil {
-		return nil, errors.Wrapf(err, "converting property %q", property.PropertyName())
+		return nil, eris.Wrapf(err, "converting property %q", property.PropertyName())
 	}
 
 	newProperty := property.WithType(propertyType).

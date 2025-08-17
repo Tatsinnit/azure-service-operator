@@ -27,17 +27,26 @@ var _ astmodel.Function = &ObjectFunction{}
 func NewObjectFunction(
 	name string,
 	idFactory astmodel.IdentifierFactory,
-	asFunc ObjectFunctionHandler) *ObjectFunction {
+	asFunc ObjectFunctionHandler,
+	requiredPackages ...astmodel.PackageReference,
+) *ObjectFunction {
+	packages := astmodel.NewPackageReferenceSet(requiredPackages...)
+
 	return &ObjectFunction{
 		name:             name,
 		asFunc:           asFunc,
-		requiredPackages: astmodel.NewPackageReferenceSet(),
+		requiredPackages: packages,
 		referencedTypes:  astmodel.NewTypeNameSet(),
 		idFactory:        idFactory,
 	}
 }
 
-type ObjectFunctionHandler func(f *ObjectFunction, codeGenerationContext *astmodel.CodeGenerationContext, receiver astmodel.TypeName, methodName string) *dst.FuncDecl
+type ObjectFunctionHandler func(
+	f *ObjectFunction,
+	codeGenerationContext *astmodel.CodeGenerationContext,
+	receiver astmodel.TypeName,
+	methodName string,
+) (*dst.FuncDecl, error)
 
 // Name returns the unique name of this function
 // (You can't have two functions with the same name on the same object or resource)
@@ -45,7 +54,7 @@ func (fn *ObjectFunction) Name() string {
 	return fn.name
 }
 
-func (fn *ObjectFunction) IdFactory() astmodel.IdentifierFactory {
+func (fn *ObjectFunction) IDFactory() astmodel.IdentifierFactory {
 	return fn.idFactory
 }
 
@@ -62,7 +71,10 @@ func (fn *ObjectFunction) References() astmodel.TypeNameSet {
 }
 
 // AsFunc renders the current instance as a Go abstract syntax tree
-func (fn *ObjectFunction) AsFunc(codeGenerationContext *astmodel.CodeGenerationContext, receiver astmodel.TypeName) *dst.FuncDecl {
+func (fn *ObjectFunction) AsFunc(
+	codeGenerationContext *astmodel.CodeGenerationContext,
+	receiver astmodel.InternalTypeName,
+) (*dst.FuncDecl, error) {
 	return fn.asFunc(fn, codeGenerationContext, receiver, fn.name)
 }
 
@@ -90,6 +102,6 @@ func (fn *ObjectFunction) AddPackageReference(refs ...astmodel.PackageReference)
 func (fn *ObjectFunction) AddReferencedTypes(types ...astmodel.TypeName) {
 	for _, t := range types {
 		fn.referencedTypes.Add(t)
-		fn.requiredPackages.AddReference(t.PackageReference)
+		fn.requiredPackages.AddReference(t.PackageReference())
 	}
 }

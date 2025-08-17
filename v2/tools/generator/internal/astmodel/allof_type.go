@@ -11,8 +11,7 @@ import (
 	"strings"
 
 	"github.com/dave/dst"
-	"github.com/pkg/errors"
-	"k8s.io/klog/v2"
+	"github.com/rotisserie/eris"
 )
 
 // AllOfType represents something that is the union
@@ -82,9 +81,8 @@ func BuildAllOfType(types ...Type) Type {
 
 		return onlyOneOf.WithTypes(ts)
 	} else if len(oneOfs) > 1 {
-		// emit a warning if this ever comes up
-		// (it doesn't at the moment)
-		klog.Warningf("More than one oneOf inside allOf")
+		// panic if this ever comes up (it doesn't at the moment)
+		panic(eris.New("More than one oneOf inside allOf"))
 	}
 
 	// 0 oneOf (nothing to do) or >1 oneOf (too hard)
@@ -94,7 +92,7 @@ func BuildAllOfType(types ...Type) Type {
 // Types returns what types the AllOf can be.
 // Exposed as ReadonlyTypeSet so caller can't break invariants.
 func (allOf *AllOfType) Types() ReadonlyTypeSet {
-	return allOf.types
+	return &allOf.types
 }
 
 // References returns any type referenced by the AllOf types
@@ -107,30 +105,33 @@ func (allOf *AllOfType) References() TypeNameSet {
 	return result
 }
 
-var allOfPanicMsg = "AllOfType should have been replaced by generation time by 'convertAllOfAndOneOf' phase"
+var allOfFailureMsg = "AllOfType should have been replaced by generation time by 'convertAllOfAndOneOf' phase"
 
 // AsType always panics; AllOf cannot be represented by the Go AST and must be
 // lowered to an object type
-func (allOf *AllOfType) AsType(_ *CodeGenerationContext) dst.Expr {
-	panic(errors.New(allOfPanicMsg))
+func (allOf *AllOfType) AsTypeExpr(codeGenerationContext *CodeGenerationContext) (dst.Expr, error) {
+	panic(eris.New(allOfFailureMsg))
 }
 
 // AsDeclarations always panics; AllOf cannot be represented by the Go AST and must be
 // lowered to an object type
-func (allOf *AllOfType) AsDeclarations(_ *CodeGenerationContext, _ DeclarationContext) []dst.Decl {
-	panic(errors.New(allOfPanicMsg))
+func (allOf *AllOfType) AsDeclarations(
+	codeGenerationContext *CodeGenerationContext,
+	declContext DeclarationContext,
+) ([]dst.Decl, error) {
+	panic(eris.New(allOfFailureMsg))
 }
 
 // AsZero always panics; AllOf cannot be represented by the Go AST and must be
 // lowered to an object type
 func (allOf *AllOfType) AsZero(_ TypeDefinitionSet, _ *CodeGenerationContext) dst.Expr {
-	panic(errors.New(allOfPanicMsg))
+	panic(eris.New(allOfFailureMsg))
 }
 
 // RequiredPackageReferences always panics; AllOf cannot be represented by the Go AST and must be
 // lowered to an object type
 func (allOf *AllOfType) RequiredPackageReferences() *PackageReferenceSet {
-	panic(errors.New(allOfPanicMsg))
+	panic(eris.New(allOfFailureMsg))
 }
 
 // Equals returns true if the other Type is a AllOf that contains
@@ -165,7 +166,7 @@ func (allOf *AllOfType) String() string {
 // WriteDebugDescription adds a description of the current AnyOf type to the passed builder.
 // builder receives the full description, including nested types.
 // definitions is a dictionary for resolving named types.
-func (allOf *AllOfType) WriteDebugDescription(builder *strings.Builder, currentPackage PackageReference) {
+func (allOf *AllOfType) WriteDebugDescription(builder *strings.Builder, currentPackage InternalPackageReference) {
 	if allOf == nil {
 		builder.WriteString("<nilAllOf>")
 		return

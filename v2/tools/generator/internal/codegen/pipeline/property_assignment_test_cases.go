@@ -6,12 +6,13 @@
 package pipeline
 
 import (
+	"github.com/rotisserie/eris"
+	"golang.org/x/net/context"
+	kerrors "k8s.io/apimachinery/pkg/util/errors"
+
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/functions"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/testcases"
-	"github.com/pkg/errors"
-	"golang.org/x/net/context"
-	kerrors "k8s.io/apimachinery/pkg/util/errors"
 )
 
 // InjectPropertyAssignmentTestsID is the unique identifier for this stage
@@ -40,12 +41,12 @@ func InjectPropertyAssignmentTests(idFactory astmodel.IdentifierFactory) *Stage 
 				return nil, kerrors.NewAggregate(errs)
 			}
 
-			return state.WithDefinitions(state.Definitions().OverlayWith(modifiedDefs)), nil
+			return state.WithOverlaidDefinitions(modifiedDefs), nil
 		})
 
 	stage.RequiresPrerequisiteStages(
 		InjectPropertyAssignmentFunctionsStageID, // Need PropertyAssignmentFunctions to test
-		InjectJsonSerializationTestsID)           // We reuse the generators from the JSON tests
+		InjectJSONSerializationTestsID)           // We reuse the generators from the JSON tests
 
 	return stage
 }
@@ -80,7 +81,7 @@ func (s *propertyAssignmentTestCaseFactory) NeedsTest(def astmodel.TypeDefinitio
 func (s *propertyAssignmentTestCaseFactory) AddTestTo(def astmodel.TypeDefinition) (astmodel.TypeDefinition, error) {
 	container, ok := astmodel.AsFunctionContainer(def.Type())
 	if !ok {
-		return astmodel.TypeDefinition{}, errors.Errorf("expected %s to be a function container", def.Name())
+		return astmodel.TypeDefinition{}, eris.Errorf("expected %s to be a function container", def.Name())
 	}
 
 	testCase := testcases.NewPropertyAssignmentTestCase(def.Name(), container, s.idFactory)

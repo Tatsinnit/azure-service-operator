@@ -22,7 +22,7 @@ func NewReadableConversionEndpointSet() ReadableConversionEndpointSet {
 func (set ReadableConversionEndpointSet) CreatePropertyEndpoints(sourceType astmodel.Type) int {
 	// Add an endpoint for each property we can read
 	return set.addForEachProperty(sourceType, func(prop *astmodel.PropertyDefinition) *ReadableConversionEndpoint {
-		return NewReadableConversionEndpointReadingProperty(prop.PropertyName(), prop.PropertyType())
+		return NewReadableConversionEndpointReadingProperty(prop)
 	})
 }
 
@@ -33,20 +33,6 @@ func (set ReadableConversionEndpointSet) CreateValueFunctionEndpoints(sourceType
 	// Add more endpoints for any value functions we can read
 	return set.addForEachValueFunction(sourceType, func(fn astmodel.ValueFunction) *ReadableConversionEndpoint {
 		return NewReadableConversionEndpointReadingValueFunction(fn.Name(), fn.ReturnType())
-	})
-}
-
-// CreatePropertyBagMemberEndpoints will create additional property bag item endpoints for any property on the passed
-// instance type that doesn't already have one. Returns the count of new endpoints created.
-//
-// Background: When our source instance has a property bag, that bag might contain values we can write into properties
-// on our destination instance. We therefore iterate through each property on the *destination* type and create a
-// ReadableConversionEndpoint for each one that looks in the property bag for a value.
-func (set ReadableConversionEndpointSet) CreatePropertyBagMemberEndpoints(destinationType astmodel.Type) int {
-	// Add a property bag item endpoint for each property we don't already support
-	return set.addForEachProperty(destinationType, func(prop *astmodel.PropertyDefinition) *ReadableConversionEndpoint {
-		name := string(prop.PropertyName())
-		return NewReadableConversionEndpointReadingPropertyBagMember(name, prop.PropertyType())
 	})
 }
 
@@ -128,4 +114,9 @@ func (set ReadableConversionEndpointSet) addForEachValueFunction(
 	}
 
 	return count
+}
+
+// Delete removes a specific endpoint from the set
+func (set ReadableConversionEndpointSet) Delete(name string) {
+	delete(set, name)
 }

@@ -9,7 +9,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
@@ -29,7 +29,7 @@ func VerifyNoErroredTypes() *Stage {
 
 				_, err := visitor.visitor.Visit(def.Type(), erroredTypeVisitorContext{name: def.Name()})
 				if err != nil {
-					return nil, errors.Wrapf(err, "failed while visiting %q", def.Name())
+					return nil, eris.Wrapf(err, "failed while visiting %q", def.Name())
 				}
 			}
 
@@ -48,18 +48,17 @@ func VerifyNoErroredTypes() *Stage {
 
 type errorCollectingVisitor struct {
 	errs    []error
-	visitor astmodel.TypeVisitor
+	visitor astmodel.TypeVisitor[erroredTypeVisitorContext]
 }
 
 func newErrorCollectingVisitor() *errorCollectingVisitor {
 	includePropertyContext := astmodel.MakeIdentityVisitOfObjectType(
-		func(_ *astmodel.ObjectType, prop *astmodel.PropertyDefinition, ctx interface{}) (interface{}, error) {
-			typedCtx := ctx.(erroredTypeVisitorContext)
-			return typedCtx.WithProperty(prop.PropertyName()), nil
+		func(_ *astmodel.ObjectType, prop *astmodel.PropertyDefinition, ctx erroredTypeVisitorContext) (erroredTypeVisitorContext, error) {
+			return ctx.WithProperty(prop.PropertyName()), nil
 		})
 
 	result := &errorCollectingVisitor{}
-	result.visitor = astmodel.TypeVisitorBuilder{
+	result.visitor = astmodel.TypeVisitorBuilder[erroredTypeVisitorContext]{
 		VisitErroredType:  result.catalogErrors,
 		VisitObjectType:   includePropertyContext,
 		VisitResourceType: includeResourcePropertyContext,
@@ -68,27 +67,32 @@ func newErrorCollectingVisitor() *errorCollectingVisitor {
 	return result
 }
 
-func (v *errorCollectingVisitor) catalogErrors(this *astmodel.TypeVisitor, it *astmodel.ErroredType, ctx interface{}) (astmodel.Type, error) {
-	typedCtx := ctx.(erroredTypeVisitorContext)
+func (v *errorCollectingVisitor) catalogErrors(
+	this *astmodel.TypeVisitor[erroredTypeVisitorContext],
+	it *astmodel.ErroredType,
+	ctx erroredTypeVisitorContext,
+) (astmodel.Type, error) {
 	if len(it.Errors()) > 0 {
 		errStrings := strings.Join(it.Errors(), ", ")
-		v.errs = append(v.errs, errors.Errorf("%q has property %q with errors: %q", typedCtx.name, typedCtx.property, errStrings))
+		v.errs = append(v.errs, eris.Errorf("%q has property %q with errors: %q", ctx.name, ctx.property, errStrings))
 	}
 
 	return astmodel.IdentityVisitOfErroredType(this, it, ctx)
 }
 
-func includeResourcePropertyContext(this *astmodel.TypeVisitor, it *astmodel.ResourceType, ctx interface{}) (astmodel.Type, error) {
-	typedCtx := ctx.(erroredTypeVisitorContext)
-
-	_, err := this.Visit(it.SpecType(), typedCtx.WithProperty("Spec"))
+func includeResourcePropertyContext(
+	this *astmodel.TypeVisitor[erroredTypeVisitorContext],
+	it *astmodel.ResourceType,
+	ctx erroredTypeVisitorContext,
+) (astmodel.Type, error) {
+	_, err := this.Visit(it.SpecType(), ctx.WithProperty("Spec"))
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to visit resource spec type %q", it.SpecType())
+		return nil, eris.Wrapf(err, "failed to visit resource spec type %q", it.SpecType())
 	}
 
-	_, err = this.Visit(it.StatusType(), typedCtx.WithProperty("Status"))
+	_, err = this.Visit(it.StatusType(), ctx.WithProperty("Status"))
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to visit resource status type %q", it.StatusType())
+		return nil, eris.Wrapf(err, "failed to visit resource status type %q", it.StatusType())
 	}
 
 	return it, nil

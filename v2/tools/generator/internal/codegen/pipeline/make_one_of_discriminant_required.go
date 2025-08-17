@@ -7,28 +7,26 @@ package pipeline
 
 import (
 	"context"
-	"strings"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
 
-// MakeOneOfDiscriminantRequiredStageId is the unique identifier for this pipeline stage
-const MakeOneOfDiscriminantRequiredStageId = "makeOneOfDiscriminantRequired"
+// MakeOneOfDiscriminantRequiredStageID is the unique identifier for this pipeline stage
+const MakeOneOfDiscriminantRequiredStageID = "makeOneOfDiscriminantRequired"
 
 // MakeOneOfDiscriminantRequired walks the type graph and builds new types for communicating
 // with ARM
 func MakeOneOfDiscriminantRequired() *Stage {
 	return NewStage(
-		MakeOneOfDiscriminantRequiredStageId,
+		MakeOneOfDiscriminantRequiredStageID,
 		"Fix one of types to a discriminator which is not omitempty/optional",
 		func(ctx context.Context, state *State) (*State, error) {
 			updatedDefs := make(astmodel.TypeDefinitionSet)
 			for _, def := range state.Definitions() {
 				isOneOf := astmodel.OneOfFlag.IsOn(def.Type())
-				isARM := strings.HasSuffix(def.Name().Name(), astmodel.ARMSuffix) // TODO: This is a bit of a hack
-
+				isARM := def.Name().IsARMType()
 				if !isOneOf || !isARM {
 					continue
 				}
@@ -40,12 +38,12 @@ func MakeOneOfDiscriminantRequired() *Stage {
 				updatedDefs.AddTypes(updated)
 			}
 
-			return state.WithDefinitions(state.Definitions().OverlayWith(updatedDefs)), nil
+			return state.WithOverlaidDefinitions(updatedDefs), nil
 		})
 }
 
 type propertyModifier struct {
-	visitor astmodel.TypeVisitor
+	visitor astmodel.TypeVisitor[any]
 	json    string
 }
 
@@ -54,7 +52,7 @@ func newPropertyModifier(json string) *propertyModifier {
 		json: json,
 	}
 
-	modifier.visitor = astmodel.TypeVisitorBuilder{
+	modifier.visitor = astmodel.TypeVisitorBuilder[any]{
 		VisitObjectType: modifier.makeDiscriminatorPropertiesRequired,
 	}.Build()
 
@@ -62,7 +60,9 @@ func newPropertyModifier(json string) *propertyModifier {
 }
 
 func (r *propertyModifier) makeDiscriminatorPropertiesRequired(
-	this *astmodel.TypeVisitor, ot *astmodel.ObjectType, ctx interface{},
+	this *astmodel.TypeVisitor[any],
+	ot *astmodel.ObjectType,
+	ctx any,
 ) (astmodel.Type, error) {
 	ot.Properties().ForEach(func(prop *astmodel.PropertyDefinition) {
 		if json, ok := prop.JSONName(); ok && r.json == json {
@@ -73,23 +73,26 @@ func (r *propertyModifier) makeDiscriminatorPropertiesRequired(
 	return astmodel.IdentityVisitOfObjectType(this, ot, ctx)
 }
 
-func makeOneOfDiscriminantTypeRequired(oneOf astmodel.TypeDefinition, defs astmodel.TypeDefinitionSet) (astmodel.TypeDefinitionSet, error) {
+func makeOneOfDiscriminantTypeRequired(
+	oneOf astmodel.TypeDefinition,
+	defs astmodel.TypeDefinitionSet,
+) (astmodel.TypeDefinitionSet, error) {
 	objectType, ok := astmodel.AsObjectType(oneOf.Type())
 	if !ok {
-		return nil, errors.Errorf(
+		return nil, eris.Errorf(
 			"OneOf %s was not of type Object, instead was: %s",
 			oneOf.Name(),
 			astmodel.DebugDescription(oneOf.Type()))
 	}
 
 	result := make(astmodel.TypeDefinitionSet)
-	discriminantJson, values, err := astmodel.DetermineDiscriminantAndValues(objectType, defs)
+	discriminantJSON, values, err := astmodel.DetermineDiscriminantAndValues(objectType, defs)
 	if err != nil {
-		return nil, err
+		return nil, eris.Wrapf(err, "determining discriminant and values for %s", oneOf.Name())
 	}
 
 	astmodel.NewPropertyInjector()
-	remover := newPropertyModifier(discriminantJson)
+	remover := newPropertyModifier(discriminantJSON)
 
 	for _, value := range values {
 		def, err := defs.GetDefinition(value.TypeName)
@@ -98,10 +101,11 @@ func makeOneOfDiscriminantTypeRequired(oneOf astmodel.TypeDefinition, defs astmo
 		}
 		updatedDef, err := remover.visitor.VisitDefinition(def, nil)
 		if err != nil {
-			return nil, errors.Wrapf(err, "error updating definition %s", def.Name())
+			return nil, eris.Wrapf(err, "error updating definition %s", def.Name())
 		}
 
 		result.Add(updatedDef)
+
 	}
 
 	return result, nil

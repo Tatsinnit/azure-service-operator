@@ -9,12 +9,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
-	"log"
 	"os"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/go-logr/logr"
 )
 
 type JSONFormat struct {
@@ -25,20 +25,21 @@ type JSONFormat struct {
 	Output  string    `json:"Output"`
 }
 
-type TestRun struct {
-	Action  string
-	Package string
-	Test    string
-	Output  []string
-	RunTime time.Duration
-}
-
 func main() {
+	log := CreateLogger()
+
+	if len(os.Args) <= 1 {
+		log.Info("No log file specified on command line.")
+		return
+	}
+
 	for _, testOutputFile := range os.Args[1:] {
-		log.Printf("Parsing  %s\n\n", testOutputFile)
+		log.Info(
+			"Parsing",
+			"file", testOutputFile)
 		fmt.Printf("# `%s`\n\n", testOutputFile)
 
-		byPackage := loadJSON(testOutputFile)
+		byPackage := loadJSON(testOutputFile, log)
 
 		packages := []string{}
 		for k, v := range byPackage {
@@ -54,7 +55,8 @@ func main() {
 		printDetails(packages, byPackage)
 		printSlowTests(byPackage)
 	}
-	log.Println("Complete.")
+
+	log.Info("Complete")
 }
 
 func min(i, j int) int {
@@ -78,10 +80,16 @@ func actionSymbol(d TestRun) string {
 	}
 }
 
-func loadJSON(testOutputFile string) map[string][]TestRun {
-	content, err := ioutil.ReadFile(testOutputFile)
+func loadJSON(
+	testOutputFile string,
+	log logr.Logger,
+) map[string][]TestRun {
+	content, err := os.ReadFile(testOutputFile)
 	if err != nil {
-		log.Fatalf("Unable to read file: %e", err)
+		log.Error(
+			err,
+			"Unable to read file",
+			"file", testOutputFile)
 	}
 
 	// Break into individual lines to make error reporting easier
@@ -90,14 +98,22 @@ func loadJSON(testOutputFile string) map[string][]TestRun {
 	data := make([]JSONFormat, 0, len(lines))
 	errCount := 0
 	for row, line := range lines {
+		if len(line) == 0 {
+			// Skip empty lines
+			continue
+		}
+
 		var d JSONFormat
 		err := json.Unmarshal([]byte(line), &d)
 		if err != nil {
 			// Write the line to the log so we don't lose the content
-			log.Println(line)
+			log.Info(
+				"Unable to parse",
+				"line", line)
+
 			if line != "" && !strings.HasPrefix(line, "FAIL") {
 				// It's a parse failure we care about, write details
-				logError(err, row, line)
+				logError(log, err, row, line)
 				errCount++
 			}
 
@@ -108,55 +124,48 @@ func loadJSON(testOutputFile string) map[string][]TestRun {
 	}
 
 	if errCount > 0 {
-		log.Fatalf("%d fatal error(s) parsing JSON", errCount)
+		log.Info(
+			"Errors parsing JSON",
+			"count", errCount)
 	}
 
-	// track when each test started running
-	startTimes := make(map[string]time.Time)
-	runTimes := make(map[string]time.Duration)
-	outputs := make(map[string][]string)
-	key := func(d JSONFormat) string {
-		return d.Package + "/" + d.Test
+	// Track all the test runs
+	testRuns := make(map[string]*TestRun)
+	for _, d := range data {
+
+		// Find (or create) the test run for this item of data
+		testrun, found := testRuns[d.key()]
+		if !found {
+			testrun = &TestRun{
+				Package: d.Package,
+				Test:    d.Test,
+			}
+
+			testRuns[d.key()] = testrun
+		}
+
+		switch d.Action {
+		case "run":
+			testrun.run(d.Time)
+
+		case "pause":
+			testrun.pause(d.Time)
+
+		case "cont":
+			testrun.resume(d.Time)
+
+		case "output":
+			testrun.output(d.Output)
+
+		case "pass", "fail", "skip":
+			testrun.complete(d.Action, d.Time)
+		}
 	}
 
 	// package → list of tests
 	byPackage := make(map[string][]TestRun, len(data))
-	for _, d := range data {
-		switch d.Action {
-		case "run":
-			if startTimes[key(d)] != (time.Time{}) {
-				panic("run while already running")
-			}
-			startTimes[key(d)] = d.Time
-		case "pause":
-			if startTimes[key(d)] == (time.Time{}) {
-				panic("pause while not running")
-			}
-			runTimes[key(d)] += d.Time.Sub(startTimes[key(d)])
-			startTimes[key(d)] = time.Time{}
-		case "cont":
-			// cont while still in running state happens sometimes (???)
-			// so don't check
-			startTimes[key(d)] = d.Time
-		case "output":
-			outputs[key(d)] = append(outputs[key(d)], d.Output)
-		case "pass", "fail", "skip":
-			if d.Test != "" && startTimes[key(d)] == (time.Time{}) {
-				panic("finished when not running")
-			}
-
-			runTimes[key(d)] += d.Time.Sub(startTimes[key(d)])
-
-			byPackage[d.Package] = append(byPackage[d.Package], TestRun{
-				Action:  d.Action,
-				Package: d.Package,
-				Test:    d.Test,
-				Output:  outputs[key(d)],
-
-				// round all runtimes to ms to avoid excessive decimal places
-				RunTime: sensitiveRound(runTimes[key(d)]),
-			})
-		}
+	for _, v := range testRuns {
+		byPackage[v.Package] = append(byPackage[v.Package], *v)
 	}
 
 	return byPackage
@@ -234,29 +243,37 @@ func printDetails(packages []string, byPackage map[string][]TestRun) {
 		}
 
 		for _, test := range tests[1:] {
-			// only printing failed tests
-			if test.Action == "fail" {
-
-				fmt.Printf("#### Test `%s`\n", test.Test)
-				fmt.Printf("Failed in %s:\n", test.RunTime)
-
-				trimmedOutput, output := escapeOutput(test.Output)
-				summary := "Test output"
-				if trimmedOutput {
-					summary += fmt.Sprintf(" (trimmed to last %d lines) — full details available in log", maxOutputLines)
-				}
-
-				fmt.Printf("<details><summary>%s</summary><pre>%s</pre></details>\n\n", summary, output)
-
-				// Output info on stderr, so that test failure isn’t silent on console
-				// when running `task ci`, and that full logs are available if they get trimmed
-				fmt.Fprintf(os.Stderr, "- Test failed: %s\n", test.Test)
-				fmt.Fprintln(os.Stderr, "=== TEST OUTPUT ===")
-				for _, outputLine := range test.Output {
-					fmt.Fprint(os.Stderr, outputLine) // note that line already has newline attached
-				}
-				fmt.Fprintln(os.Stderr, "=== END TEST OUTPUT ===")
+			// We only want to include "interesting" tests in the output
+			// "interesting" tests are ones that failed, or had a panic, or we don't know what status they have
+			if !test.IsInteresting() {
+				continue
 			}
+
+			fmt.Printf("#### Test `%s`\n", test.Test)
+
+			if test.Action == "fail" {
+				fmt.Printf("Failed in %s:\n", test.RunTime)
+			} else {
+				fmt.Printf("Elapsed %s:\n", test.RunTime)
+				fmt.Printf("Final action %s:\n", test.Action)
+			}
+
+			trimmedOutput, output := escapeOutput(test.Output)
+			summary := "Test output"
+			if trimmedOutput {
+				summary += fmt.Sprintf(" (trimmed to last %d lines) — full details available in log", maxOutputLines)
+			}
+
+			fmt.Printf("<details><summary>%s</summary><pre>%s</pre></details>\n\n", summary, output)
+
+			// Output info on stderr, so that test failure isn’t silent on console
+			// when running `task ci`, and that full logs are available if they get trimmed
+			fmt.Fprintf(os.Stderr, "- Test failed: %s\n", test.Test)
+			fmt.Fprintln(os.Stderr, "=== TEST OUTPUT ===")
+			for _, outputLine := range test.Output {
+				fmt.Fprint(os.Stderr, outputLine) // note that line already has newline attached
+			}
+			fmt.Fprintln(os.Stderr, "=== END TEST OUTPUT ===")
 		}
 
 		fmt.Println()
@@ -291,9 +308,7 @@ func printSlowTests(byPackage map[string][]TestRun) {
 
 	allTests := []TestRun{}
 	for _, v := range byPackage {
-		for _, t := range v[1:] { // skip "" package test
-			allTests = append(allTests, t)
-		}
+		allTests = append(allTests, v[1:]...)
 	}
 
 	sort.Slice(allTests, func(i, j int) bool {
@@ -308,26 +323,50 @@ func printSlowTests(byPackage map[string][]TestRun) {
 	}
 }
 
-func logError(err error, row int, line string) {
+func logError(
+	log logr.Logger,
+	err error,
+	row int,
+	line string,
+) {
+	// If syntax error, log it and return
 	var syntaxError *json.SyntaxError
 	if errors.As(err, &syntaxError) {
-		log.Printf(
-			"Syntax error parsing JSON on line %d at column %d: %s (line: %q)",
-			row,
-			syntaxError.Offset,
-			syntaxError.Error(),
-			line)
+		log.Error(
+			err,
+			"Syntax error parsing JSON",
+			"row", row,
+			"column", syntaxError.Offset,
+			"line", line,
+		)
+
+		return
 	}
 
+	// If unmarshal type error, log it and return
 	var unmarshalError *json.UnmarshalTypeError
 	if errors.As(err, &unmarshalError) {
-		log.Printf(
-			"Unmarshal type error parsing JSON on line %d at column %d: %s (near: %q)",
-			row,
-			unmarshalError.Offset,
-			unmarshalError.Error(),
-			line)
+		log.Error(
+			err,
+			"Unmarshal type error parsing JSON",
+			"row", row,
+			"column", unmarshalError.Offset,
+			"line", line,
+		)
+
+		return
 	}
 
-	log.Printf("Unexpected error parsing JSON: %s", err)
+	// Otherwise unknown error, log it and return
+	log.Error(
+		err,
+		"Unexpected error parsing JSON",
+		"row", row,
+		"line", line,
+	)
+}
+
+// key returns a unique key for a test run
+func (d JSONFormat) key() string {
+	return d.Package + "/" + d.Test
 }

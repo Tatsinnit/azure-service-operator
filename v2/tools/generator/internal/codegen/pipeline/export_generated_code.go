@@ -10,13 +10,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"sync"
 	"time"
 
-	"github.com/pkg/errors"
-	kerrors "k8s.io/apimachinery/pkg/util/errors"
-	"k8s.io/klog/v2"
+	"github.com/go-logr/logr"
+	"github.com/rotisserie/eris"
+	"golang.org/x/exp/slices"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
@@ -25,23 +25,29 @@ import (
 const ExportPackagesStageID = "exportPackages"
 
 // ExportPackages creates a Stage to export our generated code as a set of packages
-func ExportPackages(outputPath string, emitDocFiles bool) *Stage {
+func ExportPackages(
+	outputPath string,
+	emitDocFiles bool,
+	log logr.Logger,
+) *Stage {
 	description := fmt.Sprintf("Export packages to %q", outputPath)
-	stage := NewLegacyStage(
+	stage := NewStage(
 		ExportPackagesStageID,
 		description,
-		func(ctx context.Context, definitions astmodel.TypeDefinitionSet) (astmodel.TypeDefinitionSet, error) {
+		func(ctx context.Context, state *State) (*State, error) {
+			definitions := state.Definitions()
+
 			packages, err := CreatePackagesForDefinitions(definitions)
 			if err != nil {
-				return nil, errors.Wrapf(err, "failed to assign generated definitions to packages")
+				return nil, eris.Wrapf(err, "failed to assign generated definitions to packages")
 			}
 
-			err = writeFiles(ctx, packages, outputPath, emitDocFiles)
+			err = writeFiles(packages, outputPath, emitDocFiles, log)
 			if err != nil {
-				return nil, errors.Wrapf(err, "unable to write files into %q", outputPath)
+				return nil, eris.Wrapf(err, "unable to write files into %q", outputPath)
 			}
 
-			return definitions, nil
+			return state, nil
 		})
 
 	stage.RequiresPrerequisiteStages(DeleteGeneratedCodeStageID)
@@ -50,16 +56,17 @@ func ExportPackages(outputPath string, emitDocFiles bool) *Stage {
 }
 
 // CreatePackagesForDefinitions groups type definitions into packages
-func CreatePackagesForDefinitions(definitions astmodel.TypeDefinitionSet) (map[astmodel.PackageReference]*astmodel.PackageDefinition, error) {
-	packages := make(map[astmodel.PackageReference]*astmodel.PackageDefinition)
+func CreatePackagesForDefinitions(
+	definitions astmodel.TypeDefinitionSet,
+) (map[astmodel.InternalPackageReference]*astmodel.PackageDefinition, error) {
+	packages := make(map[astmodel.InternalPackageReference]*astmodel.PackageDefinition)
 	for _, def := range definitions {
 		name := def.Name()
-		ref := name.PackageReference
-		group, version := ref.GroupVersion()
+		ref := name.InternalPackageReference()
 		if pkg, ok := packages[ref]; ok {
 			pkg.AddDefinition(def)
 		} else {
-			pkg = astmodel.NewPackageDefinition(group, version)
+			pkg = astmodel.NewPackageDefinition(ref)
 			pkg.AddDefinition(def)
 			packages[ref] = pkg
 		}
@@ -68,88 +75,66 @@ func CreatePackagesForDefinitions(definitions astmodel.TypeDefinitionSet) (map[a
 	return packages, nil
 }
 
-func writeFiles(ctx context.Context, packages map[astmodel.PackageReference]*astmodel.PackageDefinition, outputPath string, emitDocFiles bool) error {
+func writeFiles(
+	packages map[astmodel.InternalPackageReference]*astmodel.PackageDefinition,
+	outputPath string,
+	emitDocFiles bool,
+	log logr.Logger,
+) error {
 	pkgs := make([]*astmodel.PackageDefinition, 0, len(packages))
 	for _, pkg := range packages {
 		pkgs = append(pkgs, pkg)
 	}
 
 	// Sort the list of packages to ensure we always write them to disk in the same sequence
-	sort.Slice(pkgs, func(i int, j int) bool {
-		iPkg := pkgs[i]
-		jPkg := pkgs[j]
-		return iPkg.GroupName < jPkg.GroupName ||
-			(iPkg.GroupName == jPkg.GroupName && iPkg.PackageName < jPkg.PackageName)
-	})
+	slices.SortFunc(
+		pkgs,
+		func(left *astmodel.PackageDefinition, right *astmodel.PackageDefinition) int {
+			if left.Path < right.Path {
+				return -1
+			} else if left.Path > right.Path {
+				return 1
+			} else {
+				return 0
+			}
+		})
 
 	// emit each package
-	klog.V(0).Infof("Writing %d packages into %q", len(pkgs), outputPath)
+	log.Info(
+		"Writing packages",
+		"count", len(pkgs),
+		"outputPath", outputPath)
 
 	globalProgress := newProgressMeter()
 	groupProgress := newProgressMeter()
 
-	var wg sync.WaitGroup
+	var eg errgroup.Group
+	eg.SetLimit(8)
 
-	pkgQueue := make(chan *astmodel.PackageDefinition, 100)
-	errs := make(chan error, 10) // we will buffer up to 10 errors and ignore any leftovers
-
-	// write outputs with 8 workers
-	// this is parallelized mostly due to 'dst' conversion being slow, see: https://github.com/Azure/k8s-infra/pull/376
-	// potentially we could contribute improvements upstream
-	for c := 0; c < 8; c++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for pkg := range pkgQueue {
-				if ctx.Err() != nil { // check for cancellation
-					return
-				}
-
-				// create directory if not already there
-				outputDir := filepath.Join(outputPath, pkg.GroupName, pkg.PackageName)
-				if _, err := os.Stat(outputDir); os.IsNotExist(err) {
-					klog.V(5).Infof("Creating directory %q\n", outputDir)
-					err = os.MkdirAll(outputDir, 0o700)
-					if err != nil {
-						select { // try to write to errs, ignore if buffer full
-						case errs <- errors.Wrapf(err, "unable to create directory %q", outputDir):
-						default:
-						}
-						return
-					}
-				}
-
-				count, err := pkg.EmitDefinitions(outputDir, packages, emitDocFiles)
+	for _, pkg := range pkgs {
+		pkg := pkg
+		eg.Go(func() error {
+			// create directory if not already there
+			outputDir := filepath.Join(outputPath, pkg.Path)
+			if _, err := os.Stat(outputDir); os.IsNotExist(err) {
+				err = os.MkdirAll(outputDir, 0o700)
 				if err != nil {
-					select { // try to write to errs, ignore if buffer full
-					case errs <- errors.Wrapf(err, "error writing definitions into %q", outputDir):
-					default:
-					}
-					return
-				} else {
-					globalProgress.LogProgress("", pkg.DefinitionCount(), count)
-					groupProgress.LogProgress(pkg.GroupName, pkg.DefinitionCount(), count)
+					return eris.Wrapf(err, "unable to create directory %q", outputDir)
 				}
 			}
-		}()
+
+			count, err := pkg.EmitDefinitions(outputDir, packages, emitDocFiles)
+			if err != nil {
+				return eris.Wrapf(err, "error writing definitions into %q", outputDir)
+			}
+
+			globalProgress.LogProgress("", pkg.DefinitionCount(), count, log)
+			groupProgress.LogProgress(pkg.Path, pkg.DefinitionCount(), count, log)
+			return nil
+		})
 	}
 
-	// send to workers
-	// and wait for them to finish
-	for _, pkg := range pkgs {
-		pkgQueue <- pkg
-	}
-	close(pkgQueue)
-	wg.Wait()
-
-	// collect all errors, if any
-	close(errs)
-	totalErrs := make([]error, 0, len(errs))
-	for err := range errs {
-		totalErrs = append(totalErrs, err)
-	}
-
-	err := kerrors.NewAggregate(totalErrs)
+	err := eg.Wait()
 	if err != nil {
 		return err
 	}
@@ -157,7 +142,8 @@ func writeFiles(ctx context.Context, packages map[astmodel.PackageReference]*ast
 	// log anything leftover
 	globalProgress.mutex.Lock()
 	defer globalProgress.mutex.Unlock()
-	globalProgress.Log()
+	globalProgress.Log(log)
+
 	return nil
 }
 
@@ -178,7 +164,7 @@ type progressMeter struct {
 }
 
 // Log writes a log message for our progress to this point
-func (export *progressMeter) Log() {
+func (export *progressMeter) Log(log logr.Logger) {
 	started := export.resetAt
 	export.resetAt = time.Now()
 
@@ -188,22 +174,36 @@ func (export *progressMeter) Log() {
 
 	elapsed := time.Since(started).Round(time.Millisecond)
 	if export.label != "" {
-		klog.V(2).Infof("Wrote %d files containing %d definitions for %s in %s", export.files, export.definitions, export.label, elapsed)
+		log.V(1).Info(
+			"Wrote files",
+			"label", export.label,
+			"files", export.files,
+			"types", export.definitions,
+			"elapsed", elapsed)
 	} else {
-		klog.V(2).Infof("Wrote %d files containing %d definitions in %s", export.files, export.definitions, time.Since(started))
+		log.V(1).Info(
+			"Wrote files",
+			"files", export.files,
+			"types", export.definitions,
+			"elapsed", elapsed)
 	}
 
 	export.resetAt = time.Now()
 }
 
 // LogProgress accumulates totals until a new label is supplied, when it will write a log message
-func (export *progressMeter) LogProgress(label string, definitions int, files int) {
+func (export *progressMeter) LogProgress(
+	label string,
+	definitions int,
+	files int,
+	log logr.Logger,
+) {
 	export.mutex.Lock()
 	defer export.mutex.Unlock()
 
 	if export.label != label {
 		// New group, output our current totals and reset
-		export.Log()
+		export.Log(log)
 		export.definitions = 0
 		export.files = 0
 		export.resetAt = time.Now()

@@ -10,15 +10,16 @@ import (
 	"fmt"
 	"strings"
 
-	containerservice "github.com/Azure/azure-service-operator/v2/api/containerservice/v1beta20210501storage"
+	"github.com/go-logr/logr"
+	"github.com/rotisserie/eris"
+	"sigs.k8s.io/controller-runtime/pkg/conversion"
+
+	containerservice "github.com/Azure/azure-service-operator/v2/api/containerservice/v1api20240901/storage"
 	"github.com/Azure/azure-service-operator/v2/internal/genericarmclient"
+	"github.com/Azure/azure-service-operator/v2/internal/resolver"
 	"github.com/Azure/azure-service-operator/v2/internal/set"
-	"github.com/Azure/azure-service-operator/v2/internal/util/kubeclient"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/extensions"
-	"github.com/go-logr/logr"
-	"github.com/pkg/errors"
-	"sigs.k8s.io/controller-runtime/pkg/conversion"
 )
 
 var _ extensions.PreReconciliationChecker = &ManagedClustersAgentPoolExtension{}
@@ -34,20 +35,20 @@ var nonBlockingManagedClustersAgentPoolProvisioningStates = set.Make(
 )
 
 func (ext *ManagedClustersAgentPoolExtension) PreReconcileCheck(
-	_ context.Context,
+	ctx context.Context,
 	obj genruntime.MetaObject,
 	owner genruntime.MetaObject,
-	_ kubeclient.Client,
-	_ *genericarmclient.GenericClient,
-	_ logr.Logger,
-	_ extensions.PreReconcileCheckFunc,
+	resourceResolver *resolver.Resolver,
+	armClient *genericarmclient.GenericClient,
+	log logr.Logger,
+	next extensions.PreReconcileCheckFunc,
 ) (extensions.PreReconcileCheckResult, error) {
 	// This has to be the current hub storage version. It will need to be updated
 	// if the hub storage version changes.
 	agentPool, ok := obj.(*containerservice.ManagedClustersAgentPool)
 	if !ok {
 		return extensions.PreReconcileCheckResult{},
-			errors.Errorf("cannot run on unknown resource type %T, expected *containerservice.ManagedCluster", obj)
+			eris.Errorf("cannot run on unknown resource type %T, expected *containerservice.ManagedCluster", obj)
 	}
 
 	// Type assert that we are the hub type. This will fail to compile if
@@ -55,6 +56,7 @@ func (ext *ManagedClustersAgentPoolExtension) PreReconcileCheck(
 	var _ conversion.Hub = agentPool
 
 	// Check to see if the owning cluster is in a state that will block us from reconciling
+	// Owner nil can happen if the owner of the agent pool is referenced by armID
 	if owner != nil {
 		if managedCluster, ok := owner.(*containerservice.ManagedCluster); ok {
 			state := managedCluster.Status.ProvisioningState
@@ -78,7 +80,7 @@ func (ext *ManagedClustersAgentPoolExtension) PreReconcileCheck(
 			nil
 	}
 
-	return extensions.ProceedWithReconcile(), nil
+	return next(ctx, obj, owner, resourceResolver, armClient, log)
 }
 
 func agentPoolProvisioningStateBlocksReconciliation(provisioningState *string) bool {

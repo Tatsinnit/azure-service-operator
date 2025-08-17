@@ -20,6 +20,9 @@ Since many of these resources are already supported by ASO v2, albeit with shape
 * Con: The investment would benefit only a small number of customers.
 * Con: The conversions would need to be maintained, potentially indefinitely.
 * Con: It's unlikely we'd achieve 100% fidelity, requiring customers to change their YAML files anyway.
+* Blocker: Automatic conversion only works between different versions of a given group/kind, not between different groups/kinds.
+
+Conclusion: Attractive in theory, but can't actually work. ASO v1 uses hand crafted names for groups and kinds, where ASO v2 uses the singular form of ARM names. (E.g. postgresql vs dbforpostgresql, rediscache vs cache)
 
 ### Resource Import Job
 
@@ -30,8 +33,8 @@ Hand craft a new _job_ CRD that allows specification of an existing Azure Resour
 * Con: Awkward to model a run-once action as a CRD as there is no reconcile to be done after the first pass, though there are examples of such resources in core k8s API such as `Job` and a pattern we could follow.
 * Con: Reconciliation of this job would be entirely unlike any existing ASO resource.
 * Con: It's highly unlikely that the resource would be ready for use, as it wouldn't have any ASO specific configuration, requiring users to awkwardly download the YAML, make any required changes, and then reapply it to the cluster.
-* Con: Unless we immediately annotated the resource as `skip-reconcile` for safety, ASO would immediately pick up the resource and start reconciling it. In most cases this would be benign, but there is potential for _bad things_ to happen. This is the opposite of the usually desired *pit of success*.
-* Con: If we do mark the resource as `skip-reconcile`, users will need to manually remove the annotation before things work.
+* Con: Unless we immediately annotated the resource to skip reconciliation for safety, ASO would immediately pick up the resource and start reconciling it. In most cases this would be benign, but there is potential for _bad things_ to happen. This is the opposite of the usually desired *pit of success*.
+* Con: If we do annotate the resource to skip reconciliation, users will need to manually remove the annotation before things work.
 * Con: The job would need to be cleaned up manually afterwards
 
 #### See also
@@ -82,7 +85,7 @@ $ asoctl export resource http://management.azure.com/subscriptions/00000000-0000
 
 The process of generating the YAML for a given resource can be simplified to the following flow:
 
-![Data Flow](./images/adr-2022-11-import-flow.png)
+![Data Flow](../images/adr-2022-11-import-flow.png)
 
 1. The user specified URL is used to ***GET*** the resource from Azure in its native ARM format.
 2. We apply a ***conversion*** to obtain a Status object for the relevant custom resource.

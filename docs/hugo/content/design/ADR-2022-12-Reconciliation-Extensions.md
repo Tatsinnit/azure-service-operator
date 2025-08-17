@@ -10,9 +10,9 @@ For some resources this doesn't work particularly well because the resources can
 
 Examples of this include:
 
-* An [AKS Managed Cluster](https://learn.microsoft.com/en-us/rest/api/aks/managed-clusters/get?tabs=HTTP) with `provisioningState` of `Updating`.
-* An [AKS Agent Pool](https://learn.microsoft.com/en-us/rest/api/aks/agent-pools/get?tabs=HTTP) with `provisioningState` of `Updating`.
-* A [PostgreSQL Flexible Server](https://learn.microsoft.com/en-us/rest/api/postgresql/flexibleserver/servers/get?tabs=HTTP) with a `state` of `Starting`, `Stopping` or `Updating`.
+* An [AKS Managed Cluster](https://learn.microsoft.com/en-us/rest/api/aks/managed-clusters/get) with `provisioningState` of `Updating`.
+* An [AKS Agent Pool](https://learn.microsoft.com/en-us/rest/api/aks/agent-pools/get) with `provisioningState` of `Updating`.
+* A [PostgreSQL Flexible Server](https://learn.microsoft.com/en-us/rest/api/postgresql/servers/get) with a `state` of `Starting`, `Stopping` or `Updating`.
 
 This list not exhaustive.
 
@@ -46,11 +46,11 @@ The return will be one of three possibilities:
 
 For the initial implementation, we'll only do the GET if the extension exists, and the default `next` action will be hard coded to request a reconciliation.
 
-![Initial Sequence](images/adr-2022-12-reconciliation-initial-flow.png)
+![Initial Sequence](../images/adr-2022-12-reconciliation-initial-flow.png)
 
 Down the track when we switch to a GET/PUT workflow, we'll always do the GET, and the default 'next` action will do the comparison to see if the resource has changed.
 
-![GET/PUT Sequence](images/adr-2022-12-reconciliation-diffing-flow.png)
+![GET/PUT Sequence](../images/adr-2022-12-reconciliation-diffing-flow.png)
 
 ## Status
 
@@ -66,9 +66,11 @@ TBC.
 
 ## Experience Report
 
-TBC.
+In use, we identified that providing a `kubeclient.Client` instance for cluster operations wasn't particularly useful because of an impedance mismatch: the cluster API is expressed in terms of GVKs, namespaces and names, whereas the extensions often had a `genruntime.ResourceReference` in hand, and mapping between the two was awkward to do manually. 
+
+We're addressing this by modifying the extensions to provide `resolver.Resolver` instead - this is an existing piece of the reconciler that handles resolution of GVK from a `genruntime.ResourceReference`. The object contains a `kubeclient.Client` should one be needed by an implementation of the extension.
 
 ## References
 
 * [#2600 - High Level design for using GET+PUT to reconcile](https://github.com/Azure/azure-service-operator/pull/2600)
-
+* [#3105 - Modify Pre/Post-Reconciliation Extensions to provide a Resolver](https://github.com/Azure/azure-service-operator/pull/3105)

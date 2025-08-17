@@ -8,6 +8,8 @@ kind: ServiceAccount
 metadata:
   name: default
   namespace: system
+  labels:
+    app.kubernetes.io/name: azure-service-operator
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -15,44 +17,73 @@ metadata:
   name: controller-manager
   namespace: system
   labels:
-    app: azure-service-operator-v2
     control-plane: controller-manager
+    app.kubernetes.io/name: azure-service-operator
+    app.kubernetes.io/version: ${VERSION}
 spec:
   selector:
     matchLabels:
       control-plane: controller-manager
-  replicas: 1
+  replicas: 2
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 10
   template:
     metadata:
       labels:
-        aadpodidbinding: aso-manager-binding
         control-plane: controller-manager
+        app.kubernetes.io/name: azure-service-operator
+        app.kubernetes.io/version: ${VERSION}
       annotations:
         kubectl.kubernetes.io/default-container: manager
     spec:
       serviceAccountName: default
       containers:
       - args:
+        - --metrics-addr=0.0.0.0:8443
+        - --secure-metrics=true
+        - --profiling-metrics=false
+        - --health-addr=:8081
         - --enable-leader-election
         - --v=2
+        - --crd-pattern=
         ports:
           - containerPort: 8081
-            name: liveness-port
+            name: health-port
             protocol: TCP
-          - containerPort: 8080
+          - containerPort: 8443
             name: metrics-port
             protocol: TCP
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          periodSeconds: 10
+          failureThreshold: 12
         livenessProbe:
           httpGet:
             path: /healthz
+            port: 8081
+        readinessProbe:
+          httpGet:
+            path: /readyz
             port: 8081
         image: controller:latest
         name: manager
         resources:
           limits:
             cpu: 500m
-            memory: 512Mi
+            memory: 512Mi  # Make sure to change the GOMEMLIMIT env variable if you change this too
           requests:
             cpu: 200m
             memory: 256Mi
+        securityContext:
+          runAsUser: 65532 # nonroot user from gcr.io/distroless/static:nonroot image
+          runAsGroup: 65532 # nonroot group from gcr.io/distroless/static:nonroot image
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
       terminationGracePeriodSeconds: 10

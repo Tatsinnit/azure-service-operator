@@ -8,7 +8,7 @@ package testcommon
 import (
 	"context"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -34,8 +34,8 @@ func (e *Verify) HasState(
 	obj client.Object,
 	desiredState metav1.ConditionStatus,
 	desiredSeverity conditions.ConditionSeverity,
-	oldGeneration int64) (bool, error) {
-
+	oldGeneration int64,
+) (bool, error) {
 	key := client.ObjectKeyFromObject(obj)
 
 	// In order to ensure that "old state" is cleared out from obj, we need to:
@@ -61,7 +61,7 @@ func (e *Verify) HasState(
 
 	conditioner, ok := obj.(conditions.Conditioner)
 	if !ok {
-		return false, errors.Errorf("result of get was not conditions.Conditioner, was: %T", obj)
+		return false, eris.Errorf("result of get was not conditions.Conditioner, was: %T", obj)
 	}
 
 	ready, ok := conditions.GetCondition(conditioner, conditions.ConditionTypeReady)

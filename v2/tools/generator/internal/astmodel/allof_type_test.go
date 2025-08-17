@@ -99,7 +99,8 @@ func TestAllOfAsTypePanics(t *testing.T) {
 
 	x := AllOfType{}
 	g.Expect(func() {
-		x.AsType(&CodeGenerationContext{})
+		_, err := x.AsTypeExpr(&CodeGenerationContext{})
+		g.Expect(err).To(BeNil()) // Unreachable, but keeps lint happy
 	}).To(PanicWith(MatchError(expectedAllOfPanic)))
 }
 
@@ -109,6 +110,7 @@ func TestAllOfAsDeclarationsPanics(t *testing.T) {
 
 	x := AllOfType{}
 	g.Expect(func() {
+		//nolint:errcheck // error will never be returned due to panic
 		x.AsDeclarations(&CodeGenerationContext{}, DeclarationContext{})
 	}).To(PanicWith(MatchError(expectedAllOfPanic)))
 }

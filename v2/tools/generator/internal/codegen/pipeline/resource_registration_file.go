@@ -10,6 +10,9 @@ import (
 	"sort"
 
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
+	"golang.org/x/exp/maps"
+	kerrors "k8s.io/apimachinery/pkg/util/errors"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
@@ -19,25 +22,31 @@ import (
 // ResourceRegistrationFile is a file containing functions that assist in registering resources
 // with a Kubernetes scheme.
 type ResourceRegistrationFile struct {
-	resources               []astmodel.TypeName
-	storageVersionResources []astmodel.TypeName
-	resourceExtensions      []astmodel.TypeName
-	indexFunctions          map[astmodel.TypeName][]*functions.IndexRegistrationFunction
-	secretPropertyKeys      map[astmodel.TypeName][]string
-	configMapPropertyKeys   map[astmodel.TypeName][]string
+	resources               []astmodel.InternalTypeName
+	storageVersionResources []astmodel.InternalTypeName
+	resourceExtensions      []astmodel.InternalTypeName
+	indexFunctions          map[astmodel.InternalTypeName][]*functions.IndexRegistrationFunction
+	secretPropertyKeys      map[astmodel.InternalTypeName][]string
+	configMapPropertyKeys   map[astmodel.InternalTypeName][]string
+	validatingWebhooks      map[astmodel.InternalTypeName]astmodel.InternalTypeName
+	mutatingWebhooks        map[astmodel.InternalTypeName]astmodel.InternalTypeName
+
+	storageVersionToVersionMap map[astmodel.InternalTypeName][]astmodel.InternalTypeName
 }
 
 var _ astmodel.GoSourceFile = &ResourceRegistrationFile{}
 
-// NewResourceRegistrationFile returns a ResourceRegistrationFile for registering all of the specified resources
+// NewResourceRegistrationFile returns a ResourceRegistrationFile for registering the specified resources
 // with a controller
 func NewResourceRegistrationFile(
-	resources []astmodel.TypeName,
-	storageVersionResources []astmodel.TypeName,
-	indexFunctions map[astmodel.TypeName][]*functions.IndexRegistrationFunction,
-	secretPropertyKeys map[astmodel.TypeName][]string,
-	configMapPropertyKeys map[astmodel.TypeName][]string,
-	resourceExtensions []astmodel.TypeName,
+	resources []astmodel.InternalTypeName,
+	storageVersionResources []astmodel.InternalTypeName,
+	indexFunctions map[astmodel.InternalTypeName][]*functions.IndexRegistrationFunction,
+	secretPropertyKeys map[astmodel.InternalTypeName][]string,
+	configMapPropertyKeys map[astmodel.InternalTypeName][]string,
+	resourceExtensions []astmodel.InternalTypeName,
+	validatingWebhooks map[astmodel.InternalTypeName]astmodel.InternalTypeName,
+	mutatingWebhooks map[astmodel.InternalTypeName]astmodel.InternalTypeName,
 ) *ResourceRegistrationFile {
 	return &ResourceRegistrationFile{
 		resources:               resources,
@@ -46,6 +55,8 @@ func NewResourceRegistrationFile(
 		secretPropertyKeys:      secretPropertyKeys,
 		configMapPropertyKeys:   configMapPropertyKeys,
 		resourceExtensions:      resourceExtensions,
+		validatingWebhooks:      validatingWebhooks,
+		mutatingWebhooks:        mutatingWebhooks,
 	}
 }
 
@@ -57,9 +68,13 @@ func (r *ResourceRegistrationFile) AsAst() (*dst.File, error) {
 	packageReferences := r.generateImports()
 
 	codeGenContext := astmodel.NewCodeGenerationContext(
-		astmodel.MakeExternalPackageReference("controllers"), // TODO: This should come from a config
+		// This is a little nasty, given we're generating into a package with a fixed name.
+		// Do we need a specific PackageReference type for this case?
+		astmodel.MakeLocalPackageReference("", "controllers", "", ""), // TODO: This should come from a config
 		packageReferences,
 		nil)
+
+	r.storageVersionToVersionMap = r.getStorageVersionToVersionsMap(codeGenContext)
 
 	// Create import header if needed
 	thing := packageReferences.AsImportSpecs()
@@ -76,11 +91,15 @@ func (r *ResourceRegistrationFile) AsAst() (*dst.File, error) {
 	}
 
 	// getKnownStorageTypes() function
-	knownStorageTypes := r.createGetKnownStorageTypesFunc(codeGenContext)
+	knownStorageTypes, err := r.createGetKnownStorageTypesFunc(codeGenContext)
+	if err != nil {
+		return nil, eris.Wrapf(err, "creating %s function", "getKnownStorageTypes")
+	}
+
 	decls = append(decls, knownStorageTypes)
 
 	// getKnownTypes() function
-	knownTypes, err := createGetKnownTypesFunc(codeGenContext, r.resources)
+	knownTypes, err := r.createGetKnownTypesFunc(codeGenContext, r.resources)
 	if err != nil {
 		return nil, err
 	}
@@ -89,19 +108,25 @@ func (r *ResourceRegistrationFile) AsAst() (*dst.File, error) {
 	// createScheme() function
 	createSchemeFunc, err := r.createCreateSchemeFunc(codeGenContext)
 	if err != nil {
-		return nil, err
+		return nil, eris.Wrap(err, "creating getKnownResourceExtensions function")
 	}
+
 	decls = append(decls, createSchemeFunc)
 
 	// Create Resource Extensions
-	resourceExtensionTypes := r.createGetResourceExtensions(codeGenContext)
+	resourceExtensionTypes, err := r.createGetResourceExtensions(codeGenContext)
 	if err != nil {
-		return nil, err
+		return nil, eris.Wrap(err, "creating getKnownResourceExtensions function")
 	}
+
 	decls = append(decls, resourceExtensionTypes)
 
 	// All the index functions
-	indexFunctionDecls := r.defineIndexFunctions(codeGenContext)
+	indexFunctionDecls, err := r.defineIndexFunctions(codeGenContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "defining index functions")
+	}
+
 	decls = append(decls, indexFunctionDecls...)
 
 	// TODO: Common func?
@@ -125,14 +150,46 @@ func (r *ResourceRegistrationFile) AsAst() (*dst.File, error) {
 	return result, nil
 }
 
+func (r *ResourceRegistrationFile) getStorageVersionToVersionsMap(codeGenerationContext *astmodel.CodeGenerationContext) map[astmodel.InternalTypeName][]astmodel.InternalTypeName {
+	result := make(map[astmodel.InternalTypeName][]astmodel.InternalTypeName, len(r.storageVersionResources))
+
+	for _, storageVersion := range r.storageVersionResources {
+		result[storageVersion] = []astmodel.InternalTypeName{}
+
+		group := storageVersion.InternalPackageReference().Group()
+
+		for _, version := range r.resources {
+			// Dont include storage versions here
+			if astmodel.IsStoragePackageReference(version.InternalPackageReference()) {
+				continue
+			}
+
+			ref := version.InternalPackageReference()
+			// Only match types whose group is the same and whose name is the same
+			if ref.Group() != group || storageVersion.Name() != version.Name() {
+				continue
+			}
+
+			result[storageVersion] = append(result[storageVersion], version)
+		}
+
+		// Sort the versions for a deterministic file layout
+		sort.Slice(result[storageVersion], orderByImportedTypeName(codeGenerationContext, result[storageVersion]))
+	}
+
+	return result
+}
+
 // generateImports generates the PackageImportSet containing the imports required for the resources
 // in the ResourceRegistrationFile.
 func (r *ResourceRegistrationFile) generateImports() *astmodel.PackageImportSet {
 	requiredImports := astmodel.NewPackageImportSet()
 	typeSet := append(r.resources, r.storageVersionResources...)
 	typeSet = append(typeSet, r.resourceExtensions...)
+	typeSet = append(typeSet, maps.Values(r.mutatingWebhooks)...)
+	typeSet = append(typeSet, maps.Values(r.validatingWebhooks)...)
 	for _, typeName := range typeSet {
-		requiredImports.AddImportOfReference(typeName.PackageReference)
+		requiredImports.AddImportOfReference(typeName.PackageReference())
 	}
 
 	// We require these imports
@@ -140,23 +197,25 @@ func (r *ResourceRegistrationFile) generateImports() *astmodel.PackageImportSet 
 	requiredImports.AddImport(astmodel.NewPackageImport(astmodel.ClientGoSchemeReference).WithName("clientgoscheme"))
 	requiredImports.AddImport(astmodel.NewPackageImport(astmodel.APIMachineryRuntimeReference))
 	requiredImports.AddImport(astmodel.NewPackageImport(astmodel.ControllerRuntimeClient))
-	requiredImports.AddImport(astmodel.NewPackageImport(astmodel.ControllerRuntimeSource))
 	requiredImports.AddImport(astmodel.NewPackageImport(astmodel.GenRuntimeRegistrationReference))
 	requiredImports.AddImport(astmodel.NewPackageImport(astmodel.CoreV1Reference))
 
 	return requiredImports
 }
 
-func orderByImportedTypeName(codeGenerationContext *astmodel.CodeGenerationContext, resources []astmodel.TypeName) func(i, j int) bool {
+func orderByImportedTypeName(
+	codeGenerationContext *astmodel.CodeGenerationContext,
+	resources []astmodel.InternalTypeName,
+) func(i, j int) bool {
 	return func(i, j int) bool {
 		iVal := resources[i]
 		jVal := resources[j]
 
-		iPkgName, err := codeGenerationContext.GetImportedPackageName(iVal.PackageReference)
+		iPkgName, err := codeGenerationContext.GetImportedPackageName(iVal.PackageReference())
 		if err != nil {
 			panic(err)
 		}
-		jPkgName, err := codeGenerationContext.GetImportedPackageName(jVal.PackageReference)
+		jPkgName, err := codeGenerationContext.GetImportedPackageName(jVal.PackageReference())
 		if err != nil {
 			panic(err)
 		}
@@ -174,28 +233,32 @@ func orderByFunctionName(functions []*functions.IndexRegistrationFunction) func(
 	}
 }
 
-// createGetKnownTypesFunc creates a getKnownTypes function that returns all known types:
+// createGetKnownTypesFunc creates a getKnownTypes function that returns all known types.
+// The registration.KnownType object also contains details about that objects (== GVK) webooks.
 //
-//	func getKnownTypes() []client.Object {
-//		var result []client.Object
-//		result = append(result, new(<package>.<resource>))
-//		result = append(result, new(<package>.<resource>))
-//		result = append(result, new(<package>.<resource>))
+//	func getKnownTypes() []&registration.KnownType {
+//		var result []*registration.KnownType
+//		result = append(result, &registration.KnownType{Obj: new(<package>.<resource>)})
+//		result = append(result, &registration.KnownType{Obj: new(<package>.<resource>)})
+//		result = append(result, &registration.KnownType{Obj: new(<package>.<resource>)})
 //		...
 //		return result
 //	}
-func createGetKnownTypesFunc(codeGenerationContext *astmodel.CodeGenerationContext, resources []astmodel.TypeName) (dst.Decl, error) {
+func (r *ResourceRegistrationFile) createGetKnownTypesFunc(
+	codeGenerationContext *astmodel.CodeGenerationContext,
+	resources []astmodel.InternalTypeName,
+) (dst.Decl, error) {
 	funcName := "getKnownTypes"
-	funcComment := "returns the list of all types."
+	funcComment := "returns the list of all types and their webhooks"
 
-	client, err := codeGenerationContext.GetImportedPackageName(astmodel.ControllerRuntimeClient)
+	webhookRegistrationType, err := astmodel.KnownTypeRegistrationType.AsTypeExpr(codeGenerationContext)
 	if err != nil {
-		return nil, err
+		return nil, eris.Wrap(err, "creating type expression for WebhookRegistrationType")
 	}
 
 	resultIdent := dst.NewIdent("result")
 	resultType := &dst.ArrayType{
-		Elt: astbuilder.Selector(dst.NewIdent(client), "Object"),
+		Elt: astbuilder.PointerTo(webhookRegistrationType),
 	}
 	resultVar := astbuilder.LocalVariableDeclaration(resultIdent.String(), resultType, "")
 
@@ -206,14 +269,45 @@ func createGetKnownTypesFunc(codeGenerationContext *astmodel.CodeGenerationConte
 	batch := make([]dst.Expr, 0, 10)
 	var lastPkg astmodel.PackageReference
 	for _, typeName := range resources {
-		if len(batch) > 0 && typeName.PackageReference != lastPkg {
+		if len(batch) > 0 && typeName.PackageReference() != lastPkg {
 			appendStmt := astbuilder.AppendItemsToSlice(resultIdent, batch...)
 			resourceAppendStatements = append(resourceAppendStatements, appendStmt)
 			batch = batch[:0]
 		}
 
-		batch = append(batch, astbuilder.CallFunc("new", typeName.AsType(codeGenerationContext)))
-		lastPkg = typeName.PackageReference
+		typeNameExpr, err := typeName.AsTypeExpr(codeGenerationContext)
+		if err != nil {
+			return nil, eris.Wrapf(err, "creating type expression for %s", typeName.Name())
+		}
+
+		litBuilder := astbuilder.NewCompositeLiteralBuilder(webhookRegistrationType)
+		litBuilder.AddField("Obj", astbuilder.CallFunc("new", typeNameExpr))
+
+		mutatingWebhook, hasMutatingWebhook := r.mutatingWebhooks[typeName]
+		validatingWebhook, hasValidatingWebhook := r.validatingWebhooks[typeName]
+
+		var mutatingWebhookExpr dst.Expr
+		var validatingWebhookExpr dst.Expr
+
+		if hasMutatingWebhook {
+			mutatingWebhookExpr, err = mutatingWebhook.AsTypeExpr(codeGenerationContext)
+			if err != nil {
+				return nil, eris.Wrapf(err, "creating mutating webhook expression for %s", mutatingWebhook)
+			}
+
+			litBuilder.AddField("Defaulter", astbuilder.AddrOf(&dst.CompositeLit{Type: mutatingWebhookExpr}))
+		}
+		if hasValidatingWebhook {
+			validatingWebhookExpr, err = validatingWebhook.AsTypeExpr(codeGenerationContext)
+			if err != nil {
+				return nil, eris.Wrapf(err, "creating validating webhook expression for %s", validatingWebhook)
+			}
+
+			litBuilder.AddField("Validator", astbuilder.AddrOf(&dst.CompositeLit{Type: validatingWebhookExpr}))
+		}
+
+		batch = append(batch, astbuilder.AddrOf(litBuilder.Build()))
+		lastPkg = typeName.PackageReference()
 	}
 
 	if len(batch) > 0 {
@@ -250,7 +344,7 @@ func createGetKnownTypesFunc(codeGenerationContext *astmodel.CodeGenerationConte
 //			},
 //			Watches: []registration.Watch{
 //				{
-//					Src: <source> (usually corev1.Secret{}),
+//					Type: &corev1.Secret{},
 //				},
 //			},
 //		})
@@ -261,23 +355,40 @@ func createGetKnownTypesFunc(codeGenerationContext *astmodel.CodeGenerationConte
 //	}
 func (r *ResourceRegistrationFile) createGetKnownStorageTypesFunc(
 	codeGenerationContext *astmodel.CodeGenerationContext,
-) dst.Decl {
-
+) (dst.Decl, error) {
 	funcName := "getKnownStorageTypes"
 	funcComment := "returns the list of storage types which can be reconciled."
 
 	resultIdent := dst.NewIdent("result")
+	resultType := astmodel.NewArrayType(
+		astmodel.NewOptionalType(
+			astmodel.StorageTypeRegistrationType))
+	resultTypeExpr, err := resultType.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating type expression for StorageTypeRegistrationType")
+	}
+
 	resultVar := astbuilder.LocalVariableDeclaration(
 		resultIdent.String(),
-		astmodel.NewArrayType(astmodel.NewOptionalType(astmodel.StorageTypeRegistrationType)).AsType(codeGenerationContext),
+		resultTypeExpr,
 		"")
 
 	sort.Slice(r.storageVersionResources, orderByImportedTypeName(codeGenerationContext, r.storageVersionResources))
 
 	resourceAppendStatements := make([]dst.Stmt, 0, len(r.storageVersionResources))
 	for _, typeName := range r.storageVersionResources {
-		newStorageTypeBuilder := astbuilder.NewCompositeLiteralBuilder(astmodel.StorageTypeRegistrationType.AsType(codeGenerationContext))
-		newStorageTypeBuilder.AddField("Obj", astbuilder.CallFunc("new", typeName.AsType(codeGenerationContext)))
+		typeNameExpr, err := typeName.AsTypeExpr(codeGenerationContext)
+		if err != nil {
+			return nil, eris.Wrapf(err, "creating type expression for %s", typeName.Name())
+		}
+
+		registrationTypeExpr, err := astmodel.StorageTypeRegistrationType.AsTypeExpr(codeGenerationContext)
+		if err != nil {
+			return nil, eris.Wrap(err, "creating type expression for StorageTypeRegistrationType")
+		}
+
+		newStorageTypeBuilder := astbuilder.NewCompositeLiteralBuilder(registrationTypeExpr)
+		newStorageTypeBuilder.AddField("Obj", astbuilder.CallFunc("new", typeNameExpr))
 
 		// Register index functions (if needed):
 		// Indexes: []registration.Index{
@@ -287,11 +398,17 @@ func (r *ResourceRegistrationFile) createGetKnownStorageTypesFunc(
 		//		}
 		//	}
 		if indexFuncs, ok := r.indexFunctions[typeName]; ok {
-			sliceBuilder := astbuilder.NewSliceLiteralBuilder(astmodel.IndexRegistrationType.AsType(codeGenerationContext), true)
+			var indexRegistrationTypeExpr dst.Expr
+			indexRegistrationTypeExpr, err = astmodel.IndexRegistrationType.AsTypeExpr(codeGenerationContext)
+			if err != nil {
+				return nil, eris.Wrap(err, "creating type expression for IndexRegistrationType")
+			}
+
+			sliceBuilder := astbuilder.NewSliceLiteralBuilder(indexRegistrationTypeExpr, true)
 			sort.Slice(indexFuncs, orderByFunctionName(indexFuncs))
 			if len(indexFuncs) > 0 {
 				for _, indexFunc := range indexFuncs {
-					newIndexFunctionBuilder := astbuilder.NewCompositeLiteralBuilder(astmodel.IndexRegistrationType.AsType(codeGenerationContext))
+					newIndexFunctionBuilder := astbuilder.NewCompositeLiteralBuilder(indexRegistrationTypeExpr)
 					newIndexFunctionBuilder.AddField("Key", astbuilder.StringLiteral(indexFunc.IndexKey()))
 					newIndexFunctionBuilder.AddField("Func", dst.NewIdent(indexFunc.Name()))
 					sliceBuilder.AddElement(newIndexFunctionBuilder.Build())
@@ -304,11 +421,14 @@ func (r *ResourceRegistrationFile) createGetKnownStorageTypesFunc(
 		// Register additional watches (if needed):
 		// Watches: []registration.Watch{
 		//		registration.Watch{
-		//			Src: <event source>,
+		//			Type: <field type>,
 		//			MakeEventHandler: <func>,
 		//		}
 		//	}
-		watches := r.makeWatchesExpr(typeName, codeGenerationContext)
+		watches, err := r.makeWatchesExpr(typeName, codeGenerationContext)
+		if err != nil {
+			return nil, eris.Wrapf(err, "creating watches expression for %s", typeName.Name())
+		}
 		if watches != nil {
 			newStorageTypeBuilder.AddField("Watches", watches)
 		}
@@ -319,11 +439,7 @@ func (r *ResourceRegistrationFile) createGetKnownStorageTypesFunc(
 		resourceAppendStatements = append(resourceAppendStatements, appendStmt)
 	}
 
-	returnStmt := &dst.ReturnStmt{
-		Results: []dst.Expr{
-			resultIdent,
-		},
-	}
+	returnStmt := astbuilder.Returns(resultIdent)
 
 	body := astbuilder.Statements(resultVar, resourceAppendStatements, returnStmt)
 
@@ -333,30 +449,42 @@ func (r *ResourceRegistrationFile) createGetKnownStorageTypesFunc(
 	}
 
 	f.AddReturn(
-		astmodel.NewArrayType(
-			astmodel.NewOptionalType(astmodel.StorageTypeRegistrationType)).
-			AsType(codeGenerationContext))
+		resultTypeExpr)
 	f.AddComments(funcComment)
 
-	return f.DefineFunc()
+	return f.DefineFunc(), nil
 }
 
-func (r *ResourceRegistrationFile) createGetResourceExtensions(context *astmodel.CodeGenerationContext) dst.Decl {
+func (r *ResourceRegistrationFile) createGetResourceExtensions(
+	context *astmodel.CodeGenerationContext,
+) (dst.Decl, error) {
 	funcName := "getResourceExtensions"
 	funcComment := "returns a list of resource extensions"
 
 	sort.Slice(r.resourceExtensions, orderByImportedTypeName(context, r.resourceExtensions))
 	resultIdent := dst.NewIdent("result")
+	resultType := astmodel.NewArrayType(astmodel.ResourceExtensionType)
+	resultTypeExpr, err := resultType.AsTypeExpr(context)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating type expression for ResourceExtensionType")
+	}
+
 	resultVar := astbuilder.LocalVariableDeclaration(
 		resultIdent.String(),
-		astmodel.NewArrayType(astmodel.ResourceExtensionType).AsType(context),
+		resultTypeExpr,
 		"")
 
 	resourceAppendStatements := make([]dst.Stmt, 0, len(r.resourceExtensions))
 	for _, typeName := range r.resourceExtensions {
+		typeNameExpr, err := typeName.AsTypeExpr(context)
+		if err != nil {
+			return nil, eris.Wrapf(err, "creating type expression for %s", typeName.Name())
+		}
+
+		literalExpr := astbuilder.AddrOf(astbuilder.NewCompositeLiteralBuilder(typeNameExpr).Build())
 		appendStmt := astbuilder.AppendItemToSlice(
 			resultIdent,
-			astbuilder.AddrOf(astbuilder.NewCompositeLiteralBuilder(typeName.AsType(context)).Build()),
+			literalExpr,
 		)
 		resourceAppendStatements = append(resourceAppendStatements, appendStmt)
 	}
@@ -370,10 +498,10 @@ func (r *ResourceRegistrationFile) createGetResourceExtensions(context *astmodel
 		Body: body,
 	}
 
-	f.AddReturn(astmodel.NewArrayType(astmodel.ResourceExtensionType).AsType(context))
+	f.AddReturn(resultTypeExpr)
 	f.AddComments(funcComment)
 
-	return f.DefineFunc()
+	return f.DefineFunc(), nil
 }
 
 // createCreateSchemeFunc creates a createScheme() function like:
@@ -431,11 +559,7 @@ func (r *ResourceRegistrationFile) createCreateSchemeFunc(codeGenerationContext 
 		groupVersionAssignments = append(groupVersionAssignments, groupSchemeAssign)
 	}
 
-	returnStmt := &dst.ReturnStmt{
-		Results: []dst.Expr{
-			dst.NewIdent(scheme),
-		},
-	}
+	returnStmt := astbuilder.Returns(dst.NewIdent(scheme))
 
 	body := astbuilder.Statements(initSchemeVar, clientGoSchemeAssign, groupVersionAssignments, returnStmt)
 
@@ -450,7 +574,9 @@ func (r *ResourceRegistrationFile) createCreateSchemeFunc(codeGenerationContext 
 	return f.DefineFunc(), nil
 }
 
-func (r *ResourceRegistrationFile) defineIndexFunctions(codeGenerationContext *astmodel.CodeGenerationContext) []dst.Decl {
+func (r *ResourceRegistrationFile) defineIndexFunctions(
+	codeGenerationContext *astmodel.CodeGenerationContext,
+) ([]dst.Decl, error) {
 	var indexFunctions []*functions.IndexRegistrationFunction
 	for _, funcs := range r.indexFunctions {
 		indexFunctions = append(indexFunctions, funcs...)
@@ -458,97 +584,138 @@ func (r *ResourceRegistrationFile) defineIndexFunctions(codeGenerationContext *a
 	sort.Slice(indexFunctions, orderByFunctionName(indexFunctions))
 
 	result := make([]dst.Decl, 0, len(indexFunctions))
+	var errs []error
 	for _, f := range indexFunctions {
-		result = append(result, f.AsFunc(codeGenerationContext, astmodel.TypeName{}))
+		decl, err := f.AsFunc(codeGenerationContext, astmodel.InternalTypeName{})
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+
+		result = append(result, decl)
 	}
 
-	return result
+	return result, kerrors.NewAggregate(errs)
 }
 
 func (r *ResourceRegistrationFile) getImportedPackages() map[astmodel.PackageReference]struct{} {
 	result := make(map[astmodel.PackageReference]struct{})
 	for _, typeName := range r.resources {
-		result[typeName.PackageReference] = struct{}{}
+		result[typeName.PackageReference()] = struct{}{}
 	}
 
 	return result
 }
 
-func (r *ResourceRegistrationFile) makeWatchesExpr(typeName astmodel.TypeName, codeGenerationContext *astmodel.CodeGenerationContext) dst.Expr {
-	secretWatchesExpr := r.makeSimpleWatchesExpr(
+func (r *ResourceRegistrationFile) makeWatchesExpr(
+	typeName astmodel.InternalTypeName,
+	codeGenerationContext *astmodel.CodeGenerationContext,
+) (dst.Expr, error) {
+	secretWatchesExpr, err := r.makeSimpleWatchesExpr(
 		typeName,
 		astmodel.SecretType,
 		"watchSecretsFactory",
 		r.secretPropertyKeys,
 		codeGenerationContext)
-	configMapWatchesExpr := r.makeSimpleWatchesExpr(
+	if err != nil {
+		return nil, eris.Wrap(err, "creating watches expression for secrets")
+	}
+
+	configMapWatchesExpr, err := r.makeSimpleWatchesExpr(
 		typeName,
 		astmodel.ConfigMapType,
 		"watchConfigMapsFactory",
 		r.configMapPropertyKeys,
 		codeGenerationContext)
-
-	if secretWatchesExpr == nil && configMapWatchesExpr == nil {
-		return nil
+	if err != nil {
+		return nil, eris.Wrap(err, "creating watches expression for configmaps")
 	}
 
-	sliceBuilder := astbuilder.NewSliceLiteralBuilder(astmodel.WatchRegistrationType.AsType(codeGenerationContext), true)
+	if secretWatchesExpr == nil && configMapWatchesExpr == nil {
+		return nil, nil
+	}
+
+	watchRegistrationTypeExpr, err := astmodel.WatchRegistrationType.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating type expression for WatchRegistrationType")
+	}
+
+	sliceBuilder := astbuilder.NewSliceLiteralBuilder(watchRegistrationTypeExpr, true)
 	if secretWatchesExpr != nil {
 		sliceBuilder.AddElement(secretWatchesExpr)
 	}
 	if configMapWatchesExpr != nil {
 		sliceBuilder.AddElement(configMapWatchesExpr)
 	}
-	return sliceBuilder.Build()
+
+	return sliceBuilder.Build(), nil
 }
 
 // makeSimpleWatchesExpr generates code for a Watches expression:
 //
 //	{
-//		Src:              &source.Kind{Type: &<fieldType>{}},
+//		Type:              &&<fieldType>{},
 //		MakeEventHandler: <watchHelperFuncName>([]string{<typeNameKeys[typeName]>}, &<typeName>{}),
 //	}
 func (r *ResourceRegistrationFile) makeSimpleWatchesExpr(
-	typeName astmodel.TypeName,
+	typeName astmodel.InternalTypeName,
 	fieldType astmodel.TypeName,
 	watchHelperFuncName string,
-	typeNameKeys map[astmodel.TypeName][]string,
-	codeGenerationContext *astmodel.CodeGenerationContext) dst.Expr {
+	typeNameKeys map[astmodel.InternalTypeName][]string,
+	codeGenerationContext *astmodel.CodeGenerationContext,
+) (dst.Expr, error) {
 	keys, ok := typeNameKeys[typeName]
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	if len(keys) == 0 {
-		return nil
+		return nil, nil
 	}
 
-	newWatchBuilder := astbuilder.NewCompositeLiteralBuilder(astmodel.WatchRegistrationType.AsType(codeGenerationContext))
+	watchRegistrationTypeExpr, err := astmodel.WatchRegistrationType.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating type expression for WatchRegistrationType")
+	}
+
+	newWatchBuilder := astbuilder.NewCompositeLiteralBuilder(watchRegistrationTypeExpr)
 	sort.Strings(keys)
 
-	builder := astbuilder.NewCompositeLiteralBuilder(
-		astmodel.ControllerRuntimeSourceKindType.AsType(codeGenerationContext)).WithoutNewLines()
-	builder.AddField(
-		"Type",
-		astbuilder.AddrOf(
-			&dst.CompositeLit{
-				Type: fieldType.AsType(codeGenerationContext),
-			}))
-	source := builder.Build()
-	newWatchBuilder.AddField("Src", astbuilder.AddrOf(source))
+	fieldTypeExpr, err := fieldType.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrapf(err, "creating type expression for %s", fieldType.Name())
+	}
+
+	objectType := astbuilder.AddrOf(&dst.CompositeLit{
+		Type: fieldTypeExpr,
+	})
+	newWatchBuilder.AddField("Type", objectType)
 
 	keyParams := make([]dst.Expr, 0, len(keys))
 	for _, key := range keys {
-		keyParams = append(keyParams, astbuilder.StringLiteral(key))
+		k := astbuilder.StringLiteral(key)
+
+		k.Decorations().Before = dst.NewLine
+		k.Decorations().After = dst.NewLine
+
+		keyParams = append(keyParams, k)
 	}
 
-	listTypeName := typeName.WithName(typeName.Name() + "List").AsType(codeGenerationContext)
+	listType := typeName.WithName(typeName.Name() + "List")
+	listTypeExpr, err := listType.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrapf(err, "creating type expression for %s", listType.Name())
+	}
+
+	slice := astbuilder.SliceLiteral(dst.NewIdent("string"), keyParams...)
+	slice.Decorations().Before = dst.NewLine
+	slice.Decorations().After = dst.NewLine
 
 	eventHandler := astbuilder.CallFunc(
 		watchHelperFuncName,
-		astbuilder.SliceLiteral(dst.NewIdent("string"), keyParams...),
-		astbuilder.AddrOf(astbuilder.NewCompositeLiteralBuilder(listTypeName).Build()))
+		slice,
+		astbuilder.AddrOf(astbuilder.NewCompositeLiteralBuilder(listTypeExpr).Build()))
 	newWatchBuilder.AddField("MakeEventHandler", eventHandler)
 
-	return newWatchBuilder.Build()
+	return newWatchBuilder.Build(), nil
 }

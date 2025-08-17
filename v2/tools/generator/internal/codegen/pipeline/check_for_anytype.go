@@ -10,8 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/pkg/errors"
-	"k8s.io/klog/v2"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/internal/set"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
@@ -31,7 +30,7 @@ func FilterOutDefinitionsUsingAnyType(packages []string) *Stage {
 	return checkForAnyType("Filter out rogue definitions using AnyTypes", packages)
 }
 
-// ensureDefinitionsDoNotUseAnyTypes returns a stage that will check for any
+// EnsureDefinitionsDoNotUseAnyTypes returns a stage that will check for any
 // definitions containing AnyTypes. The stage will return errors for each type
 // found that uses an AnyType.
 func EnsureDefinitionsDoNotUseAnyTypes() *Stage {
@@ -44,11 +43,12 @@ func checkForAnyType(description string, packages []string) *Stage {
 		expectedPackages.Add(p)
 	}
 
-	return NewLegacyStage(
+	return NewStage(
 		CheckForAnyTypeStageID,
 		description,
-		func(ctx context.Context, defs astmodel.TypeDefinitionSet) (astmodel.TypeDefinitionSet, error) {
-			var badNames []astmodel.TypeName
+		func(ctx context.Context, state *State) (*State, error) {
+			defs := state.Definitions()
+			var badNames []astmodel.InternalTypeName
 			output := make(astmodel.TypeDefinitionSet)
 			for name, def := range defs {
 				if containsAnyType(def.Type()) {
@@ -58,7 +58,7 @@ func checkForAnyType(description string, packages []string) *Stage {
 				// We only want to include this type in the output if
 				// it's not in a package that we know contains
 				// AnyTypes.
-				if expectedPackages.Contains(packageName(name)) {
+				if expectedPackages.Contains(name.InternalPackageReference().FolderPath()) {
 					continue
 				}
 
@@ -67,14 +67,14 @@ func checkForAnyType(description string, packages []string) *Stage {
 
 			badPackages, err := collectBadPackages(badNames, expectedPackages)
 			if err != nil {
-				return nil, errors.Wrap(err, "summarising bad types")
+				return nil, eris.Wrap(err, "summarising bad types")
 			}
 
 			if len(badPackages) > 0 {
-				return nil, errors.Errorf("AnyTypes found - add exclusions for: %s", strings.Join(badPackages, ", "))
+				return nil, eris.Errorf("AnyTypes found - add exclusions for: %s", strings.Join(badPackages, ", "))
 			}
 
-			return output, nil
+			return state.WithDefinitions(output), nil
 		})
 }
 
@@ -88,7 +88,7 @@ func containsAnyType(theType astmodel.Type) bool {
 		return it
 	}
 
-	visitor := astmodel.TypeVisitorBuilder{
+	visitor := astmodel.TypeVisitorBuilder[any]{
 		VisitPrimitive: detectAnyType,
 	}.Build()
 
@@ -96,22 +96,14 @@ func containsAnyType(theType astmodel.Type) bool {
 	return found
 }
 
-func packageName(name astmodel.TypeName) string {
-	if group, version, ok := name.PackageReference.TryGroupVersion(); ok {
-		return group + "/" + version
-	}
-
-	return name.PackageReference.PackageName()
-}
-
 func collectBadPackages(
-	names []astmodel.TypeName,
+	names []astmodel.InternalTypeName,
 	expectedPackages set.Set[string],
 ) ([]string, error) {
 	grouped := make(map[string][]string)
 	for _, name := range names {
-		groupVersion := packageName(name)
-		grouped[groupVersion] = append(grouped[groupVersion], name.Name())
+		packagePath := name.InternalPackageReference().FolderPath()
+		grouped[packagePath] = append(grouped[packagePath], name.Name())
 	}
 
 	var groupNames []string //nolint:prealloc // unlikely case
@@ -126,13 +118,6 @@ func collectBadPackages(
 	}
 	sort.Strings(groupNames)
 
-	if klog.V(2).Enabled() {
-		for _, groupName := range groupNames {
-			sort.Strings(grouped[groupName])
-			klog.Infof("%s: %s", groupName, grouped[groupName])
-		}
-	}
-
 	// Complain if there were some packages where we expected problems
 	// but didn't see any.
 	if len(expectedPackages) > 0 {
@@ -141,8 +126,9 @@ func collectBadPackages(
 			leftovers = append(leftovers, value)
 		}
 		sort.Strings(leftovers)
-		return nil, errors.Errorf(
+		return nil, eris.Errorf(
 			"no AnyTypes found in: %s", strings.Join(leftovers, ", "))
+
 	}
 
 	return groupNames, nil

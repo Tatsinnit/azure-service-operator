@@ -6,7 +6,9 @@
 package genruntime
 
 import (
-	"github.com/pkg/errors"
+	"strings"
+
+	"github.com/rotisserie/eris"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -16,10 +18,16 @@ type ARMOwned interface {
 	Owner() *ResourceReference
 }
 
+type SupportedResourceOperations interface {
+	// GetSupportedOperations gets the set of supported resource operations
+	GetSupportedOperations() []ResourceOperation
+}
+
 // KubernetesResource is an Azure resource. This interface contains the common set of
 // methods that apply to all ASO ARM resources.
 type KubernetesResource interface {
 	ARMOwned
+	SupportedResourceOperations
 
 	// TODO: I think we need this?
 	// KnownOwner() *KnownResourceReference
@@ -66,13 +74,13 @@ func NewEmptyVersionedResourceFromGVK(scheme *runtime.Scheme, gvk schema.GroupVe
 	// Create an empty resource at the desired version
 	rsrc, err := scheme.New(gvk)
 	if err != nil {
-		return nil, errors.Wrapf(err, "unable to create new %s", gvk)
+		return nil, eris.Wrapf(err, "unable to create new %s", gvk)
 	}
 
 	// Convert it to our interface
 	mo, ok := rsrc.(ARMMetaObject)
 	if !ok {
-		return nil, errors.Errorf("expected resource %s to implement genruntime.ARMMetaObject", gvk)
+		return nil, eris.Errorf("expected resource %s to implement genruntime.ARMMetaObject", gvk)
 	}
 
 	// Ensure GVK is populated
@@ -86,8 +94,22 @@ func NewEmptyVersionedResourceFromGVK(scheme *runtime.Scheme, gvk schema.GroupVe
 func GetAPIVersion(metaObject ARMMetaObject, scheme *runtime.Scheme) (string, error) {
 	rsrc, err := NewEmptyVersionedResource(metaObject, scheme)
 	if err != nil {
-		return "", errors.Wrapf(err, "unable return API version for %s", metaObject.GetObjectKind().GroupVersionKind())
+		return "", eris.Wrapf(err, "unable return API version for %s", metaObject.GetObjectKind().GroupVersionKind())
 	}
 
 	return rsrc.GetAPIVersion(), nil
+}
+
+// GetResourceTypeAndProvider returns the provider and the array of resource types which represent the resource.
+// For example: Microsoft.Compute/virtualMachineScaleSets would return ("Microsoft.Compute", []string{"virtualMachineScaleSets"}, nil)
+func GetResourceTypeAndProvider(res ARMMetaObject) (string, []string, error) {
+	rawType := res.GetType()
+
+	split := strings.Split(rawType, "/")
+	if len(split) <= 1 {
+		return "", nil, eris.Errorf("unexpected resource type format: %q", rawType)
+	}
+
+	// The first item is always the provider
+	return split[0], split[1:], nil
 }

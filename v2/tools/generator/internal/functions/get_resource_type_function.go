@@ -23,13 +23,16 @@ const (
 func NewGetTypeFunction(
 	armType string,
 	idFactory astmodel.IdentifierFactory,
-	receiverType ReceiverType) astmodel.Function {
-
+	receiverType ReceiverType,
+) astmodel.Function {
 	// Trim any "'s around armType
 	armType = strings.Trim(armType, "\"")
 
 	comment := fmt.Sprintf("returns the ARM Type of the resource. This is always %q", armType)
-	result := NewObjectFunction("Get"+astmodel.TypeProperty, idFactory, createBodyReturningLiteralString(armType, comment, receiverType))
-	result.AddPackageReference(astmodel.GenRuntimeReference)
+	result := NewObjectFunction(
+		"Get"+astmodel.TypeProperty,
+		idFactory,
+		createBodyReturningLiteralString(armType, comment, receiverType),
+		astmodel.GenRuntimeReference)
 	return result
 }

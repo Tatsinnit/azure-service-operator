@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
@@ -65,7 +66,8 @@ var _ astmodel.Function = &ChainedConversionFunction{}
 // idFactory is an identifier factory to use for generating local identifiers
 func NewSpecChainedConversionFunction(
 	propertyFunction *PropertyAssignmentFunction,
-	idFactory astmodel.IdentifierFactory) *ChainedConversionFunction {
+	idFactory astmodel.IdentifierFactory,
+) *ChainedConversionFunction {
 	result := &ChainedConversionFunction{
 		name:                            propertyFunction.direction.SelectString("ConvertSpecFrom", "ConvertSpecTo"),
 		parameterType:                   astmodel.ConvertibleSpecInterfaceType,
@@ -85,7 +87,8 @@ func NewSpecChainedConversionFunction(
 // idFactory is an identifier factory to use for generating local identifiers
 func NewStatusChainedConversionFunction(
 	propertyFunction *PropertyAssignmentFunction,
-	idFactory astmodel.IdentifierFactory) *ChainedConversionFunction {
+	idFactory astmodel.IdentifierFactory,
+) *ChainedConversionFunction {
 	result := &ChainedConversionFunction{
 		name:                            propertyFunction.direction.SelectString("ConvertStatusFrom", "ConvertStatusTo"),
 		parameterType:                   astmodel.ConvertibleStatusInterfaceType,
@@ -104,12 +107,12 @@ func (fn *ChainedConversionFunction) Name() string {
 
 func (fn *ChainedConversionFunction) RequiredPackageReferences() *astmodel.PackageReferenceSet {
 	return astmodel.NewPackageReferenceSet(
-		astmodel.GitHubErrorsReference,
+		astmodel.ErisReference,
 		astmodel.ControllerRuntimeConversion,
 		astmodel.FmtReference,
 		astmodel.GenRuntimeReference,
-		fn.parameterType.PackageReference,
-		fn.propertyAssignmentParameterType.PackageReference)
+		fn.parameterType.PackageReference(),
+		fn.propertyAssignmentParameterType.PackageReference())
 }
 
 func (fn *ChainedConversionFunction) References() astmodel.TypeNameSet {
@@ -119,28 +122,37 @@ func (fn *ChainedConversionFunction) References() astmodel.TypeNameSet {
 }
 
 func (fn *ChainedConversionFunction) AsFunc(
-	generationContext *astmodel.CodeGenerationContext, receiver astmodel.TypeName) *dst.FuncDecl {
-
+	codeGenerationContext *astmodel.CodeGenerationContext,
+	receiver astmodel.InternalTypeName,
+) (*dst.FuncDecl, error) {
 	// Create a sensible name for our receiver
 	receiverName := fn.idFactory.CreateReceiver(receiver.Name())
 
 	// We always use a pointer receiver, so we can modify it
-	receiverType := astmodel.NewOptionalType(receiver).AsType(generationContext)
+	receiverExpr, err := astmodel.NewOptionalType(receiver).AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrapf(err, "creating receiver type expression for %s", receiver)
+	}
 
 	funcDetails := &astbuilder.FuncDetails{
 		ReceiverIdent: receiverName,
-		ReceiverType:  receiverType,
+		ReceiverType:  receiverExpr,
 		Name:          fn.Name(),
 	}
 
 	parameterName := fn.direction.SelectString("source", "destination")
-	funcDetails.AddParameter(parameterName, fn.parameterType.AsType(generationContext))
+	parameterTypeExpr, err := fn.parameterType.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrapf(err, "creating parameter type expression for %s", parameterName)
+	}
+
+	funcDetails.AddParameter(parameterName, parameterTypeExpr)
 
 	funcDetails.AddReturns("error")
 	funcDetails.AddComments(fn.declarationDocComment(receiver, parameterName))
-	funcDetails.Body = fn.bodyForConvert(receiverName, parameterName, generationContext)
+	funcDetails.Body = fn.bodyForConvert(receiverName, parameterName, codeGenerationContext)
 
-	return funcDetails.DefineFunc()
+	return funcDetails.DefineFunc(), nil
 }
 
 // bodyForConvert generates a conversion when the type we know about isn't the hub type, but is closer to it in our
@@ -166,16 +178,20 @@ func (fn *ChainedConversionFunction) AsFunc(
 //
 // For ConvertTo, we have essentially the same structure, but two-step conversion is done in the other order.
 func (fn *ChainedConversionFunction) bodyForConvert(
-	receiverName string, parameterName string, generationContext *astmodel.CodeGenerationContext) []dst.Stmt {
-
-	errorsPackage := generationContext.MustGetImportedPackageName(astmodel.GitHubErrorsReference)
+	receiverName string, parameterName string, generationContext *astmodel.CodeGenerationContext,
+) []dst.Stmt {
+	errorsPackage := generationContext.MustGetImportedPackageName(astmodel.ErisReference)
 
 	receiver := dst.NewIdent(receiverName)
 	parameter := dst.NewIdent(parameterName)
-	local := dst.NewIdent(fn.localVariableId())
+	local := dst.NewIdent(fn.localVariableID())
 	errIdent := dst.NewIdent("err")
 
-	intermediateType := fn.propertyAssignmentParameterType.AsType(generationContext)
+	intermediateType, err := fn.propertyAssignmentParameterType.AsTypeExpr(generationContext)
+	if err != nil {
+		// TODO: Modify bodyForConvert to return an error
+		panic(err)
+	}
 
 	// <local>, ok := <parameter>.(<intermediateType>)
 	typeAssert := astbuilder.TypeAssert(local, parameter, astbuilder.Dereference(intermediateType))
@@ -256,9 +272,9 @@ func (fn *ChainedConversionFunction) bodyForConvert(
 		returnNil)
 }
 
-// localVariableId returns a good identifier to use for a local variable in our function,
+// localVariableID returns a good identifier to use for a local variable in our function,
 // based which direction we are converting
-func (fn *ChainedConversionFunction) localVariableId() string {
+func (fn *ChainedConversionFunction) localVariableID() string {
 	return fn.direction.SelectString("src", "dst")
 }
 

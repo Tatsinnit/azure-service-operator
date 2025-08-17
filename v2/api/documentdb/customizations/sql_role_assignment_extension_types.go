@@ -26,7 +26,8 @@ func (extension *SqlRoleAssignmentExtension) ClassifyError(
 	cloudError *genericarmclient.CloudError,
 	_ string,
 	_ logr.Logger,
-	next extensions.ErrorClassifierFunc) (core.CloudErrorDetails, error) {
+	next extensions.ErrorClassifierFunc,
+) (core.CloudErrorDetails, error) {
 	details, err := next(cloudError)
 	if err != nil {
 		return core.CloudErrorDetails{}, err
@@ -40,7 +41,7 @@ func (extension *SqlRoleAssignmentExtension) ClassifyError(
 	return details, nil
 }
 
-// isRetryableConflict checks the passed error to see if it is a retryable conflict, returning true if it is.
+// isRetryableRoleAssignmentBadRequest checks the passed error to see if it is a retryable conflict, returning true if it is.
 func isRetryableRoleAssignmentBadRequest(err *genericarmclient.CloudError) bool {
 	if err == nil {
 		return false

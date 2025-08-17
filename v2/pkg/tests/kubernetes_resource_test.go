@@ -9,9 +9,10 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+
 	"k8s.io/apimachinery/pkg/runtime"
 
-	batch "github.com/Azure/azure-service-operator/v2/api/batch/v1beta20210101"
+	batch "github.com/Azure/azure-service-operator/v2/api/batch/v1api20210101"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
 
@@ -30,5 +31,5 @@ func TestNewEmptyVersionedResource_WorksWhenNoPivotNeeded(t *testing.T) {
 	g.Expect(rsrc).NotTo(BeNil())
 }
 
-//TODO: once we have multiple versions of a resource, we should test that the pivot works too
-//func TestNewEmptyVersionedResource_WorksWhenPivotNeeded(t *testing.T) {
+// TODO: once we have multiple versions of a resource, we should test that the pivot works too
+// func TestNewEmptyVersionedResource_WorksWhenPivotNeeded(t *testing.T) {

@@ -8,7 +8,8 @@ package pipeline
 import (
 	"context"
 
-	"github.com/pkg/errors"
+	"github.com/go-logr/logr"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/interfaces"
@@ -17,33 +18,29 @@ import (
 const ApplyKubernetesResourceInterfaceStageID = "applyKubernetesResourceInterface"
 
 // ApplyKubernetesResourceInterface ensures that every Resource implements the KubernetesResource interface
-func ApplyKubernetesResourceInterface(idFactory astmodel.IdentifierFactory) *Stage {
+func ApplyKubernetesResourceInterface(
+	idFactory astmodel.IdentifierFactory,
+	log logr.Logger,
+) *Stage {
 	return NewStage(
 		ApplyKubernetesResourceInterfaceStageID,
 		"Add the KubernetesResource interface to every resource",
 		func(ctx context.Context, state *State) (*State, error) {
 			updatedDefs := make(astmodel.TypeDefinitionSet)
 
-			for typeName, typeDef := range astmodel.FindResourceDefinitions(state.Definitions()) {
-				resource := typeDef.Type().(*astmodel.ResourceType)
-				newResource, err := interfaces.AddKubernetesResourceInterfaceImpls(typeDef, idFactory, state.Definitions())
+			for typeName, typeDef := range state.Definitions().AllResources() {
+				newDefs, err := interfaces.AddKubernetesResourceInterfaceImpls(
+					typeDef,
+					idFactory,
+					state.Definitions(),
+					log)
 				if err != nil {
-					return nil, errors.Wrapf(err, "couldn't implement Kubernetes resource interface for %q", typeName)
+					return nil, eris.Wrapf(err, "couldn't implement Kubernetes resource interface for %q", typeName)
 				}
 
-				// this is really very ugly; a better way?
-				if _, ok := newResource.SpecType().(astmodel.TypeName); !ok {
-					// the resource Spec was replaced with a new definition; update it
-					// by replacing the named definition:
-					specName := resource.SpecType().(astmodel.TypeName)
-					updatedDefs.Add(astmodel.MakeTypeDefinition(specName, newResource.SpecType()))
-					newResource = newResource.WithSpec(specName)
-				}
-
-				newDef := typeDef.WithType(newResource)
-				updatedDefs.Add(newDef)
+				updatedDefs.AddTypes(newDefs)
 			}
 
-			return state.WithDefinitions(state.Definitions().OverlayWith(updatedDefs)), nil
+			return state.WithOverlaidDefinitions(updatedDefs), nil
 		})
 }

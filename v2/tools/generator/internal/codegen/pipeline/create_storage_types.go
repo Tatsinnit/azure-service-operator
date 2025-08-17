@@ -8,7 +8,7 @@ package pipeline
 import (
 	"context"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/codegen/storage"
@@ -36,15 +36,20 @@ func CreateStorageTypes() *Stage {
 				return !astmodel.ARMFlag.IsOn(def.Type())
 			}
 
+			// Predicate to filter webhook types
+			isNotWebhookType := func(def astmodel.TypeDefinition) bool {
+				return !astmodel.IsWebhookPackageReference(def.Name().PackageReference())
+			}
+
 			// Filter to the types we want to process
-			typesToConvert := state.Definitions().Where(isResourceOrObject).Where(isNotARMType)
+			typesToConvert := state.Definitions().Where(isResourceOrObject).Where(isNotARMType).Where(isNotWebhookType)
 
 			// HACK: include the APIVersion in the storage types package.
 			// really we don't want storage types to have API Version at all,
 			// but it's difficult to remove the GetApiVersion() Function at the moment
-			storageAPIVersions := make(astmodel.TypeNameSet)
-			for _, tdef := range typesToConvert {
-				if rt, ok := astmodel.AsResourceType(tdef.Type()); ok && rt.HasAPIVersion() {
+			storageAPIVersions := astmodel.NewInternalTypeNameSet()
+			for _, def := range typesToConvert {
+				if rt, ok := astmodel.AsResourceType(def.Type()); ok && rt.HasAPIVersion() {
 					storageAPIVersions.Add(rt.APIVersionTypeName())
 				}
 			}
@@ -60,16 +65,13 @@ func CreateStorageTypes() *Stage {
 			for name, def := range typesToConvert {
 				storageDef, err := typeConverter.ConvertDefinition(def)
 				if err != nil {
-					return nil, errors.Wrapf(err, "creating storage variant of %q", name)
+					return nil, eris.Wrapf(err, "creating storage variant of %q", name)
 				}
 
 				storageDefs.Add(storageDef)
 			}
 
-			defs := state.Definitions().Copy()
-			defs.AddTypes(storageDefs)
-
-			return state.WithDefinitions(defs), nil
+			return state.WithOverlaidDefinitions(storageDefs), nil
 		})
 
 	return stage

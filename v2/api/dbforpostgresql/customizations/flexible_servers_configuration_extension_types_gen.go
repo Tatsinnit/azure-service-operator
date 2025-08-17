@@ -4,12 +4,16 @@
 package customizations
 
 import (
-	alpha20210601 "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1alpha1api20210601"
-	alpha20210601s "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1alpha1api20210601storage"
-	v20210601 "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1beta20210601"
-	v20210601s "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1beta20210601storage"
-	v20220120p "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1beta20220120preview"
-	v20220120ps "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1beta20220120previewstorage"
+	v20210601 "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1api20210601"
+	v20210601s "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1api20210601/storage"
+	v20220120p "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1api20220120preview"
+	v20220120ps "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1api20220120preview/storage"
+	v20221201 "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1api20221201"
+	v20221201s "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1api20221201/storage"
+	v20230601p "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1api20230601preview"
+	v20230601ps "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1api20230601preview/storage"
+	v20240801 "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1api20240801"
+	v20240801s "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1api20240801/storage"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
 
@@ -19,10 +23,14 @@ type FlexibleServersConfigurationExtension struct {
 // GetExtendedResources Returns the KubernetesResource slice for Resource versions
 func (extension *FlexibleServersConfigurationExtension) GetExtendedResources() []genruntime.KubernetesResource {
 	return []genruntime.KubernetesResource{
-		&alpha20210601.FlexibleServersConfiguration{},
-		&alpha20210601s.FlexibleServersConfiguration{},
 		&v20210601.FlexibleServersConfiguration{},
 		&v20210601s.FlexibleServersConfiguration{},
 		&v20220120p.FlexibleServersConfiguration{},
-		&v20220120ps.FlexibleServersConfiguration{}}
+		&v20220120ps.FlexibleServersConfiguration{},
+		&v20221201.FlexibleServersConfiguration{},
+		&v20221201s.FlexibleServersConfiguration{},
+		&v20230601p.FlexibleServersConfiguration{},
+		&v20230601ps.FlexibleServersConfiguration{},
+		&v20240801.FlexibleServersConfiguration{},
+		&v20240801s.FlexibleServersConfiguration{}}
 }

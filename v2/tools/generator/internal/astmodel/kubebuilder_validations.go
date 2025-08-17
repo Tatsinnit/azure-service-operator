@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/dave/dst"
-	"k8s.io/klog/v2"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 )
@@ -150,20 +149,17 @@ func MakeMaxItemsValidation(length int64) KubeBuilderValidation {
 	return KubeBuilderValidation{MaxItemsValidationName, length}
 }
 
-func MakeUniqueItemsValidation() KubeBuilderValidation {
-	return KubeBuilderValidation{UniqueItemsValidationName, true}
-}
-
 func MakeMaximumValidation(value *big.Rat) KubeBuilderValidation {
 	if value.IsInt() {
 		return KubeBuilderValidation{MaximumValidationName, value.RatString()}
 	} else {
-		floatValue, ok := value.Float64()
-		if !ok {
-			klog.Warningf("inexact maximum: %s ⇒ %g", value.String(), floatValue)
+		// TODO (@bearps) Restore this check when we modify AsDeclarations() to allow error returns
+		if floatValue, ok := value.Float64(); ok {
+			return KubeBuilderValidation{MaximumValidationName, floatValue}
 		}
 
-		return KubeBuilderValidation{MaximumValidationName, floatValue}
+		msg := fmt.Sprintf("invalid value for maximum: %s", value.RatString())
+		panic(msg)
 	}
 }
 
@@ -171,12 +167,13 @@ func MaxMinimumValidation(value *big.Rat) KubeBuilderValidation {
 	if value.IsInt() {
 		return KubeBuilderValidation{MinimumValidationName, value.RatString()}
 	} else {
-		floatValue, ok := value.Float64()
-		if !ok {
-			klog.Warningf("inexact minimum: %s ⇒ %g", value.String(), floatValue)
+		// TODO (@bearps) Restore this check when we modify AsDeclarations() to allow error returns
+		if floatValue, ok := value.Float64(); ok {
+			return KubeBuilderValidation{MinimumValidationName, floatValue}
 		}
 
-		return KubeBuilderValidation{MinimumValidationName, floatValue}
+		msg := fmt.Sprintf("invalid value for minimum: %s", value.RatString())
+		panic(msg)
 	}
 }
 
@@ -192,11 +189,12 @@ func MakeMultipleOfValidation(value *big.Rat) KubeBuilderValidation {
 	if value.IsInt() {
 		return KubeBuilderValidation{MultipleOfValidationName, value.RatString()}
 	} else {
-		floatValue, ok := value.Float64()
-		if !ok {
-			klog.Warningf("inexact multiple-of: %s ⇒ %g", value.String(), floatValue)
+		// TODO (@bearps) Restore this check when we modify AsDeclarations() to allow error returns
+		if floatValue, ok := value.Float64(); ok {
+			return KubeBuilderValidation{MultipleOfValidationName, floatValue}
 		}
 
-		return KubeBuilderValidation{MultipleOfValidationName, floatValue}
+		msg := fmt.Sprintf("invalid value for multipleOf: %s", value.RatString())
+		panic(msg)
 	}
 }

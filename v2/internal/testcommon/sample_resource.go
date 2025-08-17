@@ -9,19 +9,22 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
 )
 
-var SimpleExtensionResourceGroupVersion = schema.GroupVersion{Group: "microsoft.test.azure.com", Version: "v1betatest"}
+var SimpleExtensionResourceGroupVersion = schema.GroupVersion{Group: "microsoft.test.azure.com", Version: "v1apitest"}
 
 type SimpleExtensionResource struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 	Spec              SimpleExtensionResourceSpec   `json:"spec,omitempty"`
 	Status            SimpleExtensionResourceStatus `json:"status,omitempty"`
+}
+
+func (r *SimpleExtensionResource) GetSupportedOperations() []genruntime.ResourceOperation {
+	panic("not expected to be called in this test resource")
 }
 
 func (r *SimpleExtensionResource) SetStatus(status genruntime.ConvertibleStatus) error {
@@ -45,15 +48,6 @@ func (r *SimpleExtensionResource) GetAPIVersion() string {
 	return "2020-01-01"
 }
 
-var _ admission.Defaulter = &SimpleExtensionResource{}
-
-// Default defaults the Azure name of the resource to the Kubernetes name
-func (r *SimpleExtensionResource) Default() {
-	if r.Spec.AzureName == "" {
-		r.Spec.AzureName = r.Name
-	}
-}
-
 var _ conditions.Conditioner = &SimpleExtensionResource{}
 
 // GetConditions returns the conditions of the resource
@@ -75,7 +69,7 @@ func (r *SimpleExtensionResource) AzureName() string {
 
 // Owner returns the ResourceReference of the owner, or nil if there is no owner
 func (r *SimpleExtensionResource) Owner() *genruntime.ResourceReference {
-	return nil
+	return r.Spec.Owner.AsResourceReference()
 }
 
 func (r *SimpleExtensionResource) GetType() string {
@@ -90,7 +84,7 @@ func (r *SimpleExtensionResource) GetResourceScope() genruntime.ResourceScope {
 type SimpleExtensionResourceSpec struct {
 	AzureName string `json:"azureName,omitempty"`
 
-	Owner genruntime.ResourceReference `json:"owner"`
+	Owner genruntime.ArbitraryOwnerReference `json:"owner"`
 }
 
 var _ genruntime.ConvertibleSpec = &SimpleExtensionResourceSpec{}

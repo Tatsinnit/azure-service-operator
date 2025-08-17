@@ -6,15 +6,17 @@
 package genruntime
 
 import (
+	"strings"
+
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 )
 
 // GetAndParseResourceID gets the ARM ID from the given MetaObject and parses it into its constituent parts
 func GetAndParseResourceID(obj ARMMetaObject) (*arm.ResourceID, error) {
 	resourceID, hasResourceID := GetResourceID(obj)
 	if !hasResourceID {
-		return nil, errors.Errorf("cannot find resource id for obj %s/%s", obj.GetNamespace(), obj.GetName())
+		return nil, eris.Errorf("cannot find resource id for obj %s/%s", obj.GetNamespace(), obj.GetName())
 	}
 
 	return arm.ParseResourceID(resourceID)
@@ -41,4 +43,14 @@ func SetChildResourceIDOverride(obj ARMMetaObject, id string) {
 func GetChildResourceIDOverride(obj ARMMetaObject) (string, bool) {
 	result, ok := obj.GetAnnotations()[ChildResourceIDOverrideAnnotation]
 	return result, ok
+}
+
+func CheckARMIDMatchesSubscription(subscriptionID string, armID *arm.ResourceID) bool {
+	// armIDSub may be empty if there is no subscription
+	if armID.SubscriptionID != "" {
+		if !strings.EqualFold(armID.SubscriptionID, subscriptionID) {
+			return false
+		}
+	}
+	return true
 }

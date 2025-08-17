@@ -12,18 +12,21 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	. "github.com/onsi/gomega"
+
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/cloud"
-	"github.com/Azure/go-autorest/autorest/to"
-	. "github.com/onsi/gomega"
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
+	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1api20200601"
+	arm "github.com/Azure/azure-service-operator/v2/api/resources/v1api20200601/arm"
 	"github.com/Azure/azure-service-operator/v2/internal/config"
 	"github.com/Azure/azure-service-operator/v2/internal/genericarmclient"
 	asometrics "github.com/Azure/azure-service-operator/v2/internal/metrics"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
+	"github.com/Azure/azure-service-operator/v2/internal/testcommon/creds"
+	"github.com/Azure/azure-service-operator/v2/internal/util/to"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
 
@@ -41,12 +44,12 @@ func Test_NewResourceGroup(t *testing.T) {
 	resourceGroup := testContext.NewTestResourceGroup()
 	resolved := genruntime.ConvertToARMResolvedDetails{
 		Name:               resourceGroup.Name,
-		ResolvedReferences: genruntime.MakeResolved[genruntime.ResourceReference](nil),
+		ResolvedReferences: genruntime.MakeResolved[genruntime.ResourceReference, string](nil),
 	}
-	resourceGroupSpec, err := resourceGroup.Spec.ConvertToARM(resolved)
+	spec, err := resourceGroup.Spec.ConvertToARM(resolved)
 	g.Expect(err).ToNot(HaveOccurred())
 
-	typedResourceGroupSpec := resourceGroupSpec.(resources.ResourceGroupSpecARM)
+	typedResourceGroupSpec := spec.(*arm.ResourceGroup_Spec)
 
 	id := genericarmclient.MakeResourceGroupID(testContext.AzureSubscription, resourceGroup.Name)
 
@@ -56,11 +59,21 @@ func Test_NewResourceGroup(t *testing.T) {
 	g.Eventually(poller).Should(testContext.AzureMatch.BeProvisioned(ctx))
 
 	// Get the resource
-	status := resources.ResourceGroupStatus{}
+	status := resources.ResourceGroup_STATUS{}
 	_, err = testContext.AzureClient.GetByID(ctx, id, typedResourceGroupSpec.GetAPIVersion(), &status)
 	g.Expect(err).ToNot(HaveOccurred())
 
-	// Delete the deployment
+	// Check the resources existence with GET
+	exists, _, err := testContext.AzureClient.CheckExistenceWithGetByID(ctx, id, typedResourceGroupSpec.GetAPIVersion())
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(exists).To(BeTrue())
+
+	// Check the resources existence with HEAD
+	exists, _, err = testContext.AzureClient.CheckExistenceByID(ctx, id, typedResourceGroupSpec.GetAPIVersion())
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(exists).To(BeTrue())
+
+	// Delete the resource group
 	_, err = testContext.AzureClient.BeginDeleteByID(ctx, id, typedResourceGroupSpec.GetAPIVersion())
 	g.Expect(err).ToNot(HaveOccurred())
 
@@ -85,20 +98,20 @@ func Test_NewResourceGroup_Error(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: rgName,
 		},
-		Spec: resources.ResourceGroupSpec{
-			Location: to.StringPtr("BadLocation"),
+		Spec: resources.ResourceGroup_Spec{
+			Location: to.Ptr("BadLocation"),
 			Tags:     testcommon.CreateTestResourceGroupDefaultTags(),
 		},
 	}
 
 	resolved := genruntime.ConvertToARMResolvedDetails{
 		Name:               rgName,
-		ResolvedReferences: genruntime.MakeResolved[genruntime.ResourceReference](nil),
+		ResolvedReferences: genruntime.MakeResolved[genruntime.ResourceReference, string](nil),
 	}
-	resourceGroupSpec, err := resourceGroup.Spec.ConvertToARM(resolved)
+	spec, err := resourceGroup.Spec.ConvertToARM(resolved)
 	g.Expect(err).ToNot(HaveOccurred())
 
-	typedResourceGroupSpec := resourceGroupSpec.(resources.ResourceGroupSpecARM)
+	typedResourceGroupSpec := spec.(*arm.ResourceGroup_Spec)
 
 	id := genericarmclient.MakeResourceGroupID(testContext.AzureSubscription, resourceGroup.Name)
 
@@ -108,8 +121,8 @@ func Test_NewResourceGroup_Error(t *testing.T) {
 	// Some basic assertions about the shape of the error
 	var cloudError *genericarmclient.CloudError
 	var httpErr *azcore.ResponseError
-	g.Expect(errors.As(err, &cloudError)).To(BeTrue())
-	g.Expect(errors.As(err, &httpErr)).To(BeTrue())
+	g.Expect(eris.As(err, &cloudError)).To(BeTrue())
+	g.Expect(eris.As(err, &httpErr)).To(BeTrue())
 
 	// The body was already closed... suppressing linter
 	// nolint:bodyclose
@@ -146,7 +159,7 @@ func Test_NewResourceGroup_SubscriptionNotRegisteredError(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPut {
 			if r.URL.Path == "/subscriptions/12345/resourceGroups/myrg/providers/Microsoft.Fake/fakeResource/fake" {
 				w.WriteHeader(http.StatusConflict)
@@ -184,7 +197,11 @@ func Test_NewResourceGroup_SubscriptionNotRegisteredError(t *testing.T) {
 	subscriptionId := "12345"
 
 	metrics := asometrics.NewARMClientMetrics()
-	client, err := genericarmclient.NewGenericClient(cfg, testcommon.MockTokenCredential{}, subscriptionId, metrics)
+	options := &genericarmclient.GenericClientOptions{
+		HTTPClient: server.Client(),
+		Metrics:    metrics,
+	}
+	client, err := genericarmclient.NewGenericClient(cfg, creds.MockTokenCredential{}, options)
 	g.Expect(err).ToNot(HaveOccurred())
 
 	resourceURI := fmt.Sprintf("/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Fake/fakeResource/fake", subscriptionId, "myrg")
@@ -193,12 +210,130 @@ func Test_NewResourceGroup_SubscriptionNotRegisteredError(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "name",
 		},
-		Spec: resources.ResourceGroupSpec{
-			Location: to.StringPtr("westus"),
+		Spec: resources.ResourceGroup_Spec{
+			Location: to.Ptr("westus"),
 		},
 	}
 
 	_, err = client.BeginCreateOrUpdateByID(ctx, resourceURI, apiVersion, resource)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(Equal("registering Resource Provider Microsoft.Fake with subscription. Try again later"))
+}
+
+var rpMalformedConflictError = `
+{
+  "code": "OperationNotAllowed",
+  "message": "The operation is not allowed."
+}`
+
+func Test_NewResourceGroup_ConflictWithMalformedErrorShape(t *testing.T) {
+	t.Parallel()
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			if r.URL.Path == "/subscriptions/12345/resourceGroups/myrg/providers/Microsoft.Fake/fakeResource/fake" {
+				w.WriteHeader(http.StatusConflict)
+				g.Expect(w.Write([]byte(rpMalformedConflictError))).ToNot(BeZero())
+				return
+			}
+		}
+
+		g.Fail(fmt.Sprintf("unknown request attempted. Method: %s, URL: %s", r.Method, r.URL))
+	}))
+	defer server.Close()
+
+	cfg := cloud.Configuration{
+		Services: map[cloud.ServiceName]cloud.ServiceConfiguration{
+			cloud.ResourceManager: {
+				Endpoint: server.URL,
+				Audience: cloud.AzurePublic.Services[cloud.ResourceManager].Audience,
+			},
+		},
+	}
+	subscriptionId := "12345"
+
+	metrics := asometrics.NewARMClientMetrics()
+	options := &genericarmclient.GenericClientOptions{
+		HTTPClient: server.Client(),
+		Metrics:    metrics,
+	}
+	client, err := genericarmclient.NewGenericClient(cfg, creds.MockTokenCredential{}, options)
+	g.Expect(err).ToNot(HaveOccurred())
+
+	resourceURI := fmt.Sprintf("/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Fake/fakeResource/fake", subscriptionId, "myrg")
+	apiVersion := "2019-01-01"
+	resource := &resources.ResourceGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "name",
+		},
+		Spec: resources.ResourceGroup_Spec{
+			Location: to.Ptr("westus"),
+		},
+	}
+
+	_, err = client.BeginCreateOrUpdateByID(ctx, resourceURI, apiVersion, resource)
+	g.Expect(err).To(MatchError(ContainSubstring("409 Conflict")))
+	g.Expect(err).To(MatchError(ContainSubstring("OperationNotAllowed")))
+	g.Expect(err).To(MatchError(ContainSubstring("The operation is not allowed")))
+}
+
+func Test_NewResourceGroup_ErrorIncludesRequestID(t *testing.T) {
+	t.Parallel()
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			if r.URL.Path == "/subscriptions/12345/resourceGroups/myrg/providers/Microsoft.Fake/fakeResource/fake" {
+				w.Header().Add("x-ms-request-id", "123459999")
+				w.WriteHeader(http.StatusConflict)
+				g.Expect(w.Write([]byte(rpMalformedConflictError))).ToNot(BeZero())
+				return
+			}
+		}
+
+		g.Fail(fmt.Sprintf("unknown request attempted. Method: %s, URL: %s", r.Method, r.URL))
+	}))
+	defer server.Close()
+
+	cfg := cloud.Configuration{
+		Services: map[cloud.ServiceName]cloud.ServiceConfiguration{
+			cloud.ResourceManager: {
+				Endpoint: server.URL,
+				Audience: cloud.AzurePublic.Services[cloud.ResourceManager].Audience,
+			},
+		},
+	}
+	subscriptionId := "12345"
+
+	metrics := asometrics.NewARMClientMetrics()
+	options := &genericarmclient.GenericClientOptions{
+		HTTPClient: server.Client(),
+		Metrics:    metrics,
+	}
+	client, err := genericarmclient.NewGenericClient(cfg, creds.MockTokenCredential{}, options)
+	g.Expect(err).ToNot(HaveOccurred())
+
+	resourceURI := fmt.Sprintf("/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Fake/fakeResource/fake", subscriptionId, "myrg")
+	apiVersion := "2019-01-01"
+	resource := &resources.ResourceGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "name",
+		},
+		Spec: resources.ResourceGroup_Spec{
+			Location: to.Ptr("westus"),
+		},
+	}
+
+	_, err = client.BeginCreateOrUpdateByID(ctx, resourceURI, apiVersion, resource)
+
+	g.Expect(err).To(HaveOccurred())
+	// Some basic assertions about the shape of the error
+	var cloudError *genericarmclient.CloudError
+	g.Expect(eris.As(err, &cloudError)).To(BeTrue())
+
+	g.Expect(cloudError.Error()).To(ContainSubstring("123459999"))
+	g.Expect(cloudError.RequestID()).To(Equal("123459999"))
 }

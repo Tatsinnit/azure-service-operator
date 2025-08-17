@@ -8,7 +8,7 @@ package reflecthelpers
 import (
 	"reflect"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 )
 
 var primitiveKinds = []reflect.Kind{
@@ -93,7 +93,7 @@ func (r *ReflectVisitor) visit(val reflect.Value, ctx interface{}) error {
 	case reflect.Struct:
 		return r.VisitStruct(r, val, ctx)
 	default:
-		return errors.Errorf("unknown reflect.Kind: %s", kind)
+		return eris.Errorf("unknown reflect.Kind: %s", kind)
 	}
 }
 
@@ -116,7 +116,6 @@ func IdentityVisitPtr(this *ReflectVisitor, it reflect.Value, ctx interface{}) e
 
 // IdentityVisitSlice is the identity visit function for slices. It visits each element of the slice.
 func IdentityVisitSlice(this *ReflectVisitor, it reflect.Value, ctx interface{}) error {
-
 	for i := 0; i < it.Len(); i++ {
 		err := this.visit(it.Index(i), ctx)
 		if err != nil {
@@ -129,7 +128,6 @@ func IdentityVisitSlice(this *ReflectVisitor, it reflect.Value, ctx interface{})
 
 // IdentityVisitMap is the identity visit function for maps. It visits each key and value in the map.
 func IdentityVisitMap(this *ReflectVisitor, it reflect.Value, ctx interface{}) error {
-
 	for _, key := range it.MapKeys() {
 
 		err := this.visit(key, ctx)

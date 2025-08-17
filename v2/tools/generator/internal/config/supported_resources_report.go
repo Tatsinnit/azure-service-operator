@@ -12,16 +12,18 @@ import (
 // SupportedResourcesReport is configuration for the report that lists all the supported resources.
 type SupportedResourcesReport struct {
 	cfg *Configuration // Back reference to global configuration
-	// OutputPath is the destination filepath for the report, relative to DestinationGoModuleFile
-	OutputPath string `yaml:"outputPath,omitempty"`
+	// OutputFolder is the destination folder for the report, relative to DestinationGoModuleFile
+	OutputFolder string `yaml:"outputFolder,omitempty"`
 	// FragmentPath is a folder path for markdown fragments to inject into the file
 	FragmentPath string `yaml:"fragmentPath,omitempty"`
-	// ResourceUrlTemplate is a template for URL to the API docs for a resource
+	// ResourceURLTemplate is a template for URL to the API docs for a resource
 	// It may use the placeholders {group} {version} and {kind}
-	ResourceUrlTemplate string `yaml:"resourceUrlTemplate"`
+	ResourceURLTemplate string `yaml:"resourceUrlTemplate"`
 	// ResourcePathTemplate is a template used for generating a file path for checking whether docs for a resource have been generated
 	// specified relative to the directory of outputPath
 	ResourcePathTemplate string `yaml:"resourcePathTemplate"`
+	// CurrentRelease identifies the current release of ASO, allowing newer resources to be classified as Next Release
+	CurrentRelease string `yaml:"currentRelease"`
 }
 
 // NewSupportedResourcesReport creates a new SupportedResourcesReport.
@@ -35,7 +37,17 @@ func NewSupportedResourcesReport(cfg *Configuration) *SupportedResourcesReport {
 func (srr *SupportedResourcesReport) FullOutputPath() string {
 	return filepath.Join(
 		filepath.Dir(srr.cfg.DestinationGoModuleFile),
-		srr.OutputPath)
+		srr.OutputFolder,
+		"_index.md")
+}
+
+// FullOutputPath returns the fully qualified path to the output file for a given group
+func (srr *SupportedResourcesReport) GroupFullOutputPath(group string) string {
+	return filepath.Join(
+		filepath.Dir(srr.cfg.DestinationGoModuleFile),
+		srr.OutputFolder,
+		group,
+		"_index.md")
 }
 
 // FullFragmentFolderPath returns the fully qualified path to our fragment folder

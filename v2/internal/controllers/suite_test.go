@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/onsi/gomega"
+	"github.com/onsi/gomega/format"
 
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 )
@@ -21,8 +22,10 @@ const (
 	DefaultResourceTimeout = 10 * time.Minute
 )
 
-var globalTestContext testcommon.KubeGlobalContext
-var isLive = flag.Bool("live", false, "Enable to skip tests in live mode")
+var (
+	globalTestContext testcommon.KubeGlobalContext
+	isLive            = flag.Bool("live", false, "Enable to skip tests in live mode")
+)
 
 func setup() error {
 	options := getOptions()
@@ -35,10 +38,15 @@ func setup() error {
 	gomega.SetDefaultEventuallyTimeout(DefaultResourceTimeout)
 	gomega.SetDefaultEventuallyPollingInterval(5 * time.Second)
 
+	format.TruncateThreshold = 4000 // Force a longer truncate threshold
+
 	// If you need to debug envtest setup/teardown,
 	// set a global logger for controller-runtime:
+	//
 	// import (ctrl "sigs.k8s.io/controller-runtime")
-	// ctrl.SetLogger(klogr.New())
+	// cfg := textlogger.NewConfig(textlogger.Verbosity(Debug)) // Use verbose logging in tests
+	// log := textlogger.NewLogger(cfg)
+	// ctrl.SetLogger(log)
 
 	nameConfig := testcommon.NewResourceNameConfig(
 		testcommon.ResourcePrefix,

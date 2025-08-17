@@ -28,20 +28,24 @@ var _ fmt.Stringer = &WritableConversionEndpoint{}
 
 // NewWritableConversionEndpointWritingProperty creates a WritableConversionEndpoint for a specific property
 func NewWritableConversionEndpointWritingProperty(
-	propertyName astmodel.PropertyName,
-	propertyType astmodel.Type,
+	property *astmodel.PropertyDefinition,
 ) *WritableConversionEndpoint {
-	name := string(propertyName)
+	name := string(property.PropertyName())
+	endpoint := NewTypedConversionEndpoint(property.PropertyType(), name)
+
+	if property.WasFlattened() {
+		endpoint = endpoint.WithPath(property.FlattenedFrom())
+	}
+
 	return &WritableConversionEndpoint{
-		endpoint: NewTypedConversionEndpoint(propertyType, name),
+		endpoint: endpoint,
 		writer: func(destination dst.Expr, value dst.Expr) []dst.Stmt {
-			return []dst.Stmt{
+			return astbuilder.Statements(
 				astbuilder.SimpleAssignment(
 					astbuilder.Selector(destination, name),
-					value),
-			}
+					value))
 		},
-		description: fmt.Sprintf("write property %s", propertyName),
+		description: fmt.Sprintf("write to property %s", name),
 	}
 }
 
@@ -54,16 +58,21 @@ func NewWritableConversionEndpointWritingPropertyBagMember(
 	return &WritableConversionEndpoint{
 		endpoint: NewTypedConversionEndpoint(NewPropertyBagMemberType(itemType), itemName),
 		writer: func(destination dst.Expr, value dst.Expr) []dst.Stmt {
-			return []dst.Stmt{
+			return astbuilder.Statements(
 				astbuilder.SimpleAssignment(
 					astbuilder.Selector(destination, itemName),
-					value),
-			}
+					value))
 		},
 		description: fmt.Sprintf("write %s to property bag", itemName),
 	}
 }
 
+// Name returns the name of the underlying endpoint
+func (w *WritableConversionEndpoint) Name() string {
+	return w.endpoint.Name()
+}
+
+// String returns a human-readable description of the endpoint
 func (w *WritableConversionEndpoint) String() string {
 	return w.description
 }

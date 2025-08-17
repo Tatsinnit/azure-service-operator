@@ -7,19 +7,20 @@ package pipeline
 
 import (
 	"context"
+
+	"github.com/rotisserie/eris"
+	kerrors "k8s.io/apimachinery/pkg/util/errors"
+
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/testcases"
-	"github.com/pkg/errors"
-
-	kerrors "k8s.io/apimachinery/pkg/util/errors"
 )
 
-// InjectJsonSerializationTestsID is the unique identifier for this pipeline stage
-const InjectJsonSerializationTestsID = "injectJSONTestCases"
+// InjectJSONSerializationTestsID is the unique identifier for this pipeline stage
+const InjectJSONSerializationTestsID = "injectJSONTestCases"
 
-func InjectJsonSerializationTests(idFactory astmodel.IdentifierFactory) *Stage {
+func InjectJSONSerializationTests(idFactory astmodel.IdentifierFactory) *Stage {
 	stage := NewStage(
-		InjectJsonSerializationTestsID,
+		InjectJSONSerializationTestsID,
 		"Add test cases to verify JSON serialization",
 		func(ctx context.Context, state *State) (*State, error) {
 			factory := makeObjectSerializationTestCaseFactory(idFactory)
@@ -40,7 +41,7 @@ func InjectJsonSerializationTests(idFactory astmodel.IdentifierFactory) *Stage {
 				return nil, kerrors.NewAggregate(errs)
 			}
 
-			return state.WithDefinitions(state.Definitions().OverlayWith(modifiedDefinitions)), nil
+			return state.WithOverlaidDefinitions(modifiedDefinitions), nil
 		})
 
 	stage.RequiresPostrequisiteStages("simplifyDefinitions" /* needs flags */)
@@ -66,16 +67,19 @@ func makeObjectSerializationTestCaseFactory(idFactory astmodel.IdentifierFactory
 
 // NeedsTest returns true if we should generate a testcase for the specified definition
 func (s *objectSerializationTestCaseFactory) NeedsTest(def astmodel.TypeDefinition) bool {
-	pc, ok := astmodel.AsPropertyContainer(def.Type())
+	_, ok := astmodel.AsPropertyContainer(def.Type())
 	if !ok {
 		// Can only generate tests for property containers
 		return false
 	}
 
-	// No test needed for types with no properties
-	if len(pc.Properties().AsSlice()) == 0 {
+	if astmodel.IsWebhookPackageReference(def.Name().PackageReference()) {
+		// Webhook types don't have properties and don't need to test JSON serialization
 		return false
 	}
+
+	// Note that if the property container has no properties we still generate a test case for it because we need
+	// the Generator for the empty type to build up tests for types containing the empty type.
 
 	// Check for types that we need to suppress - these are ARM types that don't currently round trip because they're
 	// OneOf implementations that are only used in one direction.
@@ -96,7 +100,7 @@ func (s *objectSerializationTestCaseFactory) NeedsTest(def astmodel.TypeDefiniti
 func (s *objectSerializationTestCaseFactory) AddTestTo(def astmodel.TypeDefinition) (astmodel.TypeDefinition, error) {
 	container, ok := astmodel.AsPropertyContainer(def.Type())
 	if !ok {
-		return astmodel.TypeDefinition{}, errors.Errorf("expected %s to be a property container", def.Name())
+		return astmodel.TypeDefinition{}, eris.Errorf("expected %s to be a property container", def.Name())
 	}
 
 	isOneOf := astmodel.OneOfFlag.IsOn(def.Type()) // this is ugly but can’t do much better right now

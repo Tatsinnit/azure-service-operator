@@ -6,13 +6,14 @@
 package config
 
 import (
+	"fmt"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	"golang.org/x/mod/modfile"
 	"gopkg.in/yaml.v3"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
@@ -46,6 +47,8 @@ type Configuration struct {
 	AnyTypePackages []string `yaml:"anyTypePackages"`
 	// Filters used to control which types are created from the JSON schema
 	TypeFilters []*TypeFilter `yaml:"typeFilters"`
+	// Renamers used to resolve naming collisions during loading
+	TypeLoaderRenames []*TypeLoaderRename `yaml:"typeLoaderRenames"`
 	// Transformers used to remap types
 	Transformers []*TypeTransformer `yaml:"typeTransformers"`
 	// RootURL is the root URL for ASOv2 repo, paths are appended to this to generate resource links.
@@ -60,10 +63,6 @@ type Configuration struct {
 	ObjectModelConfiguration *ObjectModelConfiguration `yaml:"objectModelConfiguration"`
 
 	goModulePath string
-
-	// after init TypeTransformers is split into property and non-property transformers
-	typeTransformers     []*TypeTransformer
-	propertyTransformers []*TypeTransformer
 }
 
 type RewriteRule struct {
@@ -91,42 +90,49 @@ func (config *Configuration) FullTypesRegistrationOutputFilePath() string {
 		config.TypeRegistrationOutputFile)
 }
 
+func (config *Configuration) FullSamplesPath() string {
+	if filepath.IsAbs(config.SamplesPath) {
+		return config.SamplesPath
+	}
+
+	if config.DestinationGoModuleFile != "" {
+		return filepath.Join(
+			filepath.Dir(config.DestinationGoModuleFile),
+			config.SamplesPath)
+	}
+
+	result, err := filepath.Abs(config.SamplesPath)
+	if err != nil {
+		panic(fmt.Sprintf("unable to make %q absolute: %s", result, err))
+	}
+
+	return result
+}
+
 func (config *Configuration) GetTypeFiltersError() error {
 	for _, filter := range config.TypeFilters {
 		if err := filter.RequiredTypesWereMatched(); err != nil {
-			return errors.Wrapf(err, "type filter action: %q", filter.Action)
+			return eris.Wrapf(err, "type filter action: %q", filter.Action)
 		}
 	}
 
 	return nil
 }
 
-func (config *Configuration) GetTypeTransformersError() error {
-	for _, filter := range config.typeTransformers {
+func (config *Configuration) GetTransformersError() error {
+	for _, filter := range config.Transformers {
 		if err := filter.RequiredTypesWereMatched(); err != nil {
-			return errors.Wrap(err, "type transformer")
+			return eris.Wrap(err, "type transformer")
+		}
+
+		if filter.Property.IsRestrictive() {
+			if err := filter.RequiredTypesWereMatched(); err != nil {
+				return eris.Wrap(err, "type transformer property")
+			}
 		}
 	}
 
 	return nil
-}
-
-func (config *Configuration) GetPropertyTransformersError() error {
-	var errs []error
-	for _, filter := range config.propertyTransformers {
-		if err := filter.RequiredTypesWereMatched(); err != nil {
-			errs = append(errs, err)
-			continue
-		}
-
-		if err := filter.RequiredPropertiesWereMatched(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-
-	return errors.Wrap(
-		kerrors.NewAggregate(errs),
-		"type transformer target")
 }
 
 func (config *Configuration) SetGoModulePath(path string) {
@@ -160,12 +166,12 @@ func LoadConfiguration(configurationFile string) (*Configuration, error) {
 
 	err = decoder.Decode(result)
 	if err != nil {
-		return nil, errors.Wrapf(err, "configuration file loaded from %q is not valid YAML", configurationFile)
+		return nil, eris.Wrapf(err, "configuration file loaded from %q is not valid YAML", configurationFile)
 	}
 
 	err = result.initialize(configurationFile)
 	if err != nil {
-		return nil, errors.Wrapf(err, "configuration file loaded from %q is invalid", configurationFile)
+		return nil, eris.Wrapf(err, "configuration file loaded from %q is invalid", configurationFile)
 	}
 
 	return result, nil
@@ -181,72 +187,16 @@ const (
 	Prune ShouldPruneResult = "prune"
 )
 
-// TypeRename looks up a rename for the specified type, returning the new name and true if found, or empty string
-// and false if not.
-func (config *Configuration) TypeRename(name astmodel.TypeName) (string, error) {
-	if config.ObjectModelConfiguration == nil {
-		return "", errors.Errorf("no configuration: no rename available for %s", name)
-	}
-
-	return config.ObjectModelConfiguration.LookupNameInNextVersion(name)
-}
-
-// ARMReference looks up a property to determine whether it may be an ARM reference or not.
-func (config *Configuration) ARMReference(name astmodel.TypeName, property astmodel.PropertyName) (bool, error) {
-	return config.ObjectModelConfiguration.ARMReference(name, property)
-}
-
-// VerifyARMReferencesConsumed returns an error if any configured ARM References were not consumed
-func (config *Configuration) VerifyARMReferencesConsumed() error {
-	return config.ObjectModelConfiguration.VerifyARMReferencesConsumed()
-}
-
-// IsSecret looks up a property to determine whether it is a secret.
-func (config *Configuration) IsSecret(name astmodel.TypeName, property astmodel.PropertyName) (bool, error) {
-	return config.ObjectModelConfiguration.IsSecret(name, property)
-}
-
-// VerifyIsSecretConsumed returns an error if any configured Secret References were not consumed
-func (config *Configuration) VerifyIsSecretConsumed() error {
-	return config.ObjectModelConfiguration.VerifyIsSecretConsumed()
-}
-
-// ResourceLifecycleOwnedByParent looks up a property to determine if represents a subresource whose lifecycle is owned
-// by the parent resource.
-func (config *Configuration) ResourceLifecycleOwnedByParent(name astmodel.TypeName, property astmodel.PropertyName) (string, error) {
-	return config.ObjectModelConfiguration.ResourceLifecycleOwnedByParent(name, property)
-}
-
-// MarkResourceLifecycleOwnedByParentUnconsumed marks all ResourceLifecycleOwnedByParent as unconsumed
-func (config *Configuration) MarkResourceLifecycleOwnedByParentUnconsumed() error {
-	return config.ObjectModelConfiguration.MarkResourceLifecycleOwnedByParentUnconsumed()
-}
-
-// VerifyResourceLifecycleOwnedByParentConsumed returns an error if any ResourceLifecycleOwnedByParent flag is not consumed
-func (config *Configuration) VerifyResourceLifecycleOwnedByParentConsumed() error {
-	return config.ObjectModelConfiguration.VerifyResourceLifecycleOwnedByParentConsumed()
-}
-
-// ImportConfigMapMode looks up a property to determine its import configMap mode.
-func (config *Configuration) ImportConfigMapMode(name astmodel.TypeName, property astmodel.PropertyName) (ImportConfigMapMode, error) {
-	return config.ObjectModelConfiguration.ImportConfigMapMode(name, property)
-}
-
-// VerifyImportConfigMapModeConsumed returns an error if any configured ImportConfigMapMode values were not consumed
-func (config *Configuration) VerifyImportConfigMapModeConsumed() error {
-	return config.ObjectModelConfiguration.VerifyImportConfigMapModeConsumed()
-}
-
 // initialize checks for common errors and initializes structures inside the configuration
 // which need additional setup after json deserialization
 func (config *Configuration) initialize(configPath string) error {
 	if config.SchemaRoot == "" {
-		return errors.New("SchemaRoot missing")
+		return eris.New("SchemaRoot missing")
 	}
 
 	absConfigLocation, err := filepath.Abs(configPath)
 	if err != nil {
-		return errors.Wrapf(err, "unable to find absolute config file location")
+		return eris.Wrapf(err, "unable to find absolute config file location")
 	}
 
 	configDirectory := filepath.Dir(absConfigLocation)
@@ -274,12 +224,17 @@ func (config *Configuration) initialize(configPath string) error {
 		case string(GenerationPipelineCrossplane):
 			config.Pipeline = GenerationPipelineCrossplane
 		default:
-			errs = append(errs, errors.Errorf("unknown pipeline kind %s", config.Pipeline))
+			errs = append(errs, eris.Errorf("unknown pipeline kind %s", config.Pipeline))
 		}
 	}
 
 	if config.DestinationGoModuleFile == "" {
-		errs = append(errs, errors.Errorf("destination Go module must be specified"))
+		errs = append(errs, eris.Errorf("destination Go module must be specified"))
+	}
+
+	// Ensure config.DestinationGoModuleFile is a fully qualified path
+	if !filepath.IsAbs(config.DestinationGoModuleFile) {
+		config.DestinationGoModuleFile = filepath.Join(configDirectory, config.DestinationGoModuleFile)
 	}
 
 	modPath, err := getModulePathFromModFile(config.DestinationGoModuleFile)
@@ -288,33 +243,6 @@ func (config *Configuration) initialize(configPath string) error {
 	} else {
 		config.goModulePath = modPath
 	}
-
-	for _, filter := range config.TypeFilters {
-		err := filter.Initialize()
-		if err != nil {
-			errs = append(errs, err)
-		}
-	}
-
-	// split Transformers into two sets
-	var typeTransformers []*TypeTransformer
-	var propertyTransformers []*TypeTransformer
-	for _, transformer := range config.Transformers {
-		err := transformer.Initialize(config.MakeLocalPackageReference)
-		if err != nil {
-			errs = append(errs, err)
-		}
-
-		if transformer.Property.IsRestrictive() {
-			propertyTransformers = append(propertyTransformers, transformer)
-		} else {
-			typeTransformers = append(typeTransformers, transformer)
-		}
-	}
-
-	config.Transformers = nil
-	config.typeTransformers = typeTransformers
-	config.propertyTransformers = propertyTransformers
 
 	return kerrors.NewAggregate(errs)
 }
@@ -335,7 +263,7 @@ func absDirectoryPathToURL(path string) *url.URL {
 }
 
 // ShouldPrune tests for whether a given type should be extracted from the JSON schema or pruned
-func (config *Configuration) ShouldPrune(typeName astmodel.TypeName) (result ShouldPruneResult, because string) {
+func (config *Configuration) ShouldPrune(typeName astmodel.InternalTypeName) (result ShouldPruneResult, because string) {
 	for _, f := range config.TypeFilters {
 		if f.AppliesToType(typeName) {
 			switch f.Action {
@@ -344,43 +272,24 @@ func (config *Configuration) ShouldPrune(typeName astmodel.TypeName) (result Sho
 			case TypeFilterInclude:
 				return Include, f.Because
 			default:
-				panic(errors.Errorf("unknown typefilter directive: %s", f.Action))
+				panic(eris.Errorf("unknown typefilter directive: %s", f.Action))
 			}
 		}
 	}
 
+	// If the type comes from a group that we don't expect, prune it.
+	// We don't also check for whether the version is expected because it's common for types to be shared
+	// between versions of an API. While end up pulling them into the package alongside the resource, at this
+	// point we haven't done that yet, so it's premature to filter by version.
+	// Sometimes in testing, configuration will be empty, and we don't want to do any filtering when that's the case
+	if !config.ObjectModelConfiguration.IsEmpty() &&
+		!config.ObjectModelConfiguration.IsGroupConfigured(typeName.InternalPackageReference()) {
+		return Prune, fmt.Sprintf(
+			"No resources configured for export from %s", typeName.InternalPackageReference().PackagePath())
+	}
+
 	// By default, we include all types
 	return Include, ""
-}
-
-// TransformType uses the configured type transformers to transform a type name (reference) to a different type.
-// If no transformation is performed, nil is returned
-func (config *Configuration) TransformType(name astmodel.TypeName) (astmodel.Type, string) {
-	for _, transformer := range config.typeTransformers {
-		result := transformer.TransformTypeName(name)
-		if result != nil {
-			return result, transformer.Because
-		}
-	}
-
-	// No matches, return nil
-	return nil, ""
-}
-
-// TransformTypeProperties applies any property transformers to the type
-func (config *Configuration) TransformTypeProperties(name astmodel.TypeName, objectType *astmodel.ObjectType) []*PropertyTransformResult {
-	var results []*PropertyTransformResult
-	toTransform := objectType
-
-	for _, transformer := range config.propertyTransformers {
-		result := transformer.TransformProperty(name, toTransform)
-		if result != nil {
-			toTransform = result.NewType
-			results = append(results, result)
-		}
-	}
-
-	return results
 }
 
 // MakeLocalPackageReference creates a local package reference based on the configured destination location
@@ -397,7 +306,7 @@ func getModulePathFromModFile(modFilePath string) (string, error) {
 
 	modPath := modfile.ModulePath(modFileData)
 	if modPath == "" {
-		return "", errors.Errorf("couldn't find module path in mod file %s", modFilePath)
+		return "", eris.Errorf("couldn't find module path in mod file %s", modFilePath)
 	}
 
 	return modPath, nil

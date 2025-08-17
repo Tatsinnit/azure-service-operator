@@ -7,6 +7,7 @@ package armconversion
 
 import (
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
@@ -14,10 +15,11 @@ import (
 // ARMConversionFunction represents an ARM conversion function for converting between a Kubernetes resource
 // and an ARM resource.
 type ARMConversionFunction struct {
-	armTypeName astmodel.TypeName
-	armType     *astmodel.ObjectType
-	idFactory   astmodel.IdentifierFactory
-	typeKind    TypeKind
+	armTypeName  astmodel.InternalTypeName
+	armType      *astmodel.ObjectType
+	kubeTypeName astmodel.InternalTypeName
+	idFactory    astmodel.IdentifierFactory
+	typeKind     TypeKind
 }
 
 type ConvertToARMFunction struct {
@@ -50,9 +52,10 @@ func (c *ARMConversionFunction) RequiredPackageReferences() *astmodel.PackageRef
 	// We need these because we're going to be constructing/casting to the types
 	// of the properties in the ARM object, so we need to import those.
 	result := astmodel.NewPackageReferenceSet(
+		c.armTypeName.PackageReference(),
 		astmodel.GenRuntimeReference,
-		astmodel.GitHubErrorsReference,
-		astmodel.MakeExternalPackageReference("fmt"))
+		astmodel.ErisReference,
+		astmodel.FmtReference)
 	result.Merge(c.armType.RequiredPackageReferences())
 	return result
 }
@@ -61,28 +64,64 @@ func (c *ARMConversionFunction) RequiredPackageReferences() *astmodel.PackageRef
 // SHOULD include any types which this function references but its receiver doesn't.
 // SHOULD NOT include the receiver of this function.
 func (c *ARMConversionFunction) References() astmodel.TypeNameSet {
-	return c.armType.References()
+	result := astmodel.NewTypeNameSet(c.armTypeName)
+	result.AddAll(c.armType.References())
+	return result
 }
 
 // AsFunc returns the function as a Go AST
-func (c *ConvertToARMFunction) AsFunc(codeGenerationContext *astmodel.CodeGenerationContext, receiver astmodel.TypeName) *dst.FuncDecl {
-	builder := newConvertToARMFunctionBuilder(
+func (c *ConvertToARMFunction) AsFunc(
+	codeGenerationContext *astmodel.CodeGenerationContext,
+	receiver astmodel.InternalTypeName,
+) (*dst.FuncDecl, error) {
+	builder, err := newConvertToARMFunctionBuilder(
 		&c.ARMConversionFunction,
 		codeGenerationContext,
 		receiver,
 		c.Name())
+	if err != nil {
+		return nil, eris.Wrapf(
+			err,
+			"error creating ConvertToARM function for %s",
+			receiver.Name())
+	}
 
-	return builder.functionDeclaration()
+	decl, err := builder.functionDeclaration()
+	if err != nil {
+		return nil, eris.Wrapf(
+			err,
+			"error generating ConvertToARM function for %s",
+			c.Name())
+	}
+
+	return decl, nil
 }
 
-func (c *PopulateFromARMFunction) AsFunc(codeGenerationContext *astmodel.CodeGenerationContext, receiver astmodel.TypeName) *dst.FuncDecl {
-	builder := newConvertFromARMFunctionBuilder(
+func (c *PopulateFromARMFunction) AsFunc(
+	codeGenerationContext *astmodel.CodeGenerationContext,
+	receiver astmodel.InternalTypeName,
+) (*dst.FuncDecl, error) {
+	builder, err := newConvertFromARMFunctionBuilder(
 		&c.ARMConversionFunction,
 		codeGenerationContext,
 		receiver,
 		c.Name())
+	if err != nil {
+		return nil, eris.Wrapf(
+			err,
+			"error creating ConvertFromARM function for %s",
+			receiver.Name())
+	}
 
-	return builder.functionDeclaration()
+	decl, err := builder.functionDeclaration()
+	if err != nil {
+		return nil, eris.Wrapf(
+			err,
+			"error generating ConvertFromARM function for %s",
+			c.Name())
+	}
+
+	return decl, nil
 }
 
 // Equals determines if this function is equal to the passed in function

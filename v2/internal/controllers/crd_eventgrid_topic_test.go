@@ -10,10 +10,12 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	eventgrid "github.com/Azure/azure-service-operator/v2/api/eventgrid/v1beta20200601"
-	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
-	storage "github.com/Azure/azure-service-operator/v2/api/storage/v1beta20210401"
+	eventgrid "github.com/Azure/azure-service-operator/v2/api/eventgrid/v1api20200601"
+	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1api20200601"
+	storage "github.com/Azure/azure-service-operator/v2/api/storage/v1api20210401"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
+	"github.com/Azure/azure-service-operator/v2/internal/util/to"
+	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
 
 func Test_EventGrid_Topic(t *testing.T) {
@@ -50,12 +52,18 @@ func Test_EventGrid_Topic(t *testing.T) {
 				Topic_Subscription_CRUD(tc, rg, topic)
 			},
 		},
+		testcommon.Subtest{
+			Name: "Topic_SecretsWrittenToSameKubeSecret",
+			Test: func(tc *testcommon.KubePerTestContext) {
+				Topic_SecretsWrittenToSameKubeSecret(tc, topic)
+			},
+		},
 	)
 
 	tc.DeleteResourceAndWait(topic)
 
 	// Ensure that the resource group was really deleted in Azure
-	exists, _, err := tc.AzureClient.HeadByID(
+	exists, _, err := tc.AzureClient.CheckExistenceWithGetByID(
 		tc.Ctx,
 		armId,
 		string(eventgrid.APIVersion_Value))
@@ -63,18 +71,38 @@ func Test_EventGrid_Topic(t *testing.T) {
 	tc.Expect(exists).To(BeFalse())
 }
 
+func Topic_SecretsWrittenToSameKubeSecret(tc *testcommon.KubePerTestContext, topic *eventgrid.Topic) {
+	old := topic.DeepCopy()
+	topicSecret := "topickeys"
+	topicConfigMap := "topicconfigmap"
+	topic.Spec.OperatorSpec = &eventgrid.TopicOperatorSpec{
+		Secrets: &eventgrid.TopicOperatorSecrets{
+			Key1: &genruntime.SecretDestination{Name: topicSecret, Key: "key1"},
+			Key2: &genruntime.SecretDestination{Name: topicSecret, Key: "key2"},
+		},
+		ConfigMaps: &eventgrid.TopicOperatorConfigMaps{
+			Endpoint: &genruntime.ConfigMapDestination{
+				Name: topicConfigMap,
+				Key:  "endpoint",
+			},
+		},
+	}
+	tc.PatchResourceAndWait(old, topic)
+
+	tc.ExpectSecretHasKeys(topicSecret, "key1", "key2")
+	tc.ExpectConfigMapHasKeys(topicConfigMap, "endpoint")
+}
+
 func Topic_Subscription_CRUD(tc *testcommon.KubePerTestContext, rg *resources.ResourceGroup, topic *eventgrid.Topic) {
-	kind := storage.StorageAccount_Kind_Spec_StorageV2
 	sku := storage.SkuName_Standard_LRS
 	acctName := tc.NoSpaceNamer.GenerateName("stor")
-	tier := storage.StorageAccountPropertiesCreateParameters_AccessTier_Hot
 	acct := &storage.StorageAccount{
 		ObjectMeta: tc.MakeObjectMetaWithName(acctName),
 		Spec: storage.StorageAccount_Spec{
 			Owner:      testcommon.AsOwner(rg),
 			Location:   tc.AzureRegion,
-			Kind:       &kind,
-			AccessTier: &tier,
+			Kind:       to.Ptr(storage.StorageAccount_Kind_Spec_StorageV2),
+			AccessTier: to.Ptr(storage.StorageAccountPropertiesCreateParameters_AccessTier_Hot),
 			Sku:        &storage.Sku{Name: &sku},
 		},
 	}
@@ -83,7 +111,7 @@ func Topic_Subscription_CRUD(tc *testcommon.KubePerTestContext, rg *resources.Re
 
 	queueService := &storage.StorageAccountsQueueService{
 		ObjectMeta: tc.MakeObjectMeta("qservice"),
-		Spec: storage.StorageAccounts_QueueService_Spec{
+		Spec: storage.StorageAccountsQueueService_Spec{
 			Owner: testcommon.AsOwner(acct),
 		},
 	}
@@ -92,7 +120,7 @@ func Topic_Subscription_CRUD(tc *testcommon.KubePerTestContext, rg *resources.Re
 
 	queue := &storage.StorageAccountsQueueServicesQueue{
 		ObjectMeta: tc.MakeObjectMeta("queue"),
-		Spec: storage.StorageAccounts_QueueServices_Queue_Spec{
+		Spec: storage.StorageAccountsQueueServicesQueue_Spec{
 			Owner: testcommon.AsOwner(queueService),
 		},
 	}
@@ -100,20 +128,13 @@ func Topic_Subscription_CRUD(tc *testcommon.KubePerTestContext, rg *resources.Re
 	tc.CreateResourceAndWait(queue)
 
 	acctReference := tc.MakeReferenceFromResource(acct)
-	endpointType := eventgrid.StorageQueueEventSubscriptionDestination_EndpointType_StorageQueue
 	subscription := &eventgrid.EventSubscription{
 		ObjectMeta: tc.MakeObjectMeta("sub"),
 		Spec: eventgrid.EventSubscription_Spec{
 			Owner: tc.AsExtensionOwner(topic),
 			Destination: &eventgrid.EventSubscriptionDestination{
 				StorageQueue: &eventgrid.StorageQueueEventSubscriptionDestination{
-					EndpointType: &endpointType,
-					// TODO[donotmerge]: These properties used to be in a "Properties" property but are flattened
-					// TODO[donotmerge]: in the Swagger branch
-					//Properties: &eventgrid.StorageQueueEventSubscriptionDestinationProperties{
-					//	ResourceReference: acctReference,
-					//	QueueName:         &queue.Name,
-					//},
+					EndpointType:      to.Ptr(eventgrid.StorageQueueEventSubscriptionDestination_EndpointType_StorageQueue),
 					ResourceReference: acctReference,
 					QueueName:         &queue.Name,
 				},

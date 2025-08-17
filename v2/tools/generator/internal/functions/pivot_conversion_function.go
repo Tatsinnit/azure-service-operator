@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
@@ -83,7 +84,8 @@ var _ astmodel.Function = &PivotConversionFunction{}
 // idFactory is an identifier factory to use for generating local identifiers
 func NewSpecPivotConversionFunction(
 	direction conversions.Direction,
-	idFactory astmodel.IdentifierFactory) *PivotConversionFunction {
+	idFactory astmodel.IdentifierFactory,
+) *PivotConversionFunction {
 	result := &PivotConversionFunction{
 		nameFrom:      "ConvertSpecFrom",
 		nameTo:        "ConvertSpecTo",
@@ -101,7 +103,8 @@ func NewSpecPivotConversionFunction(
 // idFactory is an identifier factory to use for generating local identifiers
 func NewStatusPivotConversionFunction(
 	direction conversions.Direction,
-	idFactory astmodel.IdentifierFactory) *PivotConversionFunction {
+	idFactory astmodel.IdentifierFactory,
+) *PivotConversionFunction {
 	result := &PivotConversionFunction{
 		nameFrom:      "ConvertStatusFrom",
 		nameTo:        "ConvertStatusTo",
@@ -119,11 +122,11 @@ func (fn *PivotConversionFunction) Name() string {
 
 func (fn *PivotConversionFunction) RequiredPackageReferences() *astmodel.PackageReferenceSet {
 	return astmodel.NewPackageReferenceSet(
-		astmodel.GitHubErrorsReference,
+		astmodel.ErisReference,
 		astmodel.ControllerRuntimeConversion,
 		astmodel.FmtReference,
 		astmodel.GenRuntimeReference,
-		fn.parameterType.PackageReference)
+		fn.parameterType.PackageReference())
 }
 
 func (fn *PivotConversionFunction) References() astmodel.TypeNameSet {
@@ -132,28 +135,38 @@ func (fn *PivotConversionFunction) References() astmodel.TypeNameSet {
 }
 
 func (fn *PivotConversionFunction) AsFunc(
-	generationContext *astmodel.CodeGenerationContext, receiver astmodel.TypeName) *dst.FuncDecl {
-
+	codeGenerationContext *astmodel.CodeGenerationContext,
+	receiver astmodel.InternalTypeName,
+) (*dst.FuncDecl, error) {
 	// Create a sensible name for our receiver
 	receiverName := fn.idFactory.CreateReceiver(receiver.Name())
 
-	// We always use a pointer receiver so we can modify it
-	receiverType := astmodel.NewOptionalType(receiver).AsType(generationContext)
+	// We always use a pointer receiver, so we can modify it
+	receiverType := astmodel.NewOptionalType(receiver)
+	receiverTypeExpr, err := receiverType.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating receiver type expression")
+	}
 
 	funcDetails := &astbuilder.FuncDetails{
 		ReceiverIdent: receiverName,
-		ReceiverType:  receiverType,
+		ReceiverType:  receiverTypeExpr,
 		Name:          fn.Name(),
 	}
 
 	parameterName := fn.direction.SelectString("source", "destination")
-	funcDetails.AddParameter(parameterName, fn.parameterType.AsType(generationContext))
+	parameterTypeExpr, err := fn.parameterType.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating parameter type expression")
+	}
+
+	funcDetails.AddParameter(parameterName, parameterTypeExpr)
 
 	funcDetails.AddReturns("error")
 	funcDetails.AddComments(fn.declarationDocComment(receiver, parameterName))
-	funcDetails.Body = fn.bodyForPivot(receiverName, parameterName, generationContext)
+	funcDetails.Body = fn.bodyForPivot(receiverName, parameterName, codeGenerationContext)
 
-	return funcDetails.DefineFunc()
+	return funcDetails.DefineFunc(), nil
 }
 
 // bodyForPivot is used to do the conversion if we hit the hub type without finding the conversion we need
@@ -165,9 +178,9 @@ func (fn *PivotConversionFunction) AsFunc(
 func (fn *PivotConversionFunction) bodyForPivot(
 	receiverName string,
 	parameterName string,
-	generationContext *astmodel.CodeGenerationContext) []dst.Stmt {
-
-	errorsPkg := generationContext.MustGetImportedPackageName(astmodel.GitHubErrorsReference)
+	generationContext *astmodel.CodeGenerationContext,
+) []dst.Stmt {
+	errorsPkg := generationContext.MustGetImportedPackageName(astmodel.ErisReference)
 
 	fnNameForOtherDirection := fn.direction.SelectString(fn.nameTo, fn.nameFrom)
 	parameter := dst.NewIdent(parameterName)

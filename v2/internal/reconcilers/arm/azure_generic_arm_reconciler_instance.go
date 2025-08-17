@@ -11,21 +11,22 @@ import (
 	"fmt"
 	"time"
 
+	. "github.com/Azure/azure-service-operator/v2/internal/logging"
+
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
 	"github.com/go-logr/logr"
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/conversion"
 
 	"github.com/Azure/azure-service-operator/v2/internal/genericarmclient"
-	. "github.com/Azure/azure-service-operator/v2/internal/logging"
 	"github.com/Azure/azure-service-operator/v2/internal/reconcilers"
+	"github.com/Azure/azure-service-operator/v2/internal/reconcilers/arm/errorclassification"
 	"github.com/Azure/azure-service-operator/v2/internal/reflecthelpers"
 	"github.com/Azure/azure-service-operator/v2/internal/resolver"
+	"github.com/Azure/azure-service-operator/v2/pkg/common/labels"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/core"
@@ -35,25 +36,25 @@ import (
 
 type azureDeploymentReconcilerInstance struct {
 	reconcilers.ARMOwnedResourceReconcilerCommon
-	Obj       genruntime.ARMMetaObject
-	Log       logr.Logger
-	Recorder  record.EventRecorder
-	Extension genruntime.ResourceExtension
-	ARMClient *genericarmclient.GenericClient
+	Obj           genruntime.ARMMetaObject
+	Log           logr.Logger
+	Recorder      record.EventRecorder
+	Extension     genruntime.ResourceExtension
+	ARMConnection Connection
 }
 
 func newAzureDeploymentReconcilerInstance(
 	metaObj genruntime.ARMMetaObject,
 	log logr.Logger,
 	recorder record.EventRecorder,
-	armClient *genericarmclient.GenericClient,
-	reconciler AzureDeploymentReconciler) *azureDeploymentReconcilerInstance {
-
+	connection Connection,
+	reconciler AzureDeploymentReconciler,
+) *azureDeploymentReconcilerInstance {
 	return &azureDeploymentReconcilerInstance{
 		Obj:                              metaObj,
 		Log:                              log,
 		Recorder:                         recorder,
-		ARMClient:                        armClient,
+		ARMConnection:                    connection,
 		Extension:                        reconciler.Extension,
 		ARMOwnedResourceReconcilerCommon: reconciler.ARMOwnedResourceReconcilerCommon,
 	}
@@ -92,7 +93,6 @@ func (r *azureDeploymentReconcilerInstance) Delete(ctx context.Context) (ctrl.Re
 
 	result, err := actionFunc(ctx)
 	if err != nil {
-		r.Log.Error(err, "Error during Delete", "action", action)
 		r.Recorder.Event(r.Obj, v1.EventTypeWarning, "DeleteActionError", err.Error())
 
 		return ctrl.Result{}, err
@@ -102,58 +102,12 @@ func (r *azureDeploymentReconcilerInstance) Delete(ctx context.Context) (ctrl.Re
 }
 
 func (r *azureDeploymentReconcilerInstance) MakeReadyConditionImpactingErrorFromError(azureErr error) error {
-	var readyConditionError *conditions.ReadyConditionImpactingError
-	isReadyConditionImpactingError := errors.As(azureErr, &readyConditionError)
-	if isReadyConditionImpactingError {
-		// The error has already been classified. This currently only happens in test with the go-vcr injected
-		// http client
-		return azureErr
-	}
-
-	var cloudError *genericarmclient.CloudError
-	isCloudErr := errors.As(azureErr, &cloudError)
-	if !isCloudErr {
-		// This shouldn't happen, as all errors from ARM should be in one of the shapes that CloudError supports. In case
-		// we've somehow gotten one that isn't formatted correctly, create a sensible default error
-		return conditions.NewReadyConditionImpactingError(
-			azureErr,
-			conditions.ConditionSeverityWarning,
-			conditions.MakeReason(core.UnknownErrorCode))
-	}
-
 	apiVersion, verr := r.GetAPIVersion()
 	if verr != nil {
-		return errors.Wrapf(verr, "error getting api version for resource %s while making Ready condition", r.Obj.GetName())
+		return eris.Wrapf(verr, "error getting api version for resource %s while making Ready condition", r.Obj.GetName())
 	}
-
-	classifier := extensions.CreateErrorClassifier(r.Extension, ClassifyCloudError, apiVersion, r.Log)
-	details, err := classifier(cloudError)
-	if err != nil {
-		return errors.Wrapf(
-			err,
-			"Unable to classify cloud error (%s)",
-			cloudError.Error())
-	}
-
-	var severity conditions.ConditionSeverity
-	switch details.Classification {
-	case core.ErrorRetryable:
-		severity = conditions.ConditionSeverityWarning
-	case core.ErrorFatal:
-		severity = conditions.ConditionSeverityError
-		// This case purposefully does nothing as the fatal provisioning state was already set above
-	default:
-		return errors.Errorf(
-			"unknown error classification %q while making Ready condition",
-			details.Classification)
-	}
-
-	// Stick errorDetails.Message into an error so that it will be displayed as the message on the condition
-	err = errors.Wrapf(cloudError, details.Message)
-	reason := conditions.MakeReason(details.Code)
-	result := conditions.NewReadyConditionImpactingError(err, severity, reason)
-
-	return result
+	classifier := extensions.CreateErrorClassifier(r.Extension, errorclassification.ClassifyCloudError, apiVersion, r.Log)
+	return errorclassification.MakeReadyConditionImpactingErrorFromError(azureErr, classifier)
 }
 
 func (r *azureDeploymentReconcilerInstance) AddInitialResourceState(ctx context.Context) error {
@@ -162,6 +116,9 @@ func (r *azureDeploymentReconcilerInstance) AddInitialResourceState(ctx context.
 		return err
 	}
 	genruntime.SetResourceID(r.Obj, armResource.GetID())
+	labels.SetOwnerNameLabel(r.Log, r.Obj)
+	labels.SetOwnerGroupKindLabel(r.Log, r.Obj)
+	labels.SetOwnerUIDLabel(r.Obj)
 	return nil
 }
 
@@ -180,7 +137,7 @@ func (r *azureDeploymentReconcilerInstance) DetermineCreateOrUpdateAction() (Cre
 	_, _, hasPollerResumeToken := GetPollerResumeToken(r.Obj)
 
 	if ready != nil && ready.Reason == conditions.ReasonDeleting.Name {
-		return CreateOrUpdateActionNoAction, NoAction, errors.Errorf("resource is currently deleting; it can not be applied")
+		return CreateOrUpdateActionNoAction, NoAction, eris.Errorf("resource is currently deleting; it can not be applied")
 	}
 
 	if hasPollerResumeToken {
@@ -205,8 +162,8 @@ func (r *azureDeploymentReconcilerInstance) StartDeleteOfResource(ctx context.Co
 	r.Log.V(Status).Info(msg)
 	r.Recorder.Event(r.Obj, v1.EventTypeNormal, string(DeleteActionBeginDelete), msg)
 
-	deleter := extensions.CreateDeleter(r.Extension, deleteResource)
-	result, err := deleter(ctx, r.Log, r.ResourceResolver, r.ARMClient, r.Obj)
+	deleter := extensions.CreateDeleter(r.Extension, r.deleteResource)
+	result, err := deleter(ctx, r.Log, r.ResourceResolver, r.ARMConnection.Client(), r.Obj)
 	return result, err
 }
 
@@ -225,17 +182,17 @@ func (r *azureDeploymentReconcilerInstance) MonitorDelete(ctx context.Context) (
 
 	pollerID, pollerResumeToken, hasToken := GetPollerResumeToken(r.Obj)
 	if !hasToken {
-		return ctrl.Result{}, errors.New("cannot MonitorResourceCreation with empty pollerResumeToken or pollerID")
+		return ctrl.Result{}, eris.New("cannot MonitorResourceCreation with empty pollerResumeToken or pollerID")
 	}
 
 	if pollerID != genericarmclient.DeletePollerID {
-		return ctrl.Result{}, errors.Errorf("cannot MonitorResourceCreation with pollerID=%s", pollerID)
+		return ctrl.Result{}, eris.Errorf("cannot MonitorResourceCreation with pollerID=%s", pollerID)
 	}
 
-	poller := r.ARMClient.ResumeDeletePoller(pollerID)
-	err := poller.Resume(ctx, r.ARMClient, pollerResumeToken)
+	poller := r.ARMConnection.Client().ResumeDeletePoller(pollerID)
+	err := poller.Resume(ctx, r.ARMConnection.Client(), pollerResumeToken)
 	if err != nil {
-		return ctrl.Result{}, r.handleDeletePollerFailed(err)
+		return ctrl.Result{}, r.handleDeleteFailed(err)
 	}
 	if poller.Poller.Done() {
 		// The resource was deleted
@@ -252,11 +209,18 @@ func (r *azureDeploymentReconcilerInstance) BeginCreateOrUpdateResource(
 	ctx context.Context,
 ) (ctrl.Result, error) {
 	if r.Obj.AzureName() == "" {
-		err := errors.New("AzureName was not set. A webhook should default this to .metadata.name if it was omitted. Is the ASO webhook service running?")
+
+		err := eris.Errorf(
+			"AzureName was not set on %s. A webhook should default this to .metadata.name if it was omitted. Is the ASO webhook service running?",
+			r.Obj.GetType())
+
 		return ctrl.Result{},
 			conditions.NewReadyConditionImpactingError(
 				err, conditions.ConditionSeverityError, conditions.ReasonFailed)
 	}
+
+	// We want to set the latest reconciled generation annotation to keep a track of reconciles per generation.
+	SetLatestReconciledGeneration(r.Obj)
 
 	check, err := r.preReconciliationCheck(ctx)
 	if err != nil {
@@ -290,7 +254,7 @@ func (r *azureDeploymentReconcilerInstance) BeginCreateOrUpdateResource(
 
 	resourceID := genruntime.GetResourceIDOrDefault(r.Obj)
 	if resourceID != "" {
-		err = checkSubscription(resourceID, r.ARMClient.SubscriptionID())
+		err = r.checkSubscription(resourceID)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -300,7 +264,6 @@ func (r *azureDeploymentReconcilerInstance) BeginCreateOrUpdateResource(
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-
 	// Use conditions.SetConditionReasonAware here to override any Warning conditions set earlier in the reconciliation process.
 	// Note that this call should be done after all validation has passed and all that is left to do is send the payload to ARM.
 	conditions.SetConditionReasonAware(r.Obj, r.PositiveConditions.Ready.Reconciling(r.Obj.GetGeneration()))
@@ -309,9 +272,9 @@ func (r *azureDeploymentReconcilerInstance) BeginCreateOrUpdateResource(
 
 	// Try to create the resource
 	spec := armResource.Spec()
-	pollerResp, err := r.ARMClient.BeginCreateOrUpdateByID(ctx, armResource.GetID(), spec.GetAPIVersion(), spec)
+	pollerResp, err := r.ARMConnection.Client().BeginCreateOrUpdateByID(ctx, armResource.GetID(), spec.GetAPIVersion(), spec)
 	if err != nil {
-		return ctrl.Result{}, r.handleCreatePollerFailed(err)
+		return ctrl.Result{}, r.handleCreateOrUpdateFailed(err)
 	}
 
 	r.Log.V(Status).Info("Successfully sent resource to Azure", "id", armResource.GetID())
@@ -320,13 +283,13 @@ func (r *azureDeploymentReconcilerInstance) BeginCreateOrUpdateResource(
 	// If we are done here it means the deployment succeeded immediately. It can't have failed because if it did
 	// we would have taken the error path above.
 	if pollerResp.Poller.Done() {
-		return r.handleCreatePollerSuccess(ctx)
+		return ctrl.Result{}, r.handleCreateOrUpdateSuccess(ctx, ManageResource)
 	}
 
 	resumeToken, err := pollerResp.Poller.ResumeToken()
 	if err != nil {
 		return ctrl.Result{},
-			errors.Wrapf(err, "couldn't create PUT resume token for resource %q", armResource.GetID())
+			eris.Wrapf(err, "couldn't create PUT resume token for resource %q", armResource.GetID())
 	}
 
 	SetPollerResumeToken(r.Obj, pollerResp.ID, resumeToken)
@@ -350,14 +313,14 @@ func (r *azureDeploymentReconcilerInstance) preReconciliationCheck(ctx context.C
 	}
 
 	// We also need to have our owner, it too with an up-to-date status
-	owner, ownerErr := r.ResourceResolver.ResolveOwner(ctx, r.Obj)
+	ownerDetails, ownerErr := r.ResourceResolver.ResolveOwner(ctx, r.Obj)
 	if ownerErr != nil {
 		// We can't obtain the owner, so we can't run the extension
 		return extensions.PreReconcileCheckResult{}, ownerErr
 	}
 
 	// Run our pre-reconciliation checker
-	check, checkErr := checker(ctx, r.Obj, owner, r.KubeClient, r.ARMClient, r.Log)
+	check, checkErr := checker(ctx, r.Obj, ownerDetails.Owner, r.ResourceResolver, r.ARMConnection.Client(), r.Log)
 	if checkErr != nil {
 		// Something went wrong running the check.
 		return extensions.PreReconcileCheckResult{}, checkErr
@@ -366,22 +329,24 @@ func (r *azureDeploymentReconcilerInstance) preReconciliationCheck(ctx context.C
 	return check, nil
 }
 
-func checkSubscription(resourceID string, clientSubID string) error {
+// checkSubscription checks if subscription on resource matches with credentials used while creating a resource.
+// Which prevents users to modify subscription in their credential.
+func (r *azureDeploymentReconcilerInstance) checkSubscription(resourceID string) error {
 	parsedRID, err := arm.ParseResourceID(resourceID)
 	// Some resources like '/providers/Microsoft.Subscription/aliases' do not have subscriptionID, so we need to make sure subscriptionID exists before we check.
 	// TODO: we need a better way?
 	if err == nil {
-		if parsedRID.ResourceGroupName != "" && parsedRID.SubscriptionID != clientSubID {
-			err = errors.Errorf("SubscriptionID %q for %q resource does not match with Client Credential: %q", parsedRID.SubscriptionID, resourceID, clientSubID)
+		if parsedRID.ResourceGroupName != "" && parsedRID.SubscriptionID != r.ARMConnection.SubscriptionID() {
+			err = eris.Errorf("SubscriptionID %q for %q resource does not match with Client Credential: %q", parsedRID.SubscriptionID, resourceID, r.ARMConnection.SubscriptionID())
 			return conditions.NewReadyConditionImpactingError(err, conditions.ConditionSeverityError, conditions.ReasonSubscriptionMismatch)
 		}
 	}
 	return nil
 }
 
-func (r *azureDeploymentReconcilerInstance) handleCreatePollerFailed(err error) error {
+func (r *azureDeploymentReconcilerInstance) handleCreateOrUpdateFailed(err error) error {
 	r.Log.V(Debug).Info(
-		"Resource creation failure",
+		"Resource creation/update failure",
 		"resourceID", genruntime.GetResourceIDOrDefault(r.Obj),
 		"error", err.Error())
 
@@ -391,42 +356,71 @@ func (r *azureDeploymentReconcilerInstance) handleCreatePollerFailed(err error) 
 	return err
 }
 
-func (r *azureDeploymentReconcilerInstance) handleDeletePollerFailed(err error) error {
+func (r *azureDeploymentReconcilerInstance) handleDeleteFailed(err error) error {
 	r.Log.V(Debug).Info(
 		"Resource deletion failure",
 		"resourceID", genruntime.GetResourceIDOrDefault(r.Obj),
 		"error", err.Error())
 
 	err = r.MakeReadyConditionImpactingErrorFromError(err)
+	// Force all delete errors to have severity Warning, as we don't want to block the deletion of the resource
+	// and there's no good way for users to restart a stopped deletion, as the deletionTimestamp can only be set once.
+	// Without this, deletes that hit an intermittent 400 will get stuck forever
+	if readyConditionImpactingErr, ok := conditions.AsReadyConditionImpactingError(err); ok {
+		readyConditionImpactingErr.Severity = conditions.ConditionSeverityWarning
+	}
 	ClearPollerResumeToken(r.Obj)
 
 	return err
 }
 
-func (r *azureDeploymentReconcilerInstance) skipReconcile(ctx context.Context) error {
-	err := r.updateStatus(ctx)
-	if err != nil {
-		if genericarmclient.IsNotFoundError(err) {
-			err = conditions.NewReadyConditionImpactingError(err, conditions.ConditionSeverityWarning, conditions.ReasonAzureResourceNotFound)
-		}
-		return err
-	}
-	return nil
-}
+type CreateOrUpdateSuccessMode string
 
-func (r *azureDeploymentReconcilerInstance) handleCreatePollerSuccess(ctx context.Context) (ctrl.Result, error) {
+const (
+	WatchResource  = CreateOrUpdateSuccessMode("watch")
+	ManageResource = CreateOrUpdateSuccessMode("manage")
+)
+
+func (r *azureDeploymentReconcilerInstance) handleCreateOrUpdateSuccess(ctx context.Context, mode CreateOrUpdateSuccessMode) error {
 	r.Log.V(Status).Info(
-		"Resource successfully created",
+		"Resource successfully created/updated",
 		"resourceID", genruntime.GetResourceIDOrDefault(r.Obj))
 
 	err := r.updateStatus(ctx)
 	if err != nil {
-		if genericarmclient.IsNotFoundError(err) {
-			// If we're getting NotFound here there must be an RP bug, as poller said success. If that happens we want
-			// to make sure that we don't get stuck, so we clear the poller URL.
-			ClearPollerResumeToken(r.Obj)
+		if mode == WatchResource {
+			if genericarmclient.IsNotFoundError(err) {
+				err = conditions.NewReadyConditionImpactingError(err, conditions.ConditionSeverityWarning, conditions.ReasonAzureResourceNotFound)
+			}
+			return err
+		} else {
+			if genericarmclient.IsNotFoundError(err) {
+				// If we're getting NotFound here there must be an RP bug, as poller said success. If that happens we want
+				// to make sure that we don't get stuck, so we clear the poller URL.
+				ClearPollerResumeToken(r.Obj)
+			}
+			return eris.Wrapf(err, "error updating status")
 		}
-		return ctrl.Result{}, errors.Wrapf(err, "error updating status")
+	}
+
+	check, err := r.postReconciliationCheck(ctx)
+	if err != nil {
+		impactingError, ok := conditions.AsReadyConditionImpactingError(err)
+		if !ok {
+			impactingError = conditions.NewReadyConditionImpactingError(
+				err,
+				conditions.ConditionSeverityWarning,
+				conditions.ReasonFailed)
+		}
+
+		return impactingError
+	}
+
+	// If post reconcile check is failed, we return ReadyConditionImpactingError here to update the Ready
+	// condition is updated so the user can see why we're not setting ready condition now.
+	if check.ReconciliationFailed() {
+		r.Log.V(Status).Info("Extension post-reconcile check failure", "message", check.Message())
+		return check.CreateConditionError()
 	}
 
 	err = r.saveAssociatedKubernetesResources(ctx)
@@ -435,43 +429,84 @@ func (r *azureDeploymentReconcilerInstance) handleCreatePollerSuccess(ctx contex
 			err = conditions.NewReadyConditionImpactingError(err, conditions.ConditionSeverityError, conditions.ReasonAdditionalKubernetesObjWriteFailure)
 		}
 
-		return ctrl.Result{}, err
+		return err
 	}
 
 	onSuccess := extensions.CreateSuccessfulCreationHandler(r.Extension, r.Log)
 	err = onSuccess(r.Obj)
 	if err != nil {
-		return ctrl.Result{}, err
+		return err
 	}
 
 	ClearPollerResumeToken(r.Obj)
-	return ctrl.Result{}, nil
+	return nil
+}
+
+func (r *azureDeploymentReconcilerInstance) postReconciliationCheck(ctx context.Context) (extensions.PostReconcileCheckResult, error) {
+	// Create a checker for access to the extension point, if required
+	checker, extensionFound := extensions.CreatePostReconciliationChecker(r.Extension)
+	if !extensionFound {
+		// No extension found, nothing to do
+		return extensions.PostReconcileCheckResultSuccess(), nil
+	}
+
+	// We also need to have our owner, it too with an up-to-date status
+	ownerDetails, ownerErr := r.ResourceResolver.ResolveOwner(ctx, r.Obj)
+	if ownerErr != nil {
+		// We can't obtain the owner, so we can't run the extension
+		return extensions.PostReconcileCheckResult{}, ownerErr
+	}
+
+	// Run our post-reconciliation checker
+	check, checkErr := checker(ctx, r.Obj, ownerDetails.Owner, r.ResourceResolver, r.ARMConnection.Client(), r.Log)
+	if checkErr != nil {
+		// Something went wrong running the check.
+		return extensions.PostReconcileCheckResult{}, checkErr
+	}
+
+	return check, nil
 }
 
 func (r *azureDeploymentReconcilerInstance) MonitorResourceCreation(ctx context.Context) (ctrl.Result, error) {
 	pollerID, pollerResumeToken, hasToken := GetPollerResumeToken(r.Obj)
 	if !hasToken {
-		return ctrl.Result{}, errors.New("cannot MonitorResourceCreation with empty pollerResumeToken or pollerID")
+		return ctrl.Result{}, eris.New("cannot MonitorResourceCreation with empty pollerResumeToken or pollerID")
 	}
 
 	if pollerID != genericarmclient.CreatePollerID {
-		return ctrl.Result{}, errors.Errorf("cannot MonitorResourceCreation with pollerID=%s", pollerID)
+		return ctrl.Result{}, eris.Errorf("cannot MonitorResourceCreation with pollerID=%s", pollerID)
 	}
 
-	poller := r.ARMClient.ResumeCreatePoller(pollerID)
-	err := poller.Resume(ctx, r.ARMClient, pollerResumeToken)
+	poller := r.ARMConnection.Client().ResumeCreatePoller(pollerID)
+	err := poller.Resume(ctx, r.ARMConnection.Client(), pollerResumeToken)
 	if err != nil {
-		return ctrl.Result{}, r.handleCreatePollerFailed(err)
+		return r.resultBasedOnGenerationCount(), r.handleCreateOrUpdateFailed(err)
 	}
 
 	if poller.Poller.Done() {
-		return r.handleCreatePollerSuccess(ctx)
+		return r.resultBasedOnGenerationCount(), r.handleCreateOrUpdateSuccess(ctx, ManageResource)
 	}
 
 	// Requeue to check again later
 	retryAfter := genericarmclient.GetRetryAfter(poller.RawResponse)
-	r.Log.V(Debug).Info("Resource not created yet, will check again", "requeueAfter", retryAfter)
+	r.Log.V(Debug).Info("Resource not created/updated yet, will check again", "requeueAfter", retryAfter)
 	return ctrl.Result{Requeue: true, RequeueAfter: retryAfter}, nil
+}
+
+func (r *azureDeploymentReconcilerInstance) resultBasedOnGenerationCount() ctrl.Result {
+	// Once poller is done or run into error, we need to check if there was another event while resource had a ResumePollerToken.
+	// We do it here by checking the latest-reconciled-generation to make sure that we have sent the latest changes to the RP.
+	// If there's a mismatch in number of generations we reconciled and generations on spec, we requeue the resource to make sure its in sync.
+	generation, hasGenerationAnnotation := GetLatestReconciledGeneration(r.Obj)
+	if hasGenerationAnnotation && r.Obj.GetGeneration() != generation {
+		r.Log.V(Debug).Info(
+			"Generation mismatch detected, requeue-ing the resource",
+			"resourceID",
+			genruntime.GetResourceIDOrDefault(r.Obj))
+
+		return ctrl.Result{Requeue: true}
+	}
+	return ctrl.Result{}
 }
 
 //////////////////////////////////////////
@@ -483,33 +518,50 @@ var zeroDuration time.Duration = 0
 func (r *azureDeploymentReconcilerInstance) getStatus(ctx context.Context, id string) (genruntime.ConvertibleStatus, time.Duration, error) { // nolint:unparam
 	armStatus, err := genruntime.NewEmptyARMStatus(r.Obj, r.ResourceResolver.Scheme())
 	if err != nil {
-		return nil, zeroDuration, errors.Wrapf(err, "constructing ARM status for resource: %q", id)
+		return nil, zeroDuration, eris.Wrapf(err, "constructing ARM status for resource: %q", id)
 	}
 
 	apiVersion, verr := r.GetAPIVersion()
 	if verr != nil {
-		return nil, zeroDuration, errors.Wrapf(verr, "error getting api version for resource %s while getting status", r.Obj.GetName())
+		return nil, zeroDuration, eris.Wrapf(verr, "error getting api version for resource %s while getting status", r.Obj.GetName())
 	}
 
 	// Get the resource
-	retryAfter, err := r.ARMClient.GetByID(ctx, id, apiVersion, armStatus)
-	if err != nil {
-		return nil, retryAfter, errors.Wrapf(err, "getting resource with ID: %q", id)
-	}
-
-	if r.Log.V(Debug).Enabled() {
-		statusBytes, marshalErr := json.Marshal(armStatus)
-		if marshalErr != nil {
-			return nil, zeroDuration, errors.Wrapf(marshalErr, "serializing ARM status to JSON for debugging")
+	if genruntime.ResourceOperationGet.IsSupportedBy(r.Obj) {
+		var retryAfter time.Duration
+		retryAfter, err = r.ARMConnection.Client().GetByID(ctx, id, apiVersion, armStatus)
+		if err != nil {
+			return nil, retryAfter, eris.Wrapf(err, "getting resource with ID: %q", id)
 		}
 
-		r.Log.V(Debug).Info("Got ARM status", "status", string(statusBytes))
+		if r.Log.V(Debug).Enabled() {
+			statusBytes, marshalErr := json.Marshal(armStatus)
+			if marshalErr != nil {
+				return nil, zeroDuration, eris.Wrapf(marshalErr, "serializing ARM status to JSON for debugging")
+			}
+
+			r.Log.V(Debug).Info("Got ARM status", "status", string(statusBytes))
+		}
+	} else if genruntime.ResourceOperationHead.IsSupportedBy(r.Obj) {
+		var retryAfter time.Duration
+		var exists bool
+		exists, retryAfter, err = r.ARMConnection.Client().CheckExistenceByID(ctx, id, apiVersion)
+		if err != nil {
+			return nil, retryAfter, eris.Wrapf(err, "getting resource with ID: %q", id)
+		}
+
+		// We expect the resource to exist
+		if !exists {
+			return nil, retryAfter, eris.Wrapf(err, "getting resource with ID: %q", id)
+		}
+	} else {
+		return nil, zeroDuration, eris.Errorf("resource must support one of GET or HEAD, but it supports neither")
 	}
 
 	// Convert the ARM shape to the Kube shape
 	status, err := genruntime.NewEmptyVersionedStatus(r.Obj, r.ResourceResolver.Scheme())
 	if err != nil {
-		return nil, zeroDuration, errors.Wrapf(err, "constructing Kube status object for resource: %q", id)
+		return nil, zeroDuration, eris.Wrapf(err, "constructing Kube status object for resource: %q", id)
 	}
 
 	// Create an owner reference
@@ -528,10 +580,10 @@ func (r *azureDeploymentReconcilerInstance) getStatus(ctx context.Context, id st
 	if s, ok := status.(genruntime.FromARMConverter); ok {
 		err = s.PopulateFromARM(knownOwner, reflecthelpers.ValueOfPtr(armStatus)) // TODO: PopulateFromArm expects a value... ick
 		if err != nil {
-			return nil, zeroDuration, errors.Wrapf(err, "converting ARM status to Kubernetes status")
+			return nil, zeroDuration, eris.Wrapf(err, "converting ARM status to Kubernetes status")
 		}
 	} else {
-		return nil, zeroDuration, errors.Errorf("expected status %T to implement genruntime.FromARMConverter", s)
+		return nil, zeroDuration, eris.Errorf("expected status %T to implement genruntime.FromARMConverter", s)
 	}
 
 	return status, zeroDuration, nil
@@ -544,7 +596,7 @@ func (r *azureDeploymentReconcilerInstance) setStatus(status genruntime.Converti
 		// SetStatus() takes care of any required conversion to the right version
 		err := r.Obj.SetStatus(status)
 		if err != nil {
-			return errors.Wrapf(err, "setting status on %s", r.Obj.GetObjectKind().GroupVersionKind())
+			return eris.Wrapf(err, "setting status on %s", r.Obj.GetObjectKind().GroupVersionKind())
 		}
 	}
 
@@ -554,12 +606,12 @@ func (r *azureDeploymentReconcilerInstance) setStatus(status genruntime.Converti
 func (r *azureDeploymentReconcilerInstance) updateStatus(ctx context.Context) error {
 	resourceID, hasResourceID := genruntime.GetResourceID(r.Obj)
 	if !hasResourceID {
-		return errors.Errorf("resource has no resource id")
+		return eris.Errorf("resource has no resource id")
 	}
 
 	status, _, err := r.getStatus(ctx, resourceID)
 	if err != nil {
-		return errors.Wrapf(err, "error getting status for resource ID %q", resourceID)
+		return eris.Wrapf(err, "error getting status for resource ID %q", resourceID)
 	}
 
 	if err = r.setStatus(status); err != nil {
@@ -572,22 +624,63 @@ func (r *azureDeploymentReconcilerInstance) updateStatus(ctx context.Context) er
 // saveAssociatedKubernetesResources retrieves Kubernetes resources to create and saves them to Kubernetes.
 // If there are no resources to save this method is a no-op.
 func (r *azureDeploymentReconcilerInstance) saveAssociatedKubernetesResources(ctx context.Context) error {
-	// Check if this resource has a handcrafted extension for exporting
-	retriever := extensions.CreateKubernetesExporter(ctx, r.Extension, r.ARMClient, r.Log)
-	resources, err := retriever(r.Obj)
+	originalVersion, err := genruntime.ObjAsOriginalVersion(r.Obj, r.ResourceResolver.Scheme())
 	if err != nil {
-		return errors.Wrap(err, "extension failed to produce resources for export")
+		return err
 	}
 
-	// Also check if the resource itself implements KubernetesExporter
-	exporter, ok := r.ObjAsKubernetesExporter()
-	if ok {
-		var additionalResources []client.Object
-		additionalResources, err = exporter.ExportKubernetesResources(ctx, r.Obj, r.ARMClient, r.Log)
-		if err != nil {
-			return errors.Wrap(err, "failed to produce resources for export")
-		}
+	var resources []client.Object
 
+	// Special case, because we need to find what secrets the secretExpressionExporter needs and get those secrets
+	additionalSecrets, err := findRequiredSecrets(r.ExpressionEvaluator, r.Obj, originalVersion)
+	if err != nil {
+		return eris.Wrapf(err, "error finding required secrets")
+	}
+	secretExporter := &kubernetesSecretExporter{
+		obj:               r.Obj,
+		connection:        r.ARMConnection,
+		log:               r.Log,
+		extension:         r.Extension,
+		additionalSecrets: additionalSecrets,
+	}
+
+	var additionalResources []client.Object
+	additionalResources, err = secretExporter.Export(ctx)
+	if err != nil {
+		return err
+	}
+	resources = append(resources, additionalResources...)
+
+	exporters := []kubernetesResourceExporter{
+		&autoGeneratedConfigExporter{
+			versionedObj: originalVersion,
+			log:          r.Log,
+			connection:   r.ARMConnection,
+		},
+		&manualConfigExporter{
+			obj:        r.Obj,
+			extension:  r.Extension,
+			log:        r.Log,
+			connection: r.ARMConnection,
+		},
+		&configMapExpressionExporter{
+			obj:                 r.Obj,
+			versionedObj:        originalVersion,
+			expressionEvaluator: r.ExpressionEvaluator,
+		},
+		&secretExpressionExporter{
+			obj:                 r.Obj,
+			versionedObj:        originalVersion,
+			expressionEvaluator: r.ExpressionEvaluator,
+			rawSecrets:          secretExporter.rawSecrets,
+		},
+	}
+
+	for _, exporter := range exporters {
+		additionalResources, err = exporter.Export(ctx)
+		if err != nil {
+			return err
+		}
 		resources = append(resources, additionalResources...)
 	}
 
@@ -605,7 +698,7 @@ func (r *azureDeploymentReconcilerInstance) saveAssociatedKubernetesResources(ct
 	}
 
 	if len(results) != len(merged) {
-		return errors.Errorf("unexpected results len %d not equal to Kuberentes resources length %d", len(results), len(resources))
+		return eris.Errorf("unexpected results len %d not equal to Kuberentes resources length %d", len(results), len(resources))
 	}
 
 	for i := 0; i < len(merged); i++ {
@@ -622,58 +715,18 @@ func (r *azureDeploymentReconcilerInstance) saveAssociatedKubernetesResources(ct
 	return nil
 }
 
-// ObjAsKubernetesExporter returns r.Obj as a genruntime.KubernetesExporter if it supports that interface, respecting
-// the original API version used to create the resource.
-func (r *azureDeploymentReconcilerInstance) ObjAsKubernetesExporter() (genruntime.KubernetesExporter, bool) {
-	resource := r.Obj
-	resourceGVK := resource.GetObjectKind().GroupVersionKind()
-
-	desiredGVK := genruntime.GetOriginalGVK(resource)
-	if resourceGVK != desiredGVK {
-		// Need to convert the hub resource we have to the original version used
-		scheme := r.ResourceResolver.Scheme()
-		versionedResource, err := genruntime.NewEmptyVersionedResourceFromGVK(scheme, desiredGVK)
-		if err != nil {
-			r.Log.V(Status).Info(
-				"Unable to create expected resource version",
-				"have", resourceGVK,
-				"desired", desiredGVK)
-			return nil, false
-		}
-
-		if convertible, ok := versionedResource.(conversion.Convertible); ok {
-			hub := resource.(conversion.Hub)
-			err := convertible.ConvertFrom(hub)
-			if err != nil {
-				r.Log.V(Status).Info(
-					"Unable to convert resource to expected version",
-					"original", resourceGVK,
-					"destination", desiredGVK)
-				return nil, false
-			}
-		}
-
-		resource = versionedResource
-	}
-
-	// Now test whether we support the interface
-	result, ok := resource.(genruntime.KubernetesExporter)
-	return result, ok
-}
-
 // ConvertResourceToARMResource converts a genruntime.ARMMetaObject (a Kubernetes representation of a resource) into
 // a genruntime.ARMResourceSpec - a specification which can be submitted to Azure for deployment
 func (r *azureDeploymentReconcilerInstance) ConvertResourceToARMResource(ctx context.Context) (genruntime.ARMResource, error) {
 	metaObject := r.Obj
-	scheme := r.ResourceResolver.Scheme()
 
-	result, err := ConvertToARMResourceImpl(ctx, metaObject, scheme, r.ResourceResolver, r.ARMClient.SubscriptionID())
+	result, err := ConvertToARMResourceImpl(ctx, metaObject, r.ResourceResolver, r.ARMConnection.SubscriptionID())
 	if err != nil {
 		return nil, err
 	}
 
 	// Run any resource-specific extensions
-	modifier := extensions.CreateARMResourceModifier(r.Extension, r.KubeClient, r.ResourceResolver, r.Log)
+	modifier := extensions.CreateARMResourceModifier(r.Extension, r.ARMConnection.Client(), r.KubeClient, r.ResourceResolver, r.Log)
 	return modifier(ctx, metaObject, result)
 }
 
@@ -681,37 +734,41 @@ func (r *azureDeploymentReconcilerInstance) ConvertResourceToARMResource(ctx con
 func ConvertToARMResourceImpl(
 	ctx context.Context,
 	metaObject genruntime.ARMMetaObject,
-	scheme *runtime.Scheme,
 	resolver *resolver.Resolver,
-	subscriptionID string) (genruntime.ARMResource, error) {
-	spec, err := genruntime.GetVersionedSpec(metaObject, scheme)
+	subscriptionID string,
+) (genruntime.ARMResource, error) {
+	// This calls ObjAsOriginalVersion which technically is doing more work than strictly needed, as it converts the spec,
+	// metadata, and status. We need the spec and metadata but don't strictly need the status converted at this point.
+	// We could look to do some future optimizations here to avoid conversion of status if it ever becomes an issue.
+	versionedMeta, err := genruntime.ObjAsOriginalVersion(metaObject, resolver.Scheme())
 	if err != nil {
-		return nil, errors.Wrapf(err, "unable to get spec from %s", metaObject.GetObjectKind().GroupVersionKind())
+		return nil, err
 	}
 
+	spec := versionedMeta.GetSpec()
 	armTransformer, ok := spec.(genruntime.ARMTransformer)
 	if !ok {
-		return nil, errors.Errorf("spec was of type %T which doesn't implement genruntime.ArmTransformer", spec)
+		return nil, eris.Errorf("spec was of type %T which doesn't implement genruntime.ArmTransformer", spec)
 	}
 
-	resourceHierarchy, resolvedDetails, err := resolver.ResolveAll(ctx, metaObject)
+	resourceHierarchy, resolvedDetails, err := resolver.ResolveAll(ctx, versionedMeta)
 	if err != nil {
 		return nil, reconcilers.ClassifyResolverError(err)
 	}
 
 	armSpec, err := armTransformer.ConvertToARM(resolvedDetails)
 	if err != nil {
-		return nil, errors.Wrapf(err, "transforming resource %s to ARM", metaObject.GetName())
+		return nil, eris.Wrapf(err, "transforming resource %s to ARM", metaObject.GetName())
 	}
 
 	typedArmSpec, ok := armSpec.(genruntime.ARMResourceSpec)
 	if !ok {
-		return nil, errors.Errorf("casting armSpec of type %T to genruntime.ARMResourceSpec", armSpec)
+		return nil, eris.Errorf("casting armSpec of type %T to genruntime.ARMResourceSpec", armSpec)
 	}
 
 	armID, err := resourceHierarchy.FullyQualifiedARMID(subscriptionID)
 	if err != nil {
-		return nil, err
+		return nil, reconcilers.ClassifyResolverError(err)
 	}
 
 	result := genruntime.NewARMResource(typedArmSpec, nil, armID)
@@ -728,21 +785,21 @@ func (r *azureDeploymentReconcilerInstance) GetAPIVersion() (string, error) {
 
 // deleteResource deletes a resource in ARM. This function is used as the default deletion handler and can
 // have its behavior modified by resources implementing the genruntime.Deleter extension
-func deleteResource(
+func (r *azureDeploymentReconcilerInstance) deleteResource(
 	ctx context.Context,
 	log logr.Logger,
 	resolver *resolver.Resolver,
 	armClient *genericarmclient.GenericClient,
-	obj genruntime.ARMMetaObject) (ctrl.Result, error) {
-
+	obj genruntime.ARMMetaObject,
+) (ctrl.Result, error) {
 	// If we have no resourceID to begin with, the Azure resource was never created
 	resourceID := genruntime.GetResourceIDOrDefault(obj)
 	if resourceID == "" {
-		log.V(Status).Info("Not issuing delete as resource had no ResourceID annotation")
+		log.V(Status).Info("Not issuing ARM delete as resource had no ResourceID annotation")
 		return ctrl.Result{}, nil
 	}
 
-	err := checkSubscription(resourceID, armClient.SubscriptionID())
+	err := r.checkSubscription(resourceID)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -765,7 +822,7 @@ func deleteResource(
 			log.V(Info).Info("Successfully issued DELETE to Azure - resource was already gone")
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, errors.Wrapf(err, "deleting resource %q", resourceID)
+		return ctrl.Result{}, r.handleDeleteFailed(err)
 	}
 	log.V(Info).Info("Successfully issued DELETE to Azure")
 
@@ -778,7 +835,7 @@ func deleteResource(
 	retryAfter := genericarmclient.GetRetryAfter(pollerResp.RawResponse)
 	resumeToken, err := pollerResp.Poller.ResumeToken()
 	if err != nil {
-		return ctrl.Result{}, errors.Wrapf(err, "couldn't create DELETE resume token for resource %q", resourceID)
+		return ctrl.Result{}, eris.Wrapf(err, "couldn't create DELETE resume token for resource %q", resourceID)
 	}
 	SetPollerResumeToken(obj, pollerResp.ID, resumeToken)
 

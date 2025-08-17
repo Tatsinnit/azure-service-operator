@@ -8,7 +8,7 @@ package astmodel
 import (
 	"reflect"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 )
 
 // TypeMerger is like a visitor for 2 types.
@@ -155,12 +155,14 @@ func (m *TypeMerger) MergeWithContext(ctx interface{}, left, right Type) (Type, 
 	rightType := reflect.TypeOf(right)
 
 	for _, merger := range m.mergers {
-		leftTypeMatches := merger.left == leftType || merger.left == typeInterface
-		rightTypeMatches := merger.right == rightType || merger.right == typeInterface
+		leftTypeMatches := merger.left == leftType ||
+			(merger.left.Kind() == reflect.Interface && leftType.Implements(merger.left))
+		rightTypeMatches := merger.right == rightType ||
+			(merger.right.Kind() == reflect.Interface && rightType.Implements(merger.right))
 
 		if leftTypeMatches && rightTypeMatches {
 			result, err := merger.merge(ctx, left, right)
-			if (result == nil && err == nil) || errors.Is(err, ContinueMerge) {
+			if (result == nil && err == nil) || eris.Is(err, ContinueMerge) {
 				// these conditions indicate that the merger was not actually applicable,
 				// despite having a type that matched
 				continue
@@ -173,4 +175,4 @@ func (m *TypeMerger) MergeWithContext(ctx interface{}, left, right Type) (Type, 
 	return m.fallback(ctx, left, right)
 }
 
-var ContinueMerge error = errors.New("special error that indicates that the merger was not applicable")
+var ContinueMerge error = eris.New("special error that indicates that the merger was not applicable")

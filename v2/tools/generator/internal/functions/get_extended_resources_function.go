@@ -7,9 +7,10 @@ package functions
 
 import (
 	"reflect"
-	"sort"
 
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
+	"golang.org/x/exp/slices"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
@@ -21,14 +22,17 @@ const (
 
 type GetExtendedResourcesFunction struct {
 	idFactory astmodel.IdentifierFactory
-	resources []astmodel.TypeName
+	resources []astmodel.InternalTypeName
 }
 
 // Ensure GetExtendedResources properly implements Function
 var _ astmodel.Function = &GetExtendedResourcesFunction{}
 
 // NewGetExtendedResourcesFunction creates a new GetExtendedResources
-func NewGetExtendedResourcesFunction(idFactory astmodel.IdentifierFactory, resources []astmodel.TypeName) *GetExtendedResourcesFunction {
+func NewGetExtendedResourcesFunction(
+	idFactory astmodel.IdentifierFactory,
+	resources []astmodel.InternalTypeName,
+) *GetExtendedResourcesFunction {
 	result := &GetExtendedResourcesFunction{
 		idFactory: idFactory,
 		resources: sortResources(resources),
@@ -38,27 +42,37 @@ func NewGetExtendedResourcesFunction(idFactory astmodel.IdentifierFactory, resou
 }
 
 // getPackageRefs iterates through the resources and returns package references
-func getPackageRefs(resources []astmodel.TypeName) []astmodel.PackageReference {
+func getPackageRefs(resources []astmodel.InternalTypeName) []astmodel.PackageReference {
 	packageRefs := make([]astmodel.PackageReference, 0, len(resources)+1)
 	// Package reference for return type
-	packageRefs = append(packageRefs, astmodel.KubernetesResourceType.PackageReference)
+	packageRefs = append(packageRefs, astmodel.KubernetesResourceType.PackageReference())
 
 	for _, typeDef := range resources {
-		packageRefs = append(packageRefs, typeDef.PackageReference)
+		packageRefs = append(packageRefs, typeDef.PackageReference())
 	}
 
 	return packageRefs
 }
 
 // Sort resources according to the package name and resource names
-func sortResources(resources []astmodel.TypeName) []astmodel.TypeName {
-	sort.Slice(resources, func(i, j int) bool {
-		iVal := resources[i]
-		jVal := resources[j]
+func sortResources(resources []astmodel.InternalTypeName) []astmodel.InternalTypeName {
+	slices.SortFunc(
+		resources,
+		func(left astmodel.InternalTypeName, right astmodel.InternalTypeName) int {
+			if left.InternalPackageReference().FolderPath() < right.InternalPackageReference().FolderPath() {
+				return -1
+			} else if left.InternalPackageReference().FolderPath() > right.InternalPackageReference().FolderPath() {
+				return 1
+			}
 
-		return iVal.PackageReference.PackageName() < jVal.PackageReference.PackageName() ||
-			iVal.PackageReference.PackageName() < jVal.PackageReference.PackageName() && iVal.Name() < jVal.Name()
-	})
+			if left.Name() < right.Name() {
+				return -1
+			} else if left.Name() > right.Name() {
+				return 1
+			}
+
+			return 0
+		})
 
 	return resources
 }
@@ -73,30 +87,45 @@ func (ext *GetExtendedResourcesFunction) RequiredPackageReferences() *astmodel.P
 	return astmodel.NewPackageReferenceSet(getPackageRefs(ext.resources)...)
 }
 
-// References shows that GetExtendedResources() references nextother generated types
+// References shows that GetExtendedResources() references other generated types
 func (ext *GetExtendedResourcesFunction) References() astmodel.TypeNameSet {
 	return astmodel.NewTypeNameSet()
 }
 
 // AsFunc returns the generated code for the GetExtendedResources() function
 func (ext *GetExtendedResourcesFunction) AsFunc(
-	generationContext *astmodel.CodeGenerationContext, receiver astmodel.TypeName,
-) *dst.FuncDecl {
-	krType := astmodel.NewArrayType(astmodel.KubernetesResourceType).AsType(generationContext)
+	codeGenerationContext *astmodel.CodeGenerationContext,
+	receiver astmodel.InternalTypeName,
+) (*dst.FuncDecl, error) {
+	krType, err := astmodel.NewArrayType(astmodel.KubernetesResourceType).AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrapf(err, "creating type expression for %s", astmodel.KubernetesResourceType)
+	}
+
 	krLiteral := astbuilder.NewCompositeLiteralBuilder(krType).Build()
 
 	// Iterate through the resourceType versions and add them to the KubernetesResource literal slice
 	for _, resource := range ext.resources {
-		expr := astbuilder.AddrOf(astbuilder.NewCompositeLiteralBuilder(resource.AsType(generationContext)).Build())
+		var resourceExpr dst.Expr
+		resourceExpr, err = resource.AsTypeExpr(codeGenerationContext)
+		if err != nil {
+			return nil, eris.Wrapf(err, "creating type expression for %s", resource)
+		}
+
+		expr := astbuilder.AddrOf(astbuilder.NewCompositeLiteralBuilder(resourceExpr).Build())
 		expr.Decs.Before = dst.NewLine
 		krLiteral.Elts = append(krLiteral.Elts, expr)
 	}
 
 	receiverName := ext.idFactory.CreateReceiver(receiver.Name())
+	receiverType, err := receiver.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrapf(err, "creating type expression for %s", receiver)
+	}
 
 	funcDetails := &astbuilder.FuncDetails{
 		ReceiverIdent: receiverName,
-		ReceiverType:  astbuilder.Dereference(receiver.AsType(generationContext)),
+		ReceiverType:  astbuilder.PointerTo(receiverType),
 		Name:          ExtendedResourcesFunctionName,
 		Body:          astbuilder.Statements(astbuilder.Returns(krLiteral)),
 	}
@@ -104,10 +133,10 @@ func (ext *GetExtendedResourcesFunction) AsFunc(
 	funcDetails.AddComments("Returns the KubernetesResource slice for Resource versions")
 	funcDetails.AddReturn(krType)
 
-	return funcDetails.DefineFunc()
+	return funcDetails.DefineFunc(), nil
 }
 
-// Equals returns true if the passed function is equal textus, or false otherwise
+// Equals returns true if the passed function is equal to us, or false otherwise
 func (ext *GetExtendedResourcesFunction) Equals(f astmodel.Function, _ astmodel.EqualityOverrides) bool {
 	obj, ok := f.(*GetExtendedResourcesFunction)
 	if ok {

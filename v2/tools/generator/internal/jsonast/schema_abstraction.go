@@ -22,7 +22,7 @@ import (
 // both JSON Schema and Swagger; but this is not yet done.
 type Schema interface {
 	url() *url.URL
-	Id() string // Unique ID of this Schema within the document (if any)
+	ID() string // Unique ID of this Schema within the document (if any)
 	title() *string
 	description() *string
 
@@ -76,7 +76,7 @@ type Schema interface {
 
 	// ref things
 	isRef() bool
-	refTypeName() (astmodel.TypeName, error)
+	refTypeName() (astmodel.InternalTypeName, error)
 	refSchema() Schema
 }
 

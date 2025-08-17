@@ -9,7 +9,8 @@ import (
 	"context"
 	"strings"
 
-	"github.com/pkg/errors"
+	"github.com/go-logr/logr"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/codegen/pipeline/recursivetypefixer"
@@ -49,7 +50,7 @@ const UnrollRecursiveTypesStageID = "unrollRecursiveTypes"
 // a depth of 1 in practice.
 // If we were to unroll all loops (rather than just types that directly reference themselves like we're doing here) that
 // "in practice" observation may no longer hold, so we avoid doing it here (it's also more complicated to do that).
-func UnrollRecursiveTypes() *Stage {
+func UnrollRecursiveTypes(log logr.Logger) *Stage {
 	return NewStage(
 		UnrollRecursiveTypesStageID,
 		"Unroll directly recursive types since they are not supported by controller-gen",
@@ -57,7 +58,7 @@ func UnrollRecursiveTypes() *Stage {
 			result := make(astmodel.TypeDefinitionSet)
 
 			// Find object types that reference themselves
-			fixer := recursivetypefixer.NewSimpleRecursiveTypeFixer()
+			fixer := recursivetypefixer.NewSimpleRecursiveTypeFixer(log)
 
 			for _, def := range state.Definitions() {
 				updatedDef, err := fixer.Fix(def)
@@ -69,7 +70,7 @@ func UnrollRecursiveTypes() *Stage {
 				// we can't be sure it's safe to unroll, so we raise an error. This is fatal because controller-gen
 				// will error on recursive types when we run it later and we want to fail fast.
 				if !astmodel.TypeEquals(def.Type(), updatedDef.Type()) && !strings.Contains(def.Name().Name(), "Error") {
-					return nil, errors.Errorf("%q is directly recursive and cannot be unrolled because it doesn't contain 'Error'", def.Name())
+					return nil, eris.Errorf("%q is directly recursive and cannot be unrolled because it doesn't contain 'Error'", def.Name())
 				}
 
 				result.Add(updatedDef)

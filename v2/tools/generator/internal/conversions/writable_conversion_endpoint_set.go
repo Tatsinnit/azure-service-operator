@@ -22,21 +22,7 @@ func NewWritableConversionEndpointSet() WritableConversionEndpointSet {
 func (set WritableConversionEndpointSet) CreatePropertyEndpoints(destinationType astmodel.Type) int {
 	// Add an endpoint for each property we can read
 	return set.addForEachProperty(destinationType, func(prop *astmodel.PropertyDefinition) *WritableConversionEndpoint {
-		return NewWritableConversionEndpointWritingProperty(prop.PropertyName(), prop.PropertyType())
-	})
-}
-
-// CreatePropertyBagMemberEndpoints will create additional property bag item endpoints for any property on the passed instance
-// type that doesn't already have one. Returns the count of new endpoints created.
-//
-// Background: When our destination instance has a property bag, that bag can be used to stash properties from the
-// source where there is no matching destination property. We therefore iterate through each property on the *source*
-// type and create a WritableConversionEndpoint for each one so the value is stashed in the property bag.
-func (set WritableConversionEndpointSet) CreatePropertyBagMemberEndpoints(sourceType astmodel.Type) int {
-	// Add a property bag member endpoint for each property we don't already support
-	return set.addForEachProperty(sourceType, func(prop *astmodel.PropertyDefinition) *WritableConversionEndpoint {
-		name := string(prop.PropertyName())
-		return NewWritableConversionEndpointWritingPropertyBagMember(name, prop.PropertyType())
+		return NewWritableConversionEndpointWritingProperty(prop)
 	})
 }
 
@@ -90,4 +76,9 @@ func (set WritableConversionEndpointSet) addForEachProperty(
 	}
 
 	return count
+}
+
+// Delete removes a specific endpoint from the set
+func (set WritableConversionEndpointSet) Delete(name string) {
+	delete(set, name)
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/internal/set"
 )
@@ -52,6 +53,11 @@ func (ft *FlaggedType) Element() Type {
 // HasFlag tests to see if this flagged type has the specified flag
 func (ft *FlaggedType) HasFlag(flag TypeFlag) bool {
 	return ft.flags.Contains(flag)
+}
+
+// Flags returns all the flags present on this type
+func (ft *FlaggedType) Flags() []TypeFlag {
+	return set.AsSortedSlice(ft.flags)
 }
 
 // WithFlag returns a new FlaggedType with the specified flag added
@@ -102,13 +108,21 @@ func (ft *FlaggedType) References() TypeNameSet {
 
 // AsType renders as a Go abstract syntax tree for a type
 // (yes this says ast.Expr but that is what the Go 'dst' package uses for types)
-func (ft *FlaggedType) AsType(ctx *CodeGenerationContext) dst.Expr {
-	return ft.element.AsType(ctx)
+func (ft *FlaggedType) AsTypeExpr(codeGenerationContext *CodeGenerationContext) (dst.Expr, error) {
+	result, err := ft.element.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrapf(err, "creating inner expression for flagged type")
+	}
+
+	return result, nil
 }
 
 // AsDeclarations renders as a Go abstract syntax tree for a declaration
-func (ft *FlaggedType) AsDeclarations(ctx *CodeGenerationContext, declContext DeclarationContext) []dst.Decl {
-	return ft.element.AsDeclarations(ctx, declContext)
+func (ft *FlaggedType) AsDeclarations(
+	codeGenerationContext *CodeGenerationContext,
+	declContext DeclarationContext,
+) ([]dst.Decl, error) {
+	return ft.element.AsDeclarations(codeGenerationContext, declContext)
 }
 
 // AsZero renders an expression for the "zero" value of the type
@@ -166,7 +180,7 @@ func (ft *FlaggedType) Unwrap() Type {
 // WriteDebugDescription adds a description of the current type to the passed builder
 // builder receives the full description, including nested types.
 // definitions is a dictionary for resolving named types.
-func (ft *FlaggedType) WriteDebugDescription(builder *strings.Builder, currentPackage PackageReference) {
+func (ft *FlaggedType) WriteDebugDescription(builder *strings.Builder, currentPackage InternalPackageReference) {
 	if ft == nil {
 		builder.WriteString("<nilFlagged>")
 		return

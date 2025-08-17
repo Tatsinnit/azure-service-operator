@@ -10,6 +10,8 @@ import (
 
 	. "github.com/onsi/gomega"
 
+	"github.com/go-logr/logr"
+
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/config"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/test"
@@ -49,15 +51,15 @@ func TestGolden_InjectJsonSerializationTests(t *testing.T) {
 	defs := make(astmodel.TypeDefinitionSet)
 	defs.AddAll(resourceV1, specV1, statusV1, resourceV2, specV2, statusV2, test.Address2021)
 
-	state := NewState().WithDefinitions(defs)
+	state := NewState(defs)
 
 	cfg := config.NewConfiguration()
 	finalState, err := RunTestPipeline(
 		state,
 		CreateStorageTypes(),            // First create the storage types
 		CreateConversionGraph(cfg, "v"), // Then, create the conversion graph showing relationships
-		InjectPropertyAssignmentFunctions(cfg, idFactory),
-		InjectJsonSerializationTests(idFactory))
+		InjectPropertyAssignmentFunctions(cfg, idFactory, logr.Discard()),
+		InjectJSONSerializationTests(idFactory))
 	g.Expect(err).To(Succeed())
 
 	/*

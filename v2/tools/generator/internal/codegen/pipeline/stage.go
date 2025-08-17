@@ -10,12 +10,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
-	"k8s.io/klog/v2"
-
-	"github.com/Azure/azure-service-operator/v2/internal/set"
-	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
 
 // Stage represents a composable stage of processing that can transform or process the set
@@ -26,7 +22,9 @@ type Stage struct {
 	// Description of the stage to use when logging
 	description string
 	// Stage implementation
-	action func(context.Context, *State) (*State, error)
+	action stageAction
+	// Optional diagnostic generator
+	diagnostic DiagnosticAction
 	// Tag used for filtering
 	targets []Target
 	// Identifiers for other stages that must be completed before this one
@@ -34,6 +32,10 @@ type Stage struct {
 	// Identifiers for other stages that must be completed after this one
 	postrequisites []string
 }
+
+type stageAction func(context.Context, *State) (*State, error)
+
+type DiagnosticAction func(settings *DebugSettings, index int, state *State) error
 
 // NewStage creates a new pipeline stage that's ready for execution
 func NewStage(
@@ -48,74 +50,8 @@ func NewStage(
 	}
 }
 
-// NewLegacyStage is a legacy constructor for creating a new pipeline stage that's ready for execution
-// DO NOT USE THIS FOR ANY NEW STAGES - it's kept for compatibility with an older style of pipeline stages that will be
-// migrated to the new style over time.
-func NewLegacyStage(
-	id string,
-	description string,
-	action func(context.Context, astmodel.TypeDefinitionSet) (astmodel.TypeDefinitionSet, error),
-) *Stage {
-	if !knownLegacyStages.Contains(id) {
-		msg := fmt.Sprintf(
-			"No new legacy stages (use NewStage instead): %s is not the id of a known legacy stage",
-			id)
-		panic(msg)
-	}
-
-	return NewStage(
-		id,
-		description,
-		func(ctx context.Context, state *State) (*State, error) {
-			types, err := action(ctx, state.Definitions())
-			if err != nil {
-				return nil, err
-			}
-
-			return state.WithDefinitions(types), nil
-		})
-}
-
-var knownLegacyStages = set.Make(
-	"addCrossResourceReferences",
-	"addCrossplaneAtProviderProperty",
-	"addCrossplaneEmbeddedResourceSpec",
-	"addCrossplaneEmbeddedResourceStatus",
-	"addCrossplaneForProviderProperty",
-	"addCrossplaneOwnerProperties",
-	"allof-anyof-objects",
-	"applyArmConversionInterface",
-	"assertTypesStructureValid",
-	"augmentSpecWithStatus",
-	"collapseCrossGroupReferences",
-	"createArmTypes",
-	"deleteGenerated",
-	"determineResourceOwnership",
-	"ensureArmTypeExistsForEveryType",
-	"exportControllerResourceRegistrations",
-	"exportPackages",
-	"flattenProperties",
-	"flattenResources",
-	"injectHubFunction",
-	"injectOriginalGVKFunction",
-	"injectOriginalVersionFunction",
-	"injectOriginalVersionProperty",
-	"loadSchema",
-	"loadTypes",
-	"markStorageVersion",
-	"nameTypes",
-	"pluralizeNames",
-	"propertyRewrites",
-	"removeAliases",
-	"removeEmbeddedResources",
-	"replaceAnyTypeWithJSON",
-	"reportTypesAndVersions",
-	"rogueCheck",
-	"simplifyDefinitions",
-	"stripUnreferenced")
-
-// HasId returns true if this stage has the specified id, false otherwise
-func (stage *Stage) HasId(id string) bool {
+// HasID returns true if this stage has the specified id, false otherwise
+func (stage *Stage) HasID(id string) bool {
 	return stage.id == id
 }
 
@@ -181,8 +117,8 @@ func (stage *Stage) IsUsedFor(target Target) bool {
 	return false
 }
 
-// Id returns the unique identifier for this stage
-func (stage *Stage) Id() string {
+// ID returns the unique identifier for this stage
+func (stage *Stage) ID() string {
 	return stage.id
 }
 
@@ -194,7 +130,7 @@ func (stage *Stage) Description() string {
 // Run is used to execute the action associated with this stage
 func (stage *Stage) Run(ctx context.Context, state *State) (*State, error) {
 	if err := stage.checkPreconditions(state); err != nil {
-		return nil, errors.Wrapf(err, "preconditions of stage %s not met", stage.id)
+		return nil, eris.Wrapf(err, "preconditions of stage %s not met", stage.id)
 	}
 
 	resultState, err := stage.action(ctx, state)
@@ -205,10 +141,17 @@ func (stage *Stage) Run(ctx context.Context, state *State) (*State, error) {
 	return resultState.WithSeenStage(stage.id), nil
 }
 
+// RunDiagnostic triggers our attached diagnostic generator, if any
+func (stage *Stage) RunDiagnostic(settings *DebugSettings, index int, state *State) error {
+	if stage.diagnostic == nil {
+		return nil
+	}
+
+	return stage.diagnostic(settings, index, state)
+}
+
 // checkPreconditions checks to ensure the preconditions of this stage have been satisfied
 func (stage *Stage) checkPreconditions(state *State) error {
-	klog.V(3).Infof("Checking requisites of %s", stage.Id())
-
 	if err := stage.checkPrerequisites(state); err != nil {
 		return err
 	}
@@ -225,14 +168,8 @@ func (stage *Stage) checkPrerequisites(state *State) error {
 	var errs []error
 	for _, prereq := range stage.prerequisites {
 		satisfied := state.stagesSeen.Contains(prereq)
-		if satisfied {
-			klog.V(3).Infof("[✓] Required prerequisite %s satisfied", prereq)
-		} else {
-			klog.V(3).Infof("[✗] Required prerequisite %s NOT satisfied", prereq)
-		}
-
 		if !satisfied {
-			errs = append(errs, errors.Errorf("prerequisite %q of stage %q NOT satisfied.", prereq, stage.Id()))
+			errs = append(errs, eris.Errorf("prerequisite %q of stage %q NOT satisfied.", prereq, stage.ID()))
 		}
 	}
 
@@ -245,8 +182,7 @@ func (stage *Stage) checkPostrequisites(state *State) error {
 	for _, postreq := range stage.postrequisites {
 		early := state.stagesSeen.Contains(postreq)
 		if early {
-			klog.V(3).Infof("[✗] Required postrequisite %s satisfied early", postreq)
-			errs = append(errs, errors.Errorf("postrequisite %q satisfied of stage %q early.", postreq, stage.Id()))
+			errs = append(errs, eris.Errorf("postrequisite %q satisfied of stage %q early.", postreq, stage.ID()))
 		}
 	}
 
@@ -262,4 +198,10 @@ func (stage *Stage) Postrequisites() []string {
 // If no targets are returned, this stage should always be used
 func (stage *Stage) Targets() []Target {
 	return stage.targets
+}
+
+// AddDiagnostic specifies a diagnostic generator for this stage.
+// The generator will be used if the generator is run with a --debug flag`
+func (stage *Stage) AddDiagnostic(diagnostic DiagnosticAction) {
+	stage.diagnostic = diagnostic
 }

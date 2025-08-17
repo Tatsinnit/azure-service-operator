@@ -10,17 +10,20 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/core"
+	. "github.com/Azure/azure-service-operator/v2/internal/logging"
+
 	"github.com/go-logr/logr"
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	. "github.com/Azure/azure-service-operator/v2/internal/logging"
 	"github.com/Azure/azure-service-operator/v2/internal/ownerutil"
 	"github.com/Azure/azure-service-operator/v2/internal/resolver"
+	asocel "github.com/Azure/azure-service-operator/v2/internal/util/cel"
 	"github.com/Azure/azure-service-operator/v2/internal/util/kubeclient"
+	"github.com/Azure/azure-service-operator/v2/internal/util/to"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
+	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/core"
 )
 
 // LogObj logs the obj
@@ -28,9 +31,17 @@ func LogObj(log logr.Logger, level int, note string, obj genruntime.MetaObject) 
 	if log.V(level).Enabled() {
 		ourAnnotations := make(map[string]string)
 		for key, value := range obj.GetAnnotations() {
-			if strings.HasPrefix(key, "serviceoperator.azure.com") {
-				ourAnnotations[key] = value
+			if !strings.HasPrefix(key, "serviceoperator.azure.com") {
+				// Skip annotations that aren't ours
+				continue
 			}
+
+			if strings.EqualFold(key, PollerResumeTokenAnnotation) {
+				// Redact annotations with sensitive values
+				value = "REDACTED"
+			}
+
+			ourAnnotations[key] = value
 		}
 
 		keysAndValues := []interface{}{
@@ -39,7 +50,8 @@ func LogObj(log logr.Logger, level int, note string, obj genruntime.MetaObject) 
 			"generation", obj.GetGeneration(),
 			"uid", obj.GetUID(),
 			"ownerReferences", obj.GetOwnerReferences(),
-			"creationTimestamp", obj.GetCreationTimestamp(),
+			"creationTimestamp", obj.GetCreationTimestamp().String(),
+			"deletionTimestamp", to.Value(obj.GetDeletionTimestamp()).String(),
 			"finalizers", obj.GetFinalizers(),
 			"annotations", ourAnnotations,
 			// Use fmt here to ensure the output uses the String() method, which log.Info doesn't seem to do by default
@@ -47,13 +59,13 @@ func LogObj(log logr.Logger, level int, note string, obj genruntime.MetaObject) 
 		}
 
 		if armObj, ok := obj.(genruntime.ARMMetaObject); ok {
-			keysAndValues = append(keysAndValues, "owner", armObj.Owner())
+			keysAndValues = append(keysAndValues, "owner", to.Value(armObj.Owner()).String())
 		}
 
 		// Log just what we're interested in. We avoid logging the whole obj
 		// due to possible risk of disclosing secrets or other data that is "private" and users may
 		// not want in logs.
-		// nolint: logrlint // We can see the keys and values, above, but the linter can't
+		//nolint: logrlint // We can see the keys and values, above, but the linter can't
 		log.V(level).Info(note, keysAndValues...)
 	}
 }
@@ -65,24 +77,24 @@ type ARMOwnedResourceReconcilerCommon struct {
 
 // NeedsToWaitForOwner returns false if the owner doesn't need to be waited for, and true if it does.
 func (r *ARMOwnedResourceReconcilerCommon) NeedsToWaitForOwner(ctx context.Context, log logr.Logger, obj genruntime.ARMOwnedMetaObject) (bool, error) {
-	owner, err := r.ResourceResolver.ResolveOwner(ctx, obj)
+	ownerDetails, err := r.ResourceResolver.ResolveOwner(ctx, obj)
 	if err != nil {
 		var typedErr *core.ReferenceNotFound
-		if errors.As(err, &typedErr) {
+		if eris.As(err, &typedErr) {
 			log.V(Info).Info("Owner does not yet exist", "NamespacedName", typedErr.NamespacedName)
 			return true, nil
 		}
 
-		return true, errors.Wrap(err, "failed to get owner")
+		return true, eris.Wrap(err, "failed to get owner")
 	}
 
 	// No need to wait for resources that don't have an owner
-	if owner == nil {
+	if !ownerDetails.FoundKubernetesOwner() {
 		return false, nil
 	}
 
 	// If the owner isn't ready, wait
-	ready := genruntime.GetReadyCondition(owner)
+	ready := genruntime.GetReadyCondition(ownerDetails.Owner)
 	isOwnerReady := ready != nil && ready.Status == metav1.ConditionTrue
 	if !isOwnerReady {
 		var readyStr string
@@ -99,22 +111,23 @@ func (r *ARMOwnedResourceReconcilerCommon) NeedsToWaitForOwner(ctx context.Conte
 }
 
 func (r *ARMOwnedResourceReconcilerCommon) ApplyOwnership(ctx context.Context, log logr.Logger, obj genruntime.ARMOwnedMetaObject) error {
-	owner, err := r.ResourceResolver.ResolveOwner(ctx, obj)
+	ownerDetails, err := r.ResourceResolver.ResolveOwner(ctx, obj)
 	if err != nil {
-		return errors.Wrap(err, "failed to get owner")
+		return eris.Wrap(err, "failed to get owner")
 	}
 
-	if owner == nil {
+	if !ownerDetails.FoundKubernetesOwner() {
+		// If no owner is expected or the owner is only in ARM, no need to assign ownership in Kubernetes
 		return nil
 	}
 
-	ownerRef := ownerutil.MakeOwnerReference(owner)
+	ownerRef := ownerutil.MakeOwnerReference(ownerDetails.Owner)
 
 	obj.SetOwnerReferences(ownerutil.EnsureOwnerRef(obj.GetOwnerReferences(), ownerRef))
 	log.V(Info).Info(
 		"Set owner reference",
-		"ownerGvk", owner.GetObjectKind().GroupVersionKind(),
-		"ownerName", owner.GetName())
+		"ownerGvk", ownerDetails.Owner.GetObjectKind().GroupVersionKind(),
+		"ownerName", ownerDetails.Owner.GetName())
 
 	return nil
 }
@@ -128,7 +141,7 @@ func (r *ARMOwnedResourceReconcilerCommon) ClaimResource(ctx context.Context, lo
 	}
 
 	if waitForOwner {
-		err = errors.Errorf("Owner %q cannot be found. Progress is blocked until the owner is created.", obj.Owner().String())
+		err = eris.Errorf("Owner %q cannot be found. Progress is blocked until the owner is created.", obj.Owner().String())
 		err = conditions.NewReadyConditionImpactingError(err, conditions.ConditionSeverityWarning, conditions.ReasonWaitingForOwner)
 		return err
 	}
@@ -147,21 +160,28 @@ func (r *ARMOwnedResourceReconcilerCommon) ClaimResource(ctx context.Context, lo
 }
 
 type ReconcilerCommon struct {
-	KubeClient         kubeclient.Client
-	PositiveConditions *conditions.PositiveConditionBuilder
+	KubeClient          kubeclient.Client
+	PositiveConditions  *conditions.PositiveConditionBuilder
+	ExpressionEvaluator asocel.ExpressionEvaluator
 }
 
 func ClassifyResolverError(err error) error {
 	// If it's specifically secret not found, say so
 	var secretErr *core.SecretNotFound
-	if errors.As(err, &secretErr) {
+	if eris.As(err, &secretErr) {
 		return conditions.NewReadyConditionImpactingError(err, conditions.ConditionSeverityWarning, conditions.ReasonSecretNotFound)
 	}
 
 	// If it's specifically configmap not found, say so
 	var configMapErr *core.ConfigMapNotFound
-	if errors.As(err, &configMapErr) {
+	if eris.As(err, &configMapErr) {
 		return conditions.NewReadyConditionImpactingError(err, conditions.ConditionSeverityWarning, conditions.ReasonConfigMapNotFound)
+	}
+
+	// If it's subscription mismatch, classify that
+	var subscriptionMismatchErr *core.SubscriptionMismatch
+	if eris.As(err, &subscriptionMismatchErr) {
+		return conditions.NewReadyConditionImpactingError(err, conditions.ConditionSeverityError, conditions.ReasonFailed)
 	}
 
 	// Everything else is ReferenceNotFound. This is maybe a bit of a lie but secrets are also references and we want to make sure

@@ -8,12 +8,14 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"strings"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/config"
+	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/functions"
 )
 
 const AddOperatorSpecStageID = "addOperatorSpec"
@@ -29,34 +31,54 @@ func AddOperatorSpec(configuration *config.Configuration, idFactory astmodel.Ide
 			// ConfigMappings
 			exportedTypeNameConfigMaps := NewExportedTypeNameProperties()
 
-			for _, resource := range astmodel.FindResourceDefinitions(defs) {
+			for _, resource := range defs.AllResources() {
 				newDefs, exportedConfigMaps, err := createOperatorSpecIfNeeded(defs, configuration, idFactory, resource)
 				if err != nil {
 					return nil, err
 				}
 				result.AddTypes(newDefs)
 				exportedTypeNameConfigMaps.Add(resource.Name(), exportedConfigMaps)
+
+				// Add the DynamicConfigMapExporter and DynamicSecretExporter to the resources which need it
+				rt := resource.Type().(*astmodel.ResourceType)
+				dynamicConfigMapExporter := functions.NewConfigMapExporterInterface(
+					resource.Name(),
+					rt,
+					idFactory)
+				dynamicSecretExporter := functions.NewSecretsExporterInterface(
+					resource.Name(),
+					rt,
+					idFactory)
+
+				rt = rt.WithInterface(dynamicConfigMapExporter.ToInterfaceImplementation())
+				rt = rt.WithInterface(dynamicSecretExporter.ToInterfaceImplementation())
+				result.Add(resource.WithType(rt))
 			}
 
-			// confirm that all the Azure generated secrets were used. Note that this also indirectly confirms that
-			// this property was only used on resources, since that's the only place we try to check it from. If it's
-			// set on anything else it will be labeled unconsumed.
-			err := configuration.ObjectModelConfiguration.VerifyAzureGeneratedSecretsConsumed()
+			// confirm that operator spec specific configuration was used. Note that this also indirectly confirms that
+			// these properties were only used on resources, since that's the only place we try to check them from. If
+			// they are set on anything else it will be labeled unconsumed.
+			err := configuration.ObjectModelConfiguration.AzureGeneratedSecrets.VerifyConsumed()
 			if err != nil {
 				return nil, err
 			}
-			err = configuration.ObjectModelConfiguration.VerifyAzureGeneratedConfigsConsumed()
+			err = configuration.ObjectModelConfiguration.GeneratedConfigs.VerifyConsumed()
 			if err != nil {
 				return nil, err
 			}
-			err = configuration.ObjectModelConfiguration.VerifyExportAsConfigMapPropertyNameConsumed()
+			err = configuration.ObjectModelConfiguration.ManualConfigs.VerifyConsumed()
+			if err != nil {
+				return nil, err
+			}
+			err = configuration.ObjectModelConfiguration.OperatorSpecProperties.VerifyConsumed()
 			if err != nil {
 				return nil, err
 			}
 
-			result = defs.OverlayWith(result)
-
-			return state.WithDefinitions(result).WithGeneratedConfigMaps(exportedTypeNameConfigMaps), nil
+			return StateWithData(
+				state.WithOverlaidDefinitions(result),
+				ExportedConfigMaps,
+				exportedTypeNameConfigMaps), nil
 		})
 }
 
@@ -64,46 +86,41 @@ func createOperatorSpecIfNeeded(
 	defs astmodel.TypeDefinitionSet,
 	configuration *config.Configuration,
 	idFactory astmodel.IdentifierFactory,
-	resource astmodel.TypeDefinition) (astmodel.TypeDefinitionSet, ExportedProperties, error) {
-
+	resource astmodel.TypeDefinition,
+) (astmodel.TypeDefinitionSet, ExportedProperties, error) {
 	resolved, err := defs.ResolveResourceSpecAndStatus(resource)
 	if err != nil {
-		return nil, nil, errors.Wrapf(err, "resolving resource spec and status for %s", resource.Name())
+		return nil, nil, eris.Wrapf(err, "resolving resource spec and status for %s", resource.Name())
 	}
 
-	hasSecrets := false
-	secrets, err := configuration.ObjectModelConfiguration.AzureGeneratedSecrets(resolved.ResourceDef.Name())
-	if err == nil {
-		hasSecrets = true
-	} else if err != nil {
-		// If error is just that there's no configured secrets, proceed
-		if !config.IsNotConfiguredError(err) {
-			return nil, nil, errors.Wrapf(err, "reading azureGeneratedSecrets for %s", resolved.ResourceDef.Name())
-		}
-	}
+	// Look up Azure generated secrets for this resource
+	secrets, _ := configuration.ObjectModelConfiguration.AzureGeneratedSecrets.Lookup(resolved.ResourceDef.Name())
 
+	// Look up custom operatorSpec properties for this resource
+	operatorSpecProperties, _ := configuration.ObjectModelConfiguration.OperatorSpecProperties.Lookup(resolved.ResourceDef.Name())
+
+	// Lookup any properties that might be exported to config maps
 	configs, exportedProperties, err := getConfigMapProperties(defs, configuration, resource)
 	if err != nil {
-		return nil, nil, errors.Wrapf(err, "finding properties allowed to export as config maps")
-	}
-
-	hasConfigMapProperties := len(configs) != 0
-
-	if !hasSecrets && !hasConfigMapProperties {
-		// We don't need to make an OperatorSpec type
-		return nil, nil, nil
+		return nil, nil, eris.Wrapf(err, "finding properties allowed to export as config maps")
 	}
 
 	builder := newOperatorSpecBuilder(configuration, idFactory, resolved.ResourceDef)
-	builder.addSecretsToOperatorSpec(secrets)
+	builder.addSecrets(secrets)
 	builder.addConfigs(configs)
+	builder.addDynamicSecrets()
+	builder.addDynamicConfigMaps()
+	builder.addCustomProperties(operatorSpecProperties)
 
-	operatorSpec := builder.build()
+	operatorSpec, err := builder.build()
+	if err != nil {
+		return nil, nil, eris.Wrapf(err, "building OperatorSpec for %q", resolved.ResourceDef.Name())
+	}
 
 	propInjector := astmodel.NewPropertyInjector()
 	updatedDef, err := propInjector.Inject(resolved.SpecDef, builder.newOperatorSpecProperty(operatorSpec))
 	if err != nil {
-		return nil, nil, errors.Wrapf(err, "couldn't add OperatorSpec to spec %q", resolved.SpecDef.Name())
+		return nil, nil, eris.Wrapf(err, "couldn't add OperatorSpec to spec %q", resolved.SpecDef.Name())
 	}
 
 	result := make(astmodel.TypeDefinitionSet)
@@ -134,93 +151,89 @@ func (ctx configMapContext) withTypeName(typeName astmodel.TypeName) configMapCo
 	}
 }
 
-var identityConfigMapObjectTypeVisit = astmodel.MakeIdentityVisitOfObjectType(func(ot *astmodel.ObjectType, prop *astmodel.PropertyDefinition, ctx interface{}) (interface{}, error) {
-	typedCtx := ctx.(configMapContext)
-	typedCtx = typedCtx.withPathElement(prop)
-	return typedCtx, nil
-})
+var identityConfigMapObjectTypeVisit = astmodel.MakeIdentityVisitOfObjectType(
+	func(ot *astmodel.ObjectType, prop *astmodel.PropertyDefinition, ctx configMapContext) (configMapContext, error) {
+		return ctx.withPathElement(prop), nil
+	})
 
 type configMapTypeWalker struct {
-	configuration      *config.Configuration
-	exportedProperties ExportedProperties
-	walker             *astmodel.TypeWalker
+	configuredProperties map[string]string
+	exportedProperties   ExportedProperties
+	walker               *astmodel.TypeWalker[configMapContext]
 }
 
-func newConfigMapTypeWalker(defs astmodel.TypeDefinitionSet, configuration *config.Configuration) *configMapTypeWalker {
+func newConfigMapTypeWalker(
+	defs astmodel.TypeDefinitionSet,
+	paths map[string]string,
+) *configMapTypeWalker {
 	result := &configMapTypeWalker{
-		configuration:      configuration,
-		exportedProperties: make(ExportedProperties),
+		configuredProperties: paths,
+		exportedProperties:   make(ExportedProperties),
 	}
 
-	visitor := astmodel.TypeVisitorBuilder{
+	visitor := astmodel.TypeVisitorBuilder[configMapContext]{
 		VisitObjectType:   result.catalogObjectConfigMapProperties,
 		VisitResourceType: result.includeSpecStatus,
 	}.Build()
 	walker := astmodel.NewTypeWalker(defs, visitor)
-	walker.MakeContext = func(it astmodel.TypeName, ctx interface{}) (interface{}, error) {
-		if ctx == nil {
+	walker.MakeContext = func(it astmodel.InternalTypeName, ctx configMapContext) (configMapContext, error) {
+		if ctx.typeName == nil {
 			return configMapContext{
 				typeName: it,
 				path:     nil,
 			}, nil
 		}
 
-		typedCtx := ctx.(configMapContext)
-		return typedCtx.withTypeName(it), nil
+		return ctx.withTypeName(it), nil
 	}
 	result.walker = walker
 
 	return result
 }
 
-func (w *configMapTypeWalker) includeSpecStatus(this *astmodel.TypeVisitor, it *astmodel.ResourceType, ctx interface{}) (astmodel.Type, error) {
-	typedCtx := ctx.(configMapContext)
-
+func (w *configMapTypeWalker) includeSpecStatus(
+	this *astmodel.TypeVisitor[configMapContext],
+	it *astmodel.ResourceType,
+	ctx configMapContext,
+) (astmodel.Type, error) {
 	specProp, ok := it.Property("Spec")
 	if !ok {
-		return nil, errors.Errorf("couldn't find resource spec")
+		return nil, eris.Errorf("couldn't find resource spec")
 	}
-	_, err := this.Visit(it.SpecType(), typedCtx.withPathElement(specProp))
+	_, err := this.Visit(it.SpecType(), ctx.withPathElement(specProp))
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to visit resource spec type %q", it.SpecType())
+		return nil, eris.Wrapf(err, "failed to visit resource spec type %q", it.SpecType())
 	}
 
 	statusProp, ok := it.Property("Status")
 	if !ok {
-		return nil, errors.Errorf("couldn't find resource status")
+		return nil, eris.Errorf("couldn't find resource status")
 	}
-	_, err = this.Visit(it.StatusType(), typedCtx.withPathElement(statusProp))
+	_, err = this.Visit(it.StatusType(), ctx.withPathElement(statusProp))
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to visit resource status type %q", it.StatusType())
+		return nil, eris.Wrapf(err, "failed to visit resource status type %q", it.StatusType())
 	}
 
 	// We're not planning on actually modifying any types here, so we can just return the type we started with
 	return it, nil
 }
 
-func (w *configMapTypeWalker) catalogObjectConfigMapProperties(this *astmodel.TypeVisitor, ot *astmodel.ObjectType, ctx interface{}) (astmodel.Type, error) {
-	typedCtx := ctx.(configMapContext)
-
+func (w *configMapTypeWalker) catalogObjectConfigMapProperties(
+	this *astmodel.TypeVisitor[configMapContext],
+	ot *astmodel.ObjectType,
+	ctx configMapContext,
+) (astmodel.Type, error) {
 	var errs []error
-
 	ot.Properties().ForEach(func(prop *astmodel.PropertyDefinition) {
-		configMapPropertyName, err := w.configuration.ObjectModelConfiguration.ExportAsConfigMapPropertyName(typedCtx.typeName, prop.PropertyName())
-		if err != nil {
-			if config.IsNotConfiguredError(err) {
-				return // Skip these properties
+		path := append(ctx.path, prop)
+
+		// Transform the path into a string and check if we have that path configured
+		pathStr := makeJSONPathFromProps(path)
+		for propName, propPath := range w.configuredProperties {
+			if propPath == pathStr {
+				w.exportedProperties[propName] = path
 			}
-			errs = append(errs, err)
-			return
 		}
-
-		path := append(typedCtx.path, prop)
-
-		// Ensure we don't already have a property of this name. If we do, that's a problem
-		if _, ok := w.exportedProperties[configMapPropertyName]; ok {
-			errs = append(errs, errors.Errorf("cannot have 2 ConfigMap properties with the same name: %q", configMapPropertyName))
-			return
-		}
-		w.exportedProperties[configMapPropertyName] = path
 	})
 
 	// Propagate errors
@@ -236,28 +249,47 @@ func (w *configMapTypeWalker) catalogObjectConfigMapProperties(this *astmodel.Ty
 func (w *configMapTypeWalker) Walk(def astmodel.TypeDefinition) (ExportedProperties, error) {
 	_, err := w.walker.Walk(def)
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to walk definition %s", def.Name())
+		return nil, eris.Wrapf(err, "failed to walk definition %s", def.Name())
 	}
 
 	return w.exportedProperties, nil
 }
 
+// TODO: Consider actually using a real JSONPath library here...?
+func makeJSONPathFromProps(props []*astmodel.PropertyDefinition) string {
+	builder := strings.Builder{}
+	builder.WriteString("$") // Always starts with a "$" which is the root
+	for _, prop := range props {
+		builder.WriteString(".") // Always starts with a dot
+		builder.WriteString(prop.PropertyName().String())
+	}
+
+	return builder.String()
+}
+
 func getConfigMapProperties(
 	defs astmodel.TypeDefinitionSet,
 	configuration *config.Configuration,
-	resource astmodel.TypeDefinition) ([]string, ExportedProperties, error) {
+	resource astmodel.TypeDefinition,
+) ([]string, ExportedProperties, error) {
+	configMapPaths, configMapPathsOk := configuration.ObjectModelConfiguration.GeneratedConfigs.Lookup(resource.Name())
+	additionalConfigMaps, additionalConfigMapsOk := configuration.ObjectModelConfiguration.ManualConfigs.Lookup(resource.Name())
 
-	walker := newConfigMapTypeWalker(defs, configuration)
+	// Fast out if we don't have anything configured
+	if !configMapPathsOk && !additionalConfigMapsOk {
+		return nil, nil, nil
+	}
+
+	walker := newConfigMapTypeWalker(defs, configMapPaths)
 	exportedConfigMapProperties, err := walker.Walk(resource)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	additionalConfigMaps, err := configuration.ObjectModelConfiguration.AzureGeneratedConfigs(resource.Name())
-	if err != nil {
-		// If error is just that there's no configured secrets, proceed
-		if !config.IsNotConfiguredError(err) {
-			return nil, nil, errors.Wrapf(err, "reading azureGeneratedConfigs for %s", resource.Name())
+	// There should be an exported configMap property for every configured configMapPath
+	for name, path := range configMapPaths {
+		if _, ok := exportedConfigMapProperties[name]; !ok {
+			return nil, nil, eris.Errorf("$generatedConfigs property %q not found at path %q", name, path)
 		}
 	}
 
@@ -271,40 +303,32 @@ func getConfigMapProperties(
 }
 
 type operatorSpecBuilder struct {
-	idFactory     astmodel.IdentifierFactory
-	configuration *config.Configuration
-	resource      astmodel.TypeDefinition
-	definitions   astmodel.TypeDefinitionSet
-	operatorSpec  astmodel.TypeDefinition
+	idFactory        astmodel.IdentifierFactory
+	configuration    *config.Configuration
+	resource         astmodel.TypeDefinition
+	definitions      astmodel.TypeDefinitionSet
+	operatorSpecName astmodel.InternalTypeName
+	operatorSpecType *astmodel.ObjectType
+	errs             []error // any errors that occurred while building the operator spec
 }
 
 func newOperatorSpecBuilder(
 	configuration *config.Configuration,
 	idFactory astmodel.IdentifierFactory,
-	resource astmodel.TypeDefinition) *operatorSpecBuilder {
+	resource astmodel.TypeDefinition,
+) *operatorSpecBuilder {
+	name := idFactory.CreateIdentifier(resource.Name().Name()+"OperatorSpec", astmodel.Exported)
+
 	result := &operatorSpecBuilder{
-		idFactory:     idFactory,
-		configuration: configuration,
-		resource:      resource,
-		definitions:   make(astmodel.TypeDefinitionSet),
+		idFactory:        idFactory,
+		configuration:    configuration,
+		resource:         resource,
+		definitions:      make(astmodel.TypeDefinitionSet),
+		operatorSpecName: resource.Name().WithName(name),
+		operatorSpecType: astmodel.NewObjectType(),
 	}
 
-	result.operatorSpec = result.newEmptyOperatorSpec()
-
 	return result
-}
-
-func (b *operatorSpecBuilder) newEmptyOperatorSpec() astmodel.TypeDefinition {
-	name := b.idFactory.CreateIdentifier(b.resource.Name().Name()+"OperatorSpec", astmodel.Exported)
-	operatorSpecTypeName := b.resource.Name().WithName(name)
-	operatorSpec := astmodel.NewObjectType()
-
-	operatorSpecDefinition := astmodel.MakeTypeDefinition(operatorSpecTypeName, operatorSpec)
-	description := "Details for configuring operator behavior. Fields in this struct are " +
-		"interpreted by the operator directly rather than being passed to Azure"
-	operatorSpecDefinition = operatorSpecDefinition.WithDescription(description)
-
-	return operatorSpecDefinition
 }
 
 func (b *operatorSpecBuilder) newOperatorSpecProperty(operatorSpec astmodel.TypeDefinition) *astmodel.PropertyDefinition {
@@ -319,38 +343,50 @@ func (b *operatorSpecBuilder) newOperatorSpecProperty(operatorSpec astmodel.Type
 	return prop
 }
 
-func (b *operatorSpecBuilder) newSecretsProperty(secretsTypeName astmodel.TypeName) *astmodel.PropertyDefinition {
-	secretProp := astmodel.NewPropertyDefinition(
-		b.idFactory.CreatePropertyName(astmodel.OperatorSpecSecretsProperty, astmodel.Exported),
-		b.idFactory.CreateStringIdentifier(astmodel.OperatorSpecSecretsProperty, astmodel.NotExported),
-		secretsTypeName)
-	secretProp = secretProp.WithDescription("configures where to place Azure generated secrets.")
-	secretProp = secretProp.MakeTypeOptional()
+func (b *operatorSpecBuilder) newProperty(typ astmodel.Type, propertyName string, description string) *astmodel.PropertyDefinition {
+	prop := astmodel.NewPropertyDefinition(
+		b.idFactory.CreatePropertyName(propertyName, astmodel.Exported),
+		b.idFactory.CreateStringIdentifier(propertyName, astmodel.NotExported),
+		typ)
+	prop = prop.WithDescription(description)
+	prop = prop.MakeTypeOptional()
 
-	return secretProp
+	return prop
+}
+
+func (b *operatorSpecBuilder) newSecretsProperty(secretTypeName astmodel.TypeName) *astmodel.PropertyDefinition {
+	return b.newProperty(
+		secretTypeName,
+		astmodel.OperatorSpecSecretsProperty,
+		"configures where to place Azure generated secrets.")
 }
 
 func (b *operatorSpecBuilder) newConfigMapProperty(configMapTypeName astmodel.TypeName) *astmodel.PropertyDefinition {
-	configMapProp := astmodel.NewPropertyDefinition(
-		b.idFactory.CreatePropertyName(astmodel.OperatorSpecConfigMapsProperty, astmodel.Exported),
-		b.idFactory.CreateStringIdentifier(astmodel.OperatorSpecConfigMapsProperty, astmodel.NotExported),
-		configMapTypeName)
-	configMapProp = configMapProp.WithDescription("configures where to place operator written ConfigMaps.")
-	configMapProp = configMapProp.MakeTypeOptional()
-
-	return configMapProp
+	return b.newProperty(
+		configMapTypeName,
+		astmodel.OperatorSpecConfigMapsProperty,
+		"configures where to place operator written ConfigMaps.")
 }
 
-func (b *operatorSpecBuilder) addSecretsToOperatorSpec(
-	azureGeneratedSecrets []string) {
+func (b *operatorSpecBuilder) newDynamicConfigMapProperty() *astmodel.PropertyDefinition {
+	return b.newProperty(
+		astmodel.DestinationExpressionCollectionType,
+		astmodel.OperatorSpecConfigMapExpressionsProperty,
+		"configures where to place operator written dynamic ConfigMaps (created with CEL expressions).")
+}
 
+func (b *operatorSpecBuilder) newDynamicSecretProperty() *astmodel.PropertyDefinition {
+	return b.newProperty(
+		astmodel.DestinationExpressionCollectionType,
+		astmodel.OperatorSpecSecretExpressionsProperty,
+		"configures where to place operator written dynamic secrets (created with CEL expressions).")
+}
+
+func (b *operatorSpecBuilder) addSecrets(
+	azureGeneratedSecrets []string,
+) {
 	if len(azureGeneratedSecrets) == 0 {
 		return // Nothing to do
-	}
-
-	operatorSpec, ok := astmodel.AsObjectType(b.operatorSpec.Type())
-	if !ok {
-		panic(fmt.Sprintf("OperatorSpec %q was not an ObjectType, which is impossible", b.operatorSpec.Name()))
 	}
 
 	// Create a new "secrets" type to hold the secrets
@@ -363,7 +399,7 @@ func (b *operatorSpecBuilder) addSecretsToOperatorSpec(
 
 	// Add the "secrets" property to the operator spec
 	secretProp := b.newSecretsProperty(secretsTypeName)
-	operatorSpec = operatorSpec.WithProperty(secretProp)
+	b.operatorSpecType = b.operatorSpecType.WithProperty(secretProp)
 
 	for _, secret := range azureGeneratedSecrets {
 		prop := astmodel.NewPropertyDefinition(
@@ -380,20 +416,13 @@ func (b *operatorSpecBuilder) addSecretsToOperatorSpec(
 
 	secretsTypeDef := astmodel.MakeTypeDefinition(secretsTypeName, secretsType)
 	b.definitions.Add(secretsTypeDef)
-
-	b.operatorSpec = b.operatorSpec.WithType(operatorSpec)
 }
 
 func (b *operatorSpecBuilder) addConfigs(
-	exportedConfigs []string) {
-
+	exportedConfigs []string,
+) {
 	if len(exportedConfigs) == 0 {
 		return // Nothing to do
-	}
-
-	operatorSpec, ok := astmodel.AsObjectType(b.operatorSpec.Type())
-	if !ok {
-		panic(fmt.Sprintf("OperatorSpec %q was not an ObjectType, which is impossible", b.operatorSpec.Name()))
 	}
 
 	// Create a new "ConfigMaps" type to hold the config map values
@@ -406,7 +435,7 @@ func (b *operatorSpecBuilder) addConfigs(
 
 	// Add the "configMaps" property to the operator spec
 	configMapProp := b.newConfigMapProperty(configMapTypeName)
-	operatorSpec = operatorSpec.WithProperty(configMapProp)
+	b.operatorSpecType = b.operatorSpecType.WithProperty(configMapProp)
 
 	for _, exportedConfig := range exportedConfigs {
 		prop := astmodel.NewPropertyDefinition(
@@ -423,10 +452,61 @@ func (b *operatorSpecBuilder) addConfigs(
 
 	configMapTypeDef := astmodel.MakeTypeDefinition(configMapTypeName, configMapsType)
 	b.definitions.Add(configMapTypeDef)
-
-	b.operatorSpec = b.operatorSpec.WithType(operatorSpec)
 }
 
-func (b *operatorSpecBuilder) build() astmodel.TypeDefinition {
-	return b.operatorSpec
+func (b *operatorSpecBuilder) addCustomProperties(
+	properties []config.OperatorSpecPropertyConfiguration,
+) {
+	if len(properties) == 0 {
+		return // Nothing to do
+	}
+
+	for _, prop := range properties {
+		propertyType, ok := astmodel.LookupPrimitiveType(prop.Type)
+		if !ok {
+			b.errs = append(
+				b.errs,
+				eris.Errorf("unknown type %q for custom OperatorSpec property %q", prop.Type, prop.Name))
+			continue
+		}
+
+		property := astmodel.NewPropertyDefinition(
+			b.idFactory.CreatePropertyName(prop.Name, astmodel.Exported),
+			b.idFactory.CreateStringIdentifier(prop.Name, astmodel.NotExported),
+			propertyType).
+			MakeTypeOptional().
+			WithDescription(prop.Description)
+		b.operatorSpecType = b.operatorSpecType.WithProperty(property)
+	}
+}
+
+func (b *operatorSpecBuilder) build() (astmodel.TypeDefinition, error) {
+	if len(b.errs) > 0 {
+		return astmodel.TypeDefinition{},
+			eris.Wrapf(
+				kerrors.NewAggregate(b.errs),
+				"failed to build OperatorSpec for %q",
+				b.resource.Name())
+	}
+
+	def := astmodel.MakeTypeDefinition(
+		b.operatorSpecName,
+		b.operatorSpecType)
+
+	description := "Details for configuring operator behavior. Fields in this struct are " +
+		"interpreted by the operator directly rather than being passed to Azure"
+	def = def.WithDescription(description)
+	return def, nil
+}
+
+func (b *operatorSpecBuilder) addDynamicConfigMaps() {
+	// Add the "configMaps" property to the operator spec
+	configMapProp := b.newDynamicConfigMapProperty()
+	b.operatorSpecType = b.operatorSpecType.WithProperty(configMapProp)
+}
+
+func (b *operatorSpecBuilder) addDynamicSecrets() {
+	// Add the "configMaps" property to the operator spec
+	configMapProp := b.newDynamicSecretProperty()
+	b.operatorSpecType = b.operatorSpecType.WithProperty(configMapProp)
 }

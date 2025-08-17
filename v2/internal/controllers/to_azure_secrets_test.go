@@ -9,13 +9,14 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/Azure/azure-service-operator/v2/api/compute/v1beta20201201"
-	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
+	"github.com/Azure/azure-service-operator/v2/api/compute/v1api20201201"
+	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1api20200601"
 	"github.com/Azure/azure-service-operator/v2/internal/genericarmclient"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
@@ -46,10 +47,14 @@ func Test_MissingSecret_ReturnsError_ReconcilesSuccessfullyWhenSecretAdded(t *te
 	vm := newVirtualMachine20201201(tc, rg, networkInterface, secretRef)
 
 	tc.CreateResourceAndWaitForState(vm, metav1.ConditionFalse, conditions.ConditionSeverityWarning)
+
 	// We expect the ready condition to include details of the error
-	tc.Expect(vm.Status.Conditions[0].Reason).To(Equal(conditions.ReasonSecretNotFound.Name))
-	tc.Expect(vm.Status.Conditions[0].Message).To(
-		ContainSubstring("failed resolving secret references: %s/%s does not exist", tc.Namespace, secretRef.Name))
+	reason := vm.Status.Conditions[0].Reason
+	tc.Expect(reason).To(Equal(conditions.ReasonSecretNotFound.Name))
+
+	message := vm.Status.Conditions[0].Message
+	tc.Expect(message).To(ContainSubstring("failed resolving secret references"))
+	tc.Expect(message).To(ContainSubstring("%s/%s does not exist", tc.Namespace, secretRef.Name))
 
 	// Now create the secret
 	secret := &v1.Secret{
@@ -80,7 +85,7 @@ func Test_MissingSecretKey_ReturnsError(t *testing.T) {
 	// https://github.com/Azure/azure-service-operator/issues/1944
 	tc.CreateResourceAndWait(vnet)
 	tc.CreateResourcesAndWait(subnet, networkInterface)
-	secret := createVMPasswordSecretAndRef(tc)
+	secret := createPasswordSecret("vmsecret", "password", tc)
 	secret.Key = "doesnotexist" // Change the key to a key that doesn't actually exist
 	vm := newVirtualMachine20201201(tc, rg, networkInterface, secret)
 
@@ -117,10 +122,14 @@ func Test_UserSecretInDifferentNamespace_SecretNotFound(t *testing.T) {
 	vm := newVirtualMachine20201201(tc, rg, networkInterface, secretInDiffNamespace)
 
 	tc.CreateResourceAndWaitForState(vm, metav1.ConditionFalse, conditions.ConditionSeverityWarning)
+
 	// We expect the ready condition to include details of the error
-	tc.Expect(vm.Status.Conditions[0].Reason).To(Equal(conditions.ReasonSecretNotFound.Name))
-	tc.Expect(vm.Status.Conditions[0].Message).To(
-		ContainSubstring("failed resolving secret references: %s/%s does not exist", tc.Namespace, secretInDiffNamespace.Name))
+	reason := vm.Status.Conditions[0].Reason
+	tc.Expect(reason).To(Equal(conditions.ReasonSecretNotFound.Name))
+
+	message := vm.Status.Conditions[0].Message
+	tc.Expect(message).To(ContainSubstring("failed resolving secret references"))
+	tc.Expect(message).To(ContainSubstring("%s/%s does not exist", tc.Namespace, secretInDiffNamespace.Name))
 
 	// Delete VM and resources.
 	tc.DeleteResourcesAndWait(vm, networkInterface, subnet, vnet, rg)
@@ -149,11 +158,11 @@ func Test_UserSecretInDifferentNamespace_ShouldNotTriggerReconcile(t *testing.T)
 
 	rg := tc.NewTestResourceGroup()
 	rg.Namespace = ns1
-	tc.CreateResourceGroupAndWait(rg)
+	tc.CreateResourceAndWait(rg)
 
 	rg2 := tc.NewTestResourceGroup()
 	rg2.Namespace = ns2
-	tc.CreateResourceGroupAndWait(rg2)
+	tc.CreateResourceAndWait(rg2)
 
 	// VM1 with same secret name in ns1
 	vm1 := createNamespacedVM(tc, rg, ns1, ns1Secret)
@@ -184,7 +193,7 @@ func Test_UserSecretInDifferentNamespace_ShouldNotTriggerReconcile(t *testing.T)
 	tc.DeleteResourcesAndWait(rg, rg2)
 }
 
-func createNamespacedVM(tc *testcommon.KubePerTestContext, rg *resources.ResourceGroup, ns string, ns1Secret genruntime.SecretReference) *v1beta20201201.VirtualMachine {
+func createNamespacedVM(tc *testcommon.KubePerTestContext, rg *resources.ResourceGroup, ns string, ns1Secret genruntime.SecretReference) *v1api20201201.VirtualMachine {
 	vnet := newVMVirtualNetwork(tc, testcommon.AsOwner(rg))
 	vnet.Namespace = ns
 	subnet := newVMSubnet(tc, testcommon.AsOwner(vnet))

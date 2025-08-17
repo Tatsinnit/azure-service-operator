@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 )
@@ -45,15 +46,20 @@ func (array *ArrayType) WithElement(t Type) *ArrayType {
 // assert we implemented Type correctly
 var _ Type = (*ArrayType)(nil)
 
-func (array *ArrayType) AsDeclarations(codeGenerationContext *CodeGenerationContext, declContext DeclarationContext) []dst.Decl {
+func (array *ArrayType) AsDeclarations(codeGenerationContext *CodeGenerationContext, declContext DeclarationContext) ([]dst.Decl, error) {
 	return AsSimpleDeclarations(codeGenerationContext, declContext, array)
 }
 
 // AsType renders the Go abstract syntax tree for an array type
-func (array *ArrayType) AsType(codeGenerationContext *CodeGenerationContext) dst.Expr {
-	return &dst.ArrayType{
-		Elt: array.element.AsType(codeGenerationContext),
+func (array *ArrayType) AsTypeExpr(codeGenerationContext *CodeGenerationContext) (dst.Expr, error) {
+	elementExpr, err := array.element.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating array element type")
 	}
+
+	return &dst.ArrayType{
+		Elt: elementExpr,
+	}, nil
 }
 
 // AsZero renders an expression for the "zero" value of the array by calling make()
@@ -92,7 +98,7 @@ func (array *ArrayType) String() string {
 // WriteDebugDescription adds a description of the current array type to the passed builder
 // builder receives the full description, including nested types
 // definitions is a dictionary for resolving named types
-func (array *ArrayType) WriteDebugDescription(builder *strings.Builder, currentPackage PackageReference) {
+func (array *ArrayType) WriteDebugDescription(builder *strings.Builder, currentPackage InternalPackageReference) {
 	if array == nil {
 		builder.WriteString("<nilArray>")
 		return

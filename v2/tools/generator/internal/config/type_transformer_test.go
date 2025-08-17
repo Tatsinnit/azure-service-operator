@@ -8,28 +8,27 @@ package config_test
 import (
 	"testing"
 
-	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/config"
-	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/test"
-
 	. "github.com/onsi/gomega"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
+	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/config"
+	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/test"
 )
 
 func Test_TransformByGroup_CorrectlySelectsTypes(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
+	matcher := config.NewFieldMatcher("role")
+	matcher2 := config.NewFieldMatcher("int")
 	transformer := config.TypeTransformer{
 		TypeMatcher: config.TypeMatcher{
-			Group: config.NewFieldMatcher("role"),
+			Group: matcher,
 		},
-		Target: &config.TransformTarget{
-			Name: config.NewFieldMatcher("int"),
+		Target: &config.TransformResult{
+			Name: matcher2,
 		},
 	}
-	err := transformer.Initialize(test.MakeLocalPackageReference)
-	g.Expect(err).To(BeNil())
 
 	// Roles should be selected
 	g.Expect(transformer.TransformTypeName(student2019)).To(Equal(astmodel.IntType))
@@ -44,16 +43,16 @@ func Test_TransformByVersion_CorrectlySelectsTypes(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
+	matcher := config.NewFieldMatcher("v2019*")
+	matcher2 := config.NewFieldMatcher("int")
 	transformer := config.TypeTransformer{
 		TypeMatcher: config.TypeMatcher{
-			Version: config.NewFieldMatcher("v2019*"),
+			Version: matcher,
 		},
-		Target: &config.TransformTarget{
-			Name: config.NewFieldMatcher("int"),
+		Target: &config.TransformResult{
+			Name: matcher2,
 		},
 	}
-	err := transformer.Initialize(test.MakeLocalPackageReference)
-	g.Expect(err).To(BeNil())
 
 	// 2019 versions should be transformed
 	g.Expect(transformer.TransformTypeName(student2019)).To(Equal(astmodel.IntType))
@@ -68,16 +67,16 @@ func Test_TransformByName_CorrectlySelectsTypes(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
+	matcher := config.NewFieldMatcher("p*")
+	matcher2 := config.NewFieldMatcher("int")
 	transformer := config.TypeTransformer{
 		TypeMatcher: config.TypeMatcher{
-			Name: config.NewFieldMatcher("p*"),
+			Name: matcher,
 		},
-		Target: &config.TransformTarget{
-			Name: config.NewFieldMatcher("int"),
+		Target: &config.TransformResult{
+			Name: matcher2,
 		},
 	}
-	err := transformer.Initialize(test.MakeLocalPackageReference)
-	g.Expect(err).To(BeNil())
 
 	// Names starting with p should be transformed
 	g.Expect(transformer.TransformTypeName(post2019)).To(Equal(astmodel.IntType))
@@ -92,51 +91,157 @@ func Test_TransformCanTransform_ToComplexType(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
+	matcher := config.NewFieldMatcher("tutor")
+	matcher2 := config.NewFieldMatcher("role")
+	matcher3 := config.NewFieldMatcher("2019-01-01")
+	matcher4 := config.NewFieldMatcher("student")
 	transformer := config.TypeTransformer{
 		TypeMatcher: config.TypeMatcher{
-			Name: config.NewFieldMatcher("tutor"),
+			Name: matcher,
 		},
-		Target: &config.TransformTarget{
-			Group:   config.NewFieldMatcher("role"),
-			Version: config.NewFieldMatcher("2019-01-01"),
-			Name:    config.NewFieldMatcher("student"),
+		Target: &config.TransformResult{
+			Group:   matcher2,
+			Version: matcher3,
+			Name:    matcher4,
 		},
 	}
-	err := transformer.Initialize(test.MakeLocalPackageReference)
-	g.Expect(err).To(BeNil())
 
 	// Tutor should be student
 	g.Expect(transformer.TransformTypeName(tutor2019)).To(Equal(student2019))
+}
+
+func Test_TransformTypeName_WhenConfiguredWithMap_ReturnsExpectedMapType(t *testing.T) {
+	t.Parallel()
+	g := NewGomegaWithT(t)
+
+	matcher := config.NewFieldMatcher("tutor")
+	matcher2 := config.NewFieldMatcher("string")
+	matcher3 := config.NewFieldMatcher("int")
+	transformer := config.TypeTransformer{
+		Property: matcher,
+		Target: &config.TransformResult{
+			Map: &config.MapResult{
+				Key: config.TransformResult{
+					Name: matcher2,
+				},
+				Value: config.TransformResult{
+					Name: matcher3,
+				},
+			},
+		},
+	}
+
+	expected := astmodel.NewMapType(
+		astmodel.StringType,
+		astmodel.IntType)
+
+	g.Expect(transformer.TransformTypeName(tutor2019)).To(Equal(expected))
+}
+
+func Test_TransformTypeName_WhenConfiguredWithEnum_ReturnsExpectedEnumType(t *testing.T) {
+	t.Parallel()
+	g := NewGomegaWithT(t)
+
+	matcher := config.NewFieldMatcher("tutor")
+	transformer := config.TypeTransformer{
+		Property: matcher,
+		Target: &config.TransformResult{
+			Enum: &config.EnumResult{
+				Base: "string",
+				Values: []string{
+					"alpha",
+					"beta",
+					"preview",
+				},
+			},
+		},
+	}
+
+	expected := astmodel.NewEnumType(
+		astmodel.StringType,
+		astmodel.MakeEnumValue("Alpha", "\"alpha\""),
+		astmodel.MakeEnumValue("Beta", "\"beta\""),
+		astmodel.MakeEnumValue("Preview", "\"preview\""))
+
+	g.Expect(transformer.TransformTypeName(tutor2019)).To(Equal(expected))
+}
+
+func Test_TransformTypeName_WhenEnumMissingBase_ReturnsExpectedError(t *testing.T) {
+	t.Parallel()
+	g := NewGomegaWithT(t)
+
+	matcher := config.NewFieldMatcher("tutor")
+	transformer := config.TypeTransformer{
+		Property: matcher,
+		Target: &config.TransformResult{
+			Enum: &config.EnumResult{
+				Values: []string{
+					"alpha",
+					"beta",
+					"preview",
+				},
+			},
+		},
+	}
+
+	_, err := transformer.TransformTypeName(tutor2019)
+	g.Expect(err).ToNot(BeNil())
+	g.Expect(err.Error()).To(ContainSubstring("requires a base type"))
+}
+
+func Test_TransformTypeName_WhenEnumHasInvalidBase_ReturnsExpectedError(t *testing.T) {
+	t.Parallel()
+	g := NewGomegaWithT(t)
+
+	matcher := config.NewFieldMatcher("tutor")
+	transformer := config.TypeTransformer{
+		Property: matcher,
+		Target: &config.TransformResult{
+			Enum: &config.EnumResult{
+				Base: "flag",
+				Values: []string{
+					"alpha",
+					"beta",
+					"preview",
+				},
+			},
+		},
+	}
+	_, err := transformer.TransformTypeName(tutor2019)
+	g.Expect(err).ToNot(BeNil())
+	g.Expect(err.Error()).To(ContainSubstring("unknown primitive type"))
 }
 
 func Test_TransformCanTransform_ToNestedMapType(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
+	matcher := config.NewFieldMatcher("tutor")
+	matcher2 := config.NewFieldMatcher("string")
+	matcher3 := config.NewFieldMatcher("int")
+	matcher4 := config.NewFieldMatcher("float")
 	transformer := config.TypeTransformer{
 		TypeMatcher: config.TypeMatcher{
-			Name: config.NewFieldMatcher("tutor"),
+			Name: matcher,
 		},
-		Target: &config.TransformTarget{
-			Map: &config.MapType{
-				Key: config.TransformTarget{
-					Name: config.NewFieldMatcher("string"),
+		Target: &config.TransformResult{
+			Map: &config.MapResult{
+				Key: config.TransformResult{
+					Name: matcher2,
 				},
-				Value: config.TransformTarget{
-					Map: &config.MapType{
-						Key: config.TransformTarget{
-							Name: config.NewFieldMatcher("int"),
+				Value: config.TransformResult{
+					Map: &config.MapResult{
+						Key: config.TransformResult{
+							Name: matcher3,
 						},
-						Value: config.TransformTarget{
-							Name: config.NewFieldMatcher("float"),
+						Value: config.TransformResult{
+							Name: matcher4,
 						},
 					},
 				},
 			},
 		},
 	}
-	err := transformer.Initialize(test.MakeLocalPackageReference)
-	g.Expect(err).To(BeNil())
 
 	expected := astmodel.NewMapType(
 		astmodel.StringType,
@@ -147,47 +252,53 @@ func Test_TransformCanTransform_ToNestedMapType(t *testing.T) {
 	g.Expect(transformer.TransformTypeName(tutor2019)).To(Equal(expected))
 }
 
-func Test_TransformWithMissingMapValue_ReportsError(t *testing.T) {
+func Test_TransformWithMissingMapKey_ReportsError(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
+	matcher := config.NewFieldMatcher("tutor")
+	matcher2 := config.NewFieldMatcher("string")
+	matcher3 := config.NewFieldMatcher("int")
 	transformer := config.TypeTransformer{
 		TypeMatcher: config.TypeMatcher{
-			Name: config.NewFieldMatcher("tutor"),
+			Name: matcher,
 		},
-		Target: &config.TransformTarget{
-			Map: &config.MapType{
-				Key: config.TransformTarget{
-					Name: config.NewFieldMatcher("string"),
+		Target: &config.TransformResult{
+			Map: &config.MapResult{
+				Key: config.TransformResult{
+					Name: matcher2,
 				},
-				Value: config.TransformTarget{
-					Map: &config.MapType{
-						Value: config.TransformTarget{
-							Name: config.NewFieldMatcher("int"),
+				Value: config.TransformResult{
+					Map: &config.MapResult{
+						Value: config.TransformResult{
+							Name: matcher3,
 						},
 					},
 				},
 			},
 		},
 	}
-	err := transformer.Initialize(test.MakeLocalPackageReference)
+
+	_, err := transformer.TransformTypeName(tutor2019)
 	g.Expect(err).To(Not(BeNil()))
-	g.Expect(err.Error()).To(ContainSubstring("no target type found in target/map/value/map/key"))
+	g.Expect(err.Error()).To(ContainSubstring("no result transformation specified"))
+	g.Expect(err.Error()).To(ContainSubstring("target/map/value/map/key"))
 }
 
-func Test_TransformWithMissingTargetType_ReportsError(t *testing.T) {
+func Test_TransformWithMissingTargetTypeAndNoRename_ReportsError(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
+	matcher := config.NewFieldMatcher("tutor")
 	transformer := config.TypeTransformer{
 		TypeMatcher: config.TypeMatcher{
-			Name: config.NewFieldMatcher("tutor"),
+			Name: matcher,
 		},
 	}
 
-	err := transformer.Initialize(test.MakeLocalPackageReference)
+	_, err := transformer.TransformTypeName(tutor2019)
 	g.Expect(err).To(Not(BeNil()))
-	g.Expect(err.Error()).To(ContainSubstring("no target type and remove is not set"))
+	g.Expect(err.Error()).To(ContainSubstring("transformer must either rename or modify"))
 }
 
 func Test_TransformWithRemoveButNoProperty_ReportsError(t *testing.T) {
@@ -198,116 +309,204 @@ func Test_TransformWithRemoveButNoProperty_ReportsError(t *testing.T) {
 		Remove: true,
 	}
 
-	err := transformer.Initialize(test.MakeLocalPackageReference)
+	_, err := transformer.TransformTypeName(tutor2019)
 	g.Expect(err).To(Not(BeNil()))
-	g.Expect(err).To(MatchError("remove is only usable with property matches"))
+	g.Expect(err).To(MatchError("remove is only usable with property transforms"))
 }
 
 func Test_TransformWithRemoveAndTarget_ReportsError(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
+	matcher := config.NewFieldMatcher("hat")
+	matcher2 := config.NewFieldMatcher("int")
 	transformer := config.TypeTransformer{
-		Property: config.NewFieldMatcher("hat"),
-		Target: &config.TransformTarget{
-			Name: config.NewFieldMatcher("int"),
+		Property: matcher,
+		Target: &config.TransformResult{
+			Name: matcher2,
 		},
 		Remove: true,
 	}
 
-	err := transformer.Initialize(test.MakeLocalPackageReference)
+	_, err := transformer.TransformTypeName(tutor2019)
 	g.Expect(err).To(Not(BeNil()))
 	g.Expect(err).To(MatchError("remove and target can't both be set"))
 }
 
-func Test_TransformWithMultipleTargets_ReportsError(t *testing.T) {
+func Test_TransformWithBothNameAndMapTargets_ReportsError(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
+	matcher := config.NewFieldMatcher("tutor")
+	matcher2 := config.NewFieldMatcher("int")
+	matcher3 := config.NewFieldMatcher("string")
+	matcher4 := config.NewFieldMatcher("string")
 	transformer := config.TypeTransformer{
 		TypeMatcher: config.TypeMatcher{
-			Name: config.NewFieldMatcher("tutor"),
+			Name: matcher,
 		},
-		Target: &config.TransformTarget{
-			Name: config.NewFieldMatcher("int"),
-			Map: &config.MapType{
-				Key: config.TransformTarget{
-					Name: config.NewFieldMatcher("string"),
+		Target: &config.TransformResult{
+			Name: matcher2,
+			Map: &config.MapResult{
+				Key: config.TransformResult{
+					Name: matcher3,
 				},
-				Value: config.TransformTarget{
-					Name: config.NewFieldMatcher("string"),
+				Value: config.TransformResult{
+					Name: matcher4,
 				},
 			},
 		},
 	}
 
-	err := transformer.Initialize(test.MakeLocalPackageReference)
+	_, err := transformer.TransformTypeName(tutor2019)
 	g.Expect(err).To(Not(BeNil()))
-	g.Expect(err.Error()).To(ContainSubstring("multiple target types defined"))
+
+	// Check contents of error message to ensure it mentions both targets, don't need exact string match
+	g.Expect(err.Error()).To(SatisfyAll(
+		ContainSubstring("cannot specify both"),
+		ContainSubstring("Map transformation"),
+		ContainSubstring("Name transformation")))
 }
 
-func Test_TransformWithNonExistentPrimitive_ReportsError(t *testing.T) {
+func Test_TransformWithBothNameAndEnumTargets_ReportsError(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
+	matcher := config.NewFieldMatcher("tutor")
+	matcher2 := config.NewFieldMatcher("int")
 	transformer := config.TypeTransformer{
 		TypeMatcher: config.TypeMatcher{
-			Name: config.NewFieldMatcher("tutor"),
+			Name: matcher,
 		},
-		Target: &config.TransformTarget{
-			Name: config.NewFieldMatcher("nemo"),
+		Target: &config.TransformResult{
+			Name: matcher2,
+			Enum: &config.EnumResult{
+				Values: []string{
+					"alpha",
+					"beta",
+					"preview",
+				},
+			},
 		},
 	}
 
-	err := transformer.Initialize(test.MakeLocalPackageReference)
+	_, err := transformer.TransformTypeName(tutor2019)
 	g.Expect(err).To(Not(BeNil()))
-	g.Expect(err.Error()).To(ContainSubstring("unknown primitive type transformation target: nemo"))
+
+	// Check contents of error message to ensure it mentions both targets, don't need exact string match
+	g.Expect(err.Error()).To(SatisfyAll(
+		ContainSubstring("cannot specify both"),
+		ContainSubstring("Enum transformation"),
+		ContainSubstring("Name transformation")))
 }
 
-func Test_TransformWithIfTypeAndNoProperty_ReportsError(t *testing.T) {
+func Test_TransformWithBothMapAndEnumTargets_ReportsError(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
+	matcher := config.NewFieldMatcher("tutor")
+	matcher2 := config.NewFieldMatcher("string")
+	matcher3 := config.NewFieldMatcher("string")
 	transformer := config.TypeTransformer{
 		TypeMatcher: config.TypeMatcher{
-			Name: config.NewFieldMatcher("tutor"),
+			Name: matcher,
 		},
-		IfType: &config.TransformTarget{
-			Name: config.NewFieldMatcher("from"),
-		},
-		Target: &config.TransformTarget{
-			Name: config.NewFieldMatcher("to"),
+		Target: &config.TransformResult{
+			Map: &config.MapResult{
+				Key: config.TransformResult{
+					Name: matcher2,
+				},
+				Value: config.TransformResult{
+					Name: matcher3,
+				},
+			},
+			Enum: &config.EnumResult{
+				Values: []string{
+					"alpha",
+					"beta",
+					"preview",
+				},
+			},
 		},
 	}
 
-	err := transformer.Initialize(test.MakeLocalPackageReference)
+	_, err := transformer.TransformTypeName(tutor2019)
 	g.Expect(err).To(Not(BeNil()))
-	g.Expect(err.Error()).To(ContainSubstring("ifType is only usable with property matches"))
+
+	// Check contents of error message to ensure it mentions both targets, don't need exact string match
+	g.Expect(err.Error()).To(SatisfyAll(
+		ContainSubstring("cannot specify both"),
+		ContainSubstring("Enum transformation"),
+		ContainSubstring("Map transformation")))
+}
+
+func Test_TypeTransformer_WhenTransformingTypeName_ReturnsExpectedTypeName(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		original astmodel.InternalTypeName
+		newName  string
+		expected astmodel.InternalTypeName
+	}{
+		{
+			"Rename student to tutor",
+			student2019,
+			"tutor",
+			tutor2019,
+		},
+	}
+
+	for _, c := range cases {
+		c := c
+		t.Run(
+			c.name,
+			func(t *testing.T) {
+				t.Parallel()
+				g := NewGomegaWithT(t)
+
+				matcher := config.NewFieldMatcher("role")
+				matcher2 := config.NewFieldMatcher(c.newName)
+				transformer := config.TypeTransformer{
+					TypeMatcher: config.TypeMatcher{
+						Group: matcher,
+					},
+					Target: &config.TransformResult{
+						Name: matcher2,
+					},
+				}
+
+				actual, err := transformer.TransformTypeName(c.original)
+				g.Expect(actual).To(Equal(c.expected))
+				g.Expect(err).To(Succeed())
+			})
+	}
 }
 
 func Test_TransformCanTransformProperty(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
+	matcher := config.NewFieldMatcher("*")
+	matcher2 := config.NewFieldMatcher("foo")
+	matcher3 := config.NewFieldMatcher("string")
 	transformer := config.TypeTransformer{
 		TypeMatcher: config.TypeMatcher{
-			Name: config.NewFieldMatcher("*"),
+			Name: matcher,
 		},
-		Property: config.NewFieldMatcher("foo"),
-		Target: &config.TransformTarget{
-			Name: config.NewFieldMatcher("string"),
+		Property: matcher2,
+		Target: &config.TransformResult{
+			Name: matcher3,
 		},
 	}
-
-	err := transformer.Initialize(test.MakeLocalPackageReference)
-	g.Expect(err).To(BeNil())
 
 	typeName := student2019
 	prop := astmodel.NewPropertyDefinition("foo", "foo", astmodel.IntType)
 	typeDef := astmodel.NewObjectType().WithProperties(prop)
 
-	result := transformer.TransformProperty(typeName, typeDef)
+	result, err := transformer.TransformProperty(typeName, typeDef)
 	g.Expect(result).ToNot(BeNil())
+	g.Expect(err).ToNot(HaveOccurred())
 
 	fooProp, ok := result.NewType.Property("foo")
 	g.Expect(ok).To(BeTrue())
@@ -318,18 +517,18 @@ func Test_TransformCanTransformProperty_Wildcard(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
+	matcher := config.NewFieldMatcher("*")
+	matcher2 := config.NewFieldMatcher("foo*")
+	matcher3 := config.NewFieldMatcher("string")
 	transformer := config.TypeTransformer{
 		TypeMatcher: config.TypeMatcher{
-			Name: config.NewFieldMatcher("*"),
+			Name: matcher,
 		},
-		Property: config.NewFieldMatcher("foo*"),
-		Target: &config.TransformTarget{
-			Name: config.NewFieldMatcher("string"),
+		Property: matcher2,
+		Target: &config.TransformResult{
+			Name: matcher3,
 		},
 	}
-
-	err := transformer.Initialize(test.MakeLocalPackageReference)
-	g.Expect(err).To(BeNil())
 
 	typeName := student2019
 	props := []*astmodel.PropertyDefinition{
@@ -339,8 +538,9 @@ func Test_TransformCanTransformProperty_Wildcard(t *testing.T) {
 	}
 	typeDef := astmodel.NewObjectType().WithProperties(props...)
 
-	result := transformer.TransformProperty(typeName, typeDef)
+	result, err := transformer.TransformProperty(typeName, typeDef)
 	g.Expect(result).ToNot(BeNil())
+	g.Expect(err).ToNot(HaveOccurred())
 
 	foo1Prop, ok := result.NewType.Property("foo1")
 	g.Expect(ok).To(BeTrue())
@@ -359,57 +559,67 @@ func Test_TransformDoesNotTransformPropertyIfTypeDoesNotMatch(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
+	matcher := config.NewFieldMatcher("*")
+	matcher2 := config.NewFieldMatcher("string")
+	matcher3 := config.NewFieldMatcher("foo")
+	matcher4 := config.NewFieldMatcher("int")
 	transformer := config.TypeTransformer{
 		TypeMatcher: config.TypeMatcher{
-			Name: config.NewFieldMatcher("*"),
+			Name: matcher,
 		},
-		IfType: &config.TransformTarget{
-			Name: config.NewFieldMatcher("string"),
+		IfType: &config.TransformSelector{
+			Name: matcher2,
 		},
-		Property: config.NewFieldMatcher("foo"),
-		Target: &config.TransformTarget{
-			Name: config.NewFieldMatcher("int"),
+		Property: matcher3,
+		Target: &config.TransformResult{
+			Name: matcher4,
 		},
 	}
-
-	err := transformer.Initialize(test.MakeLocalPackageReference)
-	g.Expect(err).To(BeNil())
 
 	typeName := student2019
 	prop := astmodel.NewPropertyDefinition("foo", "foo", astmodel.IntType)
 	typeDef := astmodel.NewObjectType().WithProperties(prop)
 
-	result := transformer.TransformProperty(typeName, typeDef)
+	result, err := transformer.TransformProperty(typeName, typeDef)
 	g.Expect(result).To(BeNil()) // as ifType does not match
+	g.Expect(err).ToNot(HaveOccurred())
 }
 
 func TestTransformProperty_DoesTransformProperty_IfTypeDoesMatch(t *testing.T) {
 	t.Parallel()
 
+	matcher := config.NewFieldMatcher("*")
+	matcher2 := config.NewFieldMatcher("int")
+	matcher3 := config.NewFieldMatcher("foo")
+	matcher4 := config.NewFieldMatcher("string")
 	transformIntToString := config.TypeTransformer{
 		TypeMatcher: config.TypeMatcher{
-			Name: config.NewFieldMatcher("*"),
+			Name: matcher,
 		},
-		IfType: &config.TransformTarget{
-			Name: config.NewFieldMatcher("int"),
+		IfType: &config.TransformSelector{
+			Name: matcher2,
 		},
-		Property: config.NewFieldMatcher("foo"),
-		Target: &config.TransformTarget{
-			Name: config.NewFieldMatcher("string"),
+		Property: matcher3,
+		Target: &config.TransformResult{
+			Name: matcher4,
 		},
 	}
 
+	matcher5 := config.NewFieldMatcher("*")
+	matcher6 := config.NewFieldMatcher("int")
+	matcher7 := config.NewFieldMatcher("foo")
+	matcher8 := config.NewFieldMatcher("string")
 	transformOptionalIntToOptionalString := config.TypeTransformer{
 		TypeMatcher: config.TypeMatcher{
-			Name: config.NewFieldMatcher("*"),
+			Name: matcher5,
 		},
-		IfType: &config.TransformTarget{
-			Name:     config.NewFieldMatcher("int"),
+		IfType: &config.TransformSelector{
+			Name:     matcher6,
 			Optional: true,
 		},
-		Property: config.NewFieldMatcher("foo"),
-		Target: &config.TransformTarget{
-			Name:     config.NewFieldMatcher("string"),
+		Property: matcher7,
+		Target: &config.TransformResult{
+			Name:     matcher8,
 			Optional: true,
 		},
 	}
@@ -452,10 +662,9 @@ func TestTransformProperty_DoesTransformProperty_IfTypeDoesMatch(t *testing.T) {
 				t.Parallel()
 				g := NewGomegaWithT(t)
 
-				g.Expect(c.transformer.Initialize(test.MakeLocalPackageReference)).To(Succeed())
-
-				result := c.transformer.TransformProperty(student2019, c.subject)
+				result, err := c.transformer.TransformProperty(student2019, c.subject)
 				g.Expect(result).To(Not(BeNil()))
+				g.Expect(err).ToNot(HaveOccurred())
 
 				prop, ok := result.NewType.Property(c.propertyToInspect)
 				g.Expect(ok).To(BeTrue())
@@ -467,35 +676,43 @@ func TestTransformProperty_DoesTransformProperty_IfTypeDoesMatch(t *testing.T) {
 func TestTransformProperty_CanRemoveProperty(t *testing.T) {
 	t.Parallel()
 
+	matcher := config.NewFieldMatcher("*")
+	matcher2 := config.NewFieldMatcher("int")
+	matcher3 := config.NewFieldMatcher("foo")
 	removeIntProperty := config.TypeTransformer{
 		TypeMatcher: config.TypeMatcher{
-			Name: config.NewFieldMatcher("*"),
+			Name: matcher,
 		},
-		IfType: &config.TransformTarget{
-			Name: config.NewFieldMatcher("int"),
+		IfType: &config.TransformSelector{
+			Name: matcher2,
 		},
-		Property: config.NewFieldMatcher("foo"),
+		Property: matcher3,
 		Remove:   true,
 	}
 
 	intProperty := astmodel.NewPropertyDefinition("foo", "foo", astmodel.IntType)
 	objectWithIntProperty := astmodel.NewObjectType().WithProperties(intProperty)
 
+	matcher4 := config.NewFieldMatcher("*")
+	matcher5 := config.NewFieldMatcher("deploymenttemplate")
+	matcher6 := config.NewFieldMatcher("2019-04-01")
+	matcher7 := config.NewFieldMatcher("ResourceCopy")
+	matcher8 := config.NewFieldMatcher("Copy")
 	removeCopyProperty := config.TypeTransformer{
 		TypeMatcher: config.TypeMatcher{
-			Name: config.NewFieldMatcher("*"),
+			Name: matcher4,
 		},
-		IfType: &config.TransformTarget{
-			Group:    config.NewFieldMatcher("deploymenttemplate"),
-			Version:  config.NewFieldMatcher("2019-04-01"),
-			Name:     config.NewFieldMatcher("ResourceCopy"),
+		IfType: &config.TransformSelector{
+			Group:    matcher5,
+			Version:  matcher6,
+			Name:     matcher7,
 			Optional: true,
 		},
-		Property: config.NewFieldMatcher("Copy"),
+		Property: matcher8,
 		Remove:   true,
 	}
 
-	resourceCopyType := astmodel.MakeTypeName(
+	resourceCopyType := astmodel.MakeInternalTypeName(
 		test.MakeLocalPackageReference("deploymenttemplate", "2019-04-01"),
 		"ResourceCopy")
 	copyProperty := astmodel.NewPropertyDefinition("Copy", "copy", astmodel.NewOptionalType(resourceCopyType))
@@ -530,10 +747,9 @@ func TestTransformProperty_CanRemoveProperty(t *testing.T) {
 				t.Parallel()
 				g := NewGomegaWithT(t)
 
-				g.Expect(c.transformer.Initialize(test.MakeLocalPackageReference)).To(Succeed())
-
-				result := c.transformer.TransformProperty(student2019, c.subject)
+				result, err := c.transformer.TransformProperty(student2019, c.subject)
 				g.Expect(result).To(Not(BeNil()))
+				g.Expect(err).ToNot(HaveOccurred())
 
 				_, ok := result.NewType.Property(c.propertyToInspect)
 				g.Expect(ok).To(BeFalse())
@@ -563,63 +779,4 @@ func Test_TransformResult_StringRemove(t *testing.T) {
 		Because:  "it's irrelevant",
 	}
 	g.Expect(result.String()).To(Equal(test.MakeLocalPackageReference("role", "2019-01-01").PackagePath() + "/student.HairColour removed because it's irrelevant"))
-}
-
-func TestTypeTarget_AppliesToType_ReturnsExpectedResult(t *testing.T) {
-	t.Parallel()
-
-	mapTarget := &config.TransformTarget{
-		Map: &config.MapType{
-			Key: config.TransformTarget{
-				Name: config.NewFieldMatcher("string"),
-			},
-			Value: config.TransformTarget{
-				Name: config.NewFieldMatcher("any"),
-			},
-		},
-	}
-
-	mapType := astmodel.NewMapType(astmodel.StringType, astmodel.AnyType)
-
-	nameTarget := &config.TransformTarget{
-		Group:    config.NewFieldMatcher("definitions"),
-		Version:  config.NewFieldMatcher("v1"),
-		Name:     config.NewFieldMatcher("ResourceCopy"),
-		Optional: true,
-	}
-
-	nameTargetWithWildcardVersion := &config.TransformTarget{
-		Group:    config.NewFieldMatcher("definitions"),
-		Version:  config.NewFieldMatcher("*"),
-		Name:     config.NewFieldMatcher("ResourceCopy"),
-		Optional: true,
-	}
-
-	nameType := astmodel.NewOptionalType(
-		astmodel.MakeTypeName(
-			test.MakeLocalPackageReference("definitions", "v1"),
-			"ResourceCopy"))
-
-	cases := []struct {
-		name        string
-		target      *config.TransformTarget
-		subject     astmodel.Type
-		expectation bool
-	}{
-		{"Matches map[string]any", mapTarget, mapType, true},
-		{"Matches with exact details", nameTarget, nameType, true},
-		{"Matches with version wildcard", nameTargetWithWildcardVersion, nameType, true},
-	}
-
-	for _, c := range cases {
-		c := c
-		t.Run(
-			c.name,
-			func(t *testing.T) {
-				t.Parallel()
-				g := NewGomegaWithT(t)
-
-				g.Expect(c.target.AppliesToType(c.subject)).To(Equal(c.expectation))
-			})
-	}
 }

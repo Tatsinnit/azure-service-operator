@@ -7,6 +7,7 @@ package functions
 
 import (
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
@@ -17,7 +18,7 @@ func createBodyReturningLiteralString(
 	result string,
 	comment string,
 	receiverTypeEnum ReceiverType,
-) func(k *ObjectFunction, codeGenerationContext *astmodel.CodeGenerationContext, receiver astmodel.TypeName, methodName string) *dst.FuncDecl {
+) ObjectFunctionHandler {
 	return createBodyReturningValue(
 		astbuilder.StringLiteral(result),
 		astmodel.StringType,
@@ -30,9 +31,14 @@ func createBodyReturningValue(
 	returnType astmodel.Type,
 	comment string,
 	receiverTypeEnum ReceiverType,
-) func(k *ObjectFunction, codeGenerationContext *astmodel.CodeGenerationContext, receiver astmodel.TypeName, methodName string) *dst.FuncDecl {
-	return func(k *ObjectFunction, codeGenerationContext *astmodel.CodeGenerationContext, receiver astmodel.TypeName, methodName string) *dst.FuncDecl {
-		receiverIdent := k.IdFactory().CreateReceiver(receiver.Name())
+) ObjectFunctionHandler {
+	return func(
+		k *ObjectFunction,
+		codeGenerationContext *astmodel.CodeGenerationContext,
+		receiver astmodel.TypeName,
+		methodName string,
+	) (*dst.FuncDecl, error) {
+		receiverIdent := k.IDFactory().CreateReceiver(receiver.Name())
 
 		// Support both ptr and non-ptr receivers
 		var receiverType astmodel.Type
@@ -42,17 +48,27 @@ func createBodyReturningValue(
 			receiverType = receiver
 		}
 
+		receiverExpr, err := receiverType.AsTypeExpr(codeGenerationContext)
+		if err != nil {
+			return nil, eris.Wrapf(err, "creating receiver expression for %s", receiverType)
+		}
+
 		fn := &astbuilder.FuncDetails{
 			Name:          methodName,
 			ReceiverIdent: receiverIdent,
-			ReceiverType:  receiverType.AsType(codeGenerationContext),
+			ReceiverType:  receiverExpr,
 			Params:        nil,
 			Body:          astbuilder.Statements(astbuilder.Returns(result)),
 		}
 
 		fn.AddComments(comment)
-		fn.AddReturn(returnType.AsType(codeGenerationContext))
+		returnTypeExpr, err := returnType.AsTypeExpr(codeGenerationContext)
+		if err != nil {
+			return nil, eris.Wrapf(err, "creating type expression for %s", returnType)
+		}
 
-		return fn.DefineFunc()
+		fn.AddReturn(returnTypeExpr)
+
+		return fn.DefineFunc(), nil
 	}
 }

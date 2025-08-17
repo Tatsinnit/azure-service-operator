@@ -10,11 +10,10 @@ import (
 	"go/token"
 
 	"github.com/dave/dst"
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
-	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/config"
 )
 
 // PropertyConversion generates the AST for a given property conversion.
@@ -26,7 +25,8 @@ type PropertyConversion func(
 	reader dst.Expr,
 	writer func(dst.Expr) []dst.Stmt,
 	knownLocals *astmodel.KnownLocalsSet,
-	generationContext *astmodel.CodeGenerationContext) []dst.Stmt
+	generationContext *astmodel.CodeGenerationContext,
+) ([]dst.Stmt, error)
 
 // PropertyConversionFactory represents factory methods that can be used to create a PropertyConversion for a specific
 // pair of properties
@@ -65,6 +65,8 @@ func init() {
 		assignAliasedPrimitiveFromAliasedPrimitive,
 		// Handcrafted implementations in genruntime
 		assignHandcraftedImplementations,
+		// Some conversions are forbidden and we just skip them
+		neuterForbiddenConversions,
 		// Collection Types
 		assignArrayFromArray,
 		assignMapFromMap,
@@ -74,14 +76,18 @@ func init() {
 		// Complex object definitions
 		assignObjectDirectlyFromObject,
 		assignObjectDirectlyToObject,
-		assignObjectsViaIntermediateObject,
+		assignInlineObjectsViaIntermediateObject,
+		assignNonInlineObjectsViaPivotObject,
 		// Known definitions
+		assignUserAssignedIdentityMapFromArray,
 		copyKnownType(astmodel.KnownResourceReferenceType, "Copy", returnsValue),
 		copyKnownType(astmodel.ResourceReferenceType, "Copy", returnsValue),
 		copyKnownType(astmodel.SecretReferenceType, "Copy", returnsValue),
+		copyKnownType(astmodel.SecretMapReferenceType, "Copy", returnsValue),
 		copyKnownType(astmodel.SecretDestinationType, "Copy", returnsValue),
 		copyKnownType(astmodel.ConfigMapReferenceType, "Copy", returnsValue),
 		copyKnownType(astmodel.ConfigMapDestinationType, "Copy", returnsValue),
+		copyKnownType(astmodel.DestinationExpressionType, "DeepCopy", returnsReference),
 		copyKnownType(astmodel.ArbitraryOwnerReference, "Copy", returnsValue),
 		copyKnownType(astmodel.ConditionType, "Copy", returnsValue),
 		copyKnownType(astmodel.JSONType, "DeepCopy", returnsReference),
@@ -154,7 +160,8 @@ func init() {
 func CreateTypeConversion(
 	sourceEndpoint *TypedConversionEndpoint,
 	destinationEndpoint *TypedConversionEndpoint,
-	conversionContext *PropertyConversionContext) (PropertyConversion, error) {
+	conversionContext *PropertyConversionContext,
+) (PropertyConversion, error) {
 	var result PropertyConversion
 	var err error
 	for _, f := range propertyConversionFactories {
@@ -170,15 +177,28 @@ func CreateTypeConversion(
 		}
 	}
 
-	// No conversion found, we need to generate a useful error message, wrapping any existing error
+	// No conversion found, we need to generate a useful error message, wrapping any existing error.
+	// If the endpoints are in different packages, we want both to be qualfied with their package name.
+	// We finesse this by cross wiring the packges passed so that we only get simplified descriptions if they are
+	// in the same package.
+	describe := func(subject astmodel.Type, ref astmodel.Type) string {
+		if tn, ok := astmodel.AsInternalTypeName(ref); ok {
+			return astmodel.DebugDescription(subject, tn.InternalPackageReference())
+		}
+
+		return astmodel.DebugDescription(subject)
+	}
+
+	srcType := sourceEndpoint.Type()
+	dstType := destinationEndpoint.Type()
 	msg := fmt.Sprintf("no conversion found to assign %q from %q",
-		astmodel.DebugDescription(destinationEndpoint.Type()),
-		astmodel.DebugDescription(sourceEndpoint.Type()))
+		describe(dstType, srcType),
+		describe(srcType, dstType))
 
 	if err != nil {
-		err = errors.Wrap(err, msg)
+		err = eris.Wrap(err, msg)
 	} else {
-		err = errors.New(msg)
+		err = eris.New(msg)
 	}
 
 	return nil, err
@@ -186,9 +206,24 @@ func CreateTypeConversion(
 
 // NameOfPropertyAssignmentFunction returns the name of the property assignment function
 func NameOfPropertyAssignmentFunction(
-	parameterType astmodel.TypeName, direction Direction, idFactory astmodel.IdentifierFactory) string {
+	baseName string,
+	parameterType astmodel.TypeName,
+	direction Direction,
+	idFactory astmodel.IdentifierFactory,
+) string {
 	nameOfOtherType := idFactory.CreateIdentifier(parameterType.Name(), astmodel.Exported)
-	return "AssignProperties_" + direction.SelectString("From_", "To_") + nameOfOtherType
+	dir := direction.SelectString("From", "To")
+	return fmt.Sprintf("%s_%s_%s", baseName, dir, nameOfOtherType)
+}
+
+// directAssignmentPropertyConversion is a helper function for creating a conversion that does a direct assignment
+func directAssignmentPropertyConversion(
+	reader dst.Expr,
+	writer func(dst.Expr) []dst.Stmt,
+	_ *astmodel.KnownLocalsSet,
+	_ *astmodel.CodeGenerationContext,
+) ([]dst.Stmt, error) {
+	return writer(reader), nil
 }
 
 // writeToBagItem will generate a conversion where the destination is in our property bag
@@ -214,11 +249,13 @@ func NameOfPropertyAssignmentFunction(
 //
 //		   <propertyBag>.Remove(<propertyName>)
 //	}
+//
+// If the type within the property bag differs from the source type, a type conversion is recursively sought
 func writeToBagItem(
 	sourceEndpoint *TypedConversionEndpoint,
 	destinationEndpoint *TypedConversionEndpoint,
-	conversionContext *PropertyConversionContext) (PropertyConversion, error) {
-
+	conversionContext *PropertyConversionContext,
+) (PropertyConversion, error) {
 	// Require destination to be a property bag item
 	destinationBagItem, destinationIsBagItem := AsPropertyBagMemberType(destinationEndpoint.Type())
 	if !destinationIsBagItem {
@@ -231,57 +268,104 @@ func writeToBagItem(
 	sourceOptional, sourceIsOptional := astmodel.AsOptionalType(actualSourceType)
 	if sourceIsOptional {
 		actualSourceType = sourceOptional.BaseType()
+		sourceEndpoint = sourceEndpoint.WithType(actualSourceType)
 	}
 
-	// Require the item in the bag to be exactly the same type as our source
-	// (We don't want to recursively do all the conversions because our property bag item SHOULD always contain
-	// exactly the expected type, so no conversion should be required. Plus, our conversions are designed to isolate
-	// the source and destination from each other (so that changes to one don't impact the other), but with the
-	// property bag everything gets immediately serialized so everything is already nicely isolated.
+	// If the item in the bag is exactly the same type as our source, we don't need any other conversion.
+	// We don't want to recursively look for more expensive conversions if we don't need to.
+	// Plus, conversions are designed to isolate the source and destination from each other (so that changes to one
+	// don't impact the other), but with the property bag everything gets immediately serialized so everything is
+	// already nicely isolated.
+	// On the other hand, if the types are different, we need to look for a conversion.
+	conversion := directAssignmentPropertyConversion
 	if !astmodel.TypeEquals(destinationBagItem.Element(), actualSourceType) {
-		return nil, nil
+		// Look for a conversion between the bag item and our source
+		bagItemEndpoint := destinationEndpoint.WithType(destinationBagItem.Element())
+		c, err := CreateTypeConversion(sourceEndpoint, bagItemEndpoint, conversionContext)
+		if err != nil {
+			return nil, err
+		}
+
+		if c == nil {
+			return nil, nil
+		}
+
+		conversion = c
 	}
 
 	_, sourceIsMap := astmodel.AsMapType(actualSourceType)
 	_, sourceIsSlice := astmodel.AsArrayType(actualSourceType)
 
-	return func(reader dst.Expr, _ func(dst.Expr) []dst.Stmt, knownLocals *astmodel.KnownLocalsSet, generationContext *astmodel.CodeGenerationContext) []dst.Stmt {
-		createAddToBag := func(expr dst.Expr) dst.Stmt {
-			addToBag := astbuilder.InvokeQualifiedFunc(
+	return func(
+		reader dst.Expr,
+		_ func(dst.Expr) []dst.Stmt,
+		knownLocals *astmodel.KnownLocalsSet,
+		generationContext *astmodel.CodeGenerationContext,
+	) ([]dst.Stmt, error) {
+		// propertyBag.Add(<propertyName>, <source>)
+		createAddToBag := func(expr dst.Expr) []dst.Stmt {
+			addToBag := astbuilder.CallQualifiedFuncAsStmt(
 				conversionContext.PropertyBagName(),
 				"Add",
-				astbuilder.StringLiteralf(destinationEndpoint.Name()),
+				astbuilder.StringLiteral(destinationEndpoint.Name()),
 				expr)
 
-			return addToBag
+			return astbuilder.Statements(addToBag)
 		}
 
-		removeFromBag := astbuilder.InvokeQualifiedFunc(
+		// propertyBag.Remove(<propertyName>)
+		removeFromBag := astbuilder.CallQualifiedFuncAsStmt(
 			conversionContext.PropertyBagName(),
 			"Remove",
-			astbuilder.StringLiteralf(destinationEndpoint.Name()))
+			astbuilder.StringLiteral(destinationEndpoint.Name()))
 
-		// If pointer to value, check for nil and only store if we have a value
+		// condition is a test to use to see whether we have a value to write to the property bag
+		// If we unilaterally write to the bag, this will be nil
+		var condition dst.Expr
+
+		// If optional source, check for nil and only store if we have a value
 		if sourceIsOptional {
-			writer := astbuilder.SimpleIfElse(
-				astbuilder.NotNil(reader),
-				astbuilder.Statements(createAddToBag(astbuilder.Dereference(reader))),
-				astbuilder.Statements(removeFromBag))
-			return astbuilder.Statements(writer)
+			// if <reader> != nil {
+			condition = astbuilder.NotNil(reader)
+			// To read the actual value, we need to dereference the pointer
+			reader = astbuilder.Dereference(reader)
+			// We're wrapping the conversion in a nested block, so any locals are independent
+			knownLocals = knownLocals.Clone()
 		}
 
 		// If slice or map, check for non-empty and only store if we have a value
 		if sourceIsSlice || sourceIsMap {
-			writer := astbuilder.SimpleIfElse(
-				astbuilder.NotEmpty(reader),
-				astbuilder.Statements(createAddToBag(reader)),
-				astbuilder.Statements(removeFromBag))
-			return astbuilder.Statements(writer)
+			// if len(<mapOrSlice>) > 0 {
+			condition = astbuilder.NotEmpty(reader)
+			// We're wrapping the conversion in a nested block, so any locals are independent
+			knownLocals = knownLocals.Clone()
 		}
 
-		// Otherwise, just store the value
-		writer := createAddToBag(reader)
-		return astbuilder.Statements(writer)
+		// Create the conversion to use to write to the bag
+		addToBag, err := conversion(
+			reader,
+			createAddToBag,
+			knownLocals,
+			generationContext)
+		if err != nil {
+			return nil, eris.Wrapf(
+				err,
+				"unable to convert %s to %s writing property bag",
+				sourceEndpoint.Name(),
+				destinationEndpoint.Name())
+		}
+
+		// If we only conditionally write to the bag, we need wrap with an if statement
+		if condition != nil {
+			writer := astbuilder.SimpleIfElse(
+				condition,
+				addToBag,
+				astbuilder.Statements(removeFromBag))
+			return astbuilder.Statements(writer), nil
+		}
+
+		// Otherwise, just add the value to the bag
+		return astbuilder.Statements(addToBag), nil
 	}, nil
 }
 
@@ -292,8 +376,8 @@ func writeToBagItem(
 func assignToOptional(
 	sourceEndpoint *TypedConversionEndpoint,
 	destinationEndpoint *TypedConversionEndpoint,
-	conversionContext *PropertyConversionContext) (PropertyConversion, error) {
-
+	conversionContext *PropertyConversionContext,
+) (PropertyConversion, error) {
 	// Require destination to not be a bag item
 	if destinationEndpoint.IsBagItem() {
 		return nil, nil
@@ -322,7 +406,12 @@ func assignToOptional(
 		return nil, nil
 	}
 
-	return func(reader dst.Expr, writer func(dst.Expr) []dst.Stmt, knownLocals *astmodel.KnownLocalsSet, generationContext *astmodel.CodeGenerationContext) []dst.Stmt {
+	return func(
+		reader dst.Expr,
+		writer func(dst.Expr) []dst.Stmt,
+		knownLocals *astmodel.KnownLocalsSet,
+		generationContext *astmodel.CodeGenerationContext,
+	) ([]dst.Stmt, error) {
 		// Create a writer that uses the address of the passed expression
 		// If expr isn't a plain identifier (implying a local variable), we introduce one
 		// This both allows us to avoid aliasing and complies with Go language semantics
@@ -360,11 +449,13 @@ func assignToOptional(
 //
 //	    <destination> = <zero>
 //	}
+//
+// If the type within the property bag differs from the destination type, a type conversion is recursively sought
 func pullFromBagItem(
 	sourceEndpoint *TypedConversionEndpoint,
 	destinationEndpoint *TypedConversionEndpoint,
-	conversionContext *PropertyConversionContext) (PropertyConversion, error) {
-
+	conversionContext *PropertyConversionContext,
+) (PropertyConversion, error) {
 	// Require source to be a bag item
 	sourceBagItem, sourceIsBagItem := AsPropertyBagMemberType(sourceEndpoint.Type())
 	if !sourceIsBagItem {
@@ -378,41 +469,94 @@ func pullFromBagItem(
 		actualDestinationType = destinationOptional.BaseType()
 	}
 
-	// Require the item in the bag to be exactly the same type as our destination
-	// (We don't want to recursively do all the conversions because our property bag item SHOULD always contain
-	// exactly the expected type, so no conversion should be required. Plus, our conversions are designed to isolate
-	// the source and destination from each other (so that changes to one don't impact the other), but with the
-	// property bag everything gets immediately serialized so everything is already nicely isolated.
-	if !astmodel.TypeEquals(sourceBagItem.Element(), actualDestinationType) {
-		return nil, nil
+	// If the item in the bag is exactly the same type as our destination, we don't need any other conversion
+	// We don't want to recursively look for more expensive conversions if we don't need to.
+	// Plus, conversions are designed to isolate the source and destination from each other (so that changes to one
+	// don't impact the other), but with the property bag everything gets immediately serialized so everything is
+	// already nicely isolated.
+	// On the other hand, if the types are different, we need to look for a conversion
+	conversion := directAssignmentPropertyConversion
+	typesDiffer := !astmodel.TypeEquals(sourceBagItem.Element(), actualDestinationType)
+	if typesDiffer {
+		// Look for a conversion between the bag item and our source
+		bagItemEndpoint := sourceEndpoint.WithType(sourceBagItem.Element())
+		c, err := CreateTypeConversion(bagItemEndpoint, destinationEndpoint, conversionContext)
+		if err != nil {
+			return nil, err
+		}
+
+		if c == nil {
+			return nil, nil
+		}
+
+		conversion = c
 	}
 
 	errIdent := dst.NewIdent("err")
 
-	return func(_ dst.Expr, writer func(dst.Expr) []dst.Stmt, knownLocals *astmodel.KnownLocalsSet, generationContext *astmodel.CodeGenerationContext) []dst.Stmt {
+	return func(
+		_ dst.Expr,
+		writer func(dst.Expr) []dst.Stmt,
+		knownLocals *astmodel.KnownLocalsSet,
+		generationContext *astmodel.CodeGenerationContext,
+	) ([]dst.Stmt, error) {
 		// our first parameter is an expression to read the value from our original instance, but in this case we're
 		// going to read from the property bag, so we're ignoring it.
 
-		local := knownLocals.CreateSingularLocal(sourceEndpoint.Name(), "", "Read")
-		errorsPkg := generationContext.MustGetImportedPackageName(astmodel.GitHubErrorsReference)
+		// Work out a name for our local variable
+		// We use different defaults when doing a conversion to make the local naming clearer in the generated code
+		var local string
+		if typesDiffer {
+			local = knownLocals.CreateSingularLocal(sourceEndpoint.Name(), "FromBag", "ReadFromBag")
+		} else {
+			local = knownLocals.CreateSingularLocal(sourceEndpoint.Name(), "", "Read")
+		}
 
+		errorsPkg := generationContext.MustGetImportedPackageName(astmodel.ErisReference)
+
+		// propertyBag.Contains("<sourceName>")
 		condition := astbuilder.CallQualifiedFunc(
 			conversionContext.PropertyBagName(),
 			"Contains",
 			astbuilder.StringLiteral(sourceEndpoint.Name()))
 
+		// var <local> <sourceBagItemType>
+		sourceBagItemExpr, err := sourceBagItem.AsTypeExpr(generationContext)
+		if err != nil {
+			return nil, eris.Wrapf(
+				err,
+				"converting %s to %s reading property bag",
+				sourceEndpoint.Name(),
+				destinationEndpoint.Name())
+		}
+
 		declare := astbuilder.NewVariableWithType(
 			local,
-			sourceBagItem.AsType(generationContext))
+			sourceBagItemExpr)
 
-		pull := astbuilder.ShortDeclaration(
-			"err",
+		// We're wrapping the conversion in a nested block, so any locals are independent
+		knownLocals = knownLocals.Clone()
+
+		// We have to do this at render time in order to ensure the first conversion generated
+		// declares 'err', not a later one
+		tok := token.ASSIGN
+		if knownLocals.TryCreateLocal("err") {
+			tok = token.DEFINE
+		}
+
+		// err := <propertyBag>.Pull(<sourceName>, &<local>)
+		pull := astbuilder.AssignmentStatement(
+			dst.NewIdent("err"),
+			tok,
 			astbuilder.CallQualifiedFunc(
 				conversionContext.PropertyBagName(),
 				"Pull",
 				astbuilder.StringLiteral(sourceEndpoint.Name()),
 				astbuilder.AddrOf(dst.NewIdent(local))))
 
+		// if err != nil {
+		//     return ...
+		// }
 		returnIfErr := astbuilder.ReturnIfNotNil(
 			errIdent,
 			astbuilder.WrappedErrorf(
@@ -428,16 +572,32 @@ func pullFromBagItem(
 			reader = dst.NewIdent(local)
 		}
 
-		assignValue := writer(reader)
+		// Create the actual code to store the value
+		assignValue, err := conversion(reader, writer, knownLocals, generationContext)
+		if err != nil {
+			return nil, eris.Wrapf(
+				err,
+				"unable to convert %s to %s reading property bag",
+				sourceEndpoint.Name(),
+				destinationEndpoint.Name())
+		}
 
-		assignZero := writer(destinationEndpoint.Type().AsZero(conversionContext.Types(), generationContext))
+		// Generate code to clear the value if we don't have one
+		assignZero := writer(
+			destinationEndpoint.Type().AsZero(conversionContext.Types(),
+				generationContext))
 
+		// if <condition> {
+		//   <declare, pull, returnIfErr, assignValue>
+		// } else {
+		//   <assignZero>
+		// }
 		ifStatement := astbuilder.SimpleIfElse(
 			condition,
 			astbuilder.Statements(declare, pull, returnIfErr, assignValue),
 			assignZero)
 
-		return astbuilder.Statements(ifStatement)
+		return astbuilder.Statements(ifStatement), nil
 	}, nil
 }
 
@@ -457,8 +617,8 @@ func pullFromBagItem(
 func assignFromOptional(
 	sourceEndpoint *TypedConversionEndpoint,
 	destinationEndpoint *TypedConversionEndpoint,
-	conversionContext *PropertyConversionContext) (PropertyConversion, error) {
-
+	conversionContext *PropertyConversionContext,
+) (PropertyConversion, error) {
 	// Require source to not be a bag item
 	if sourceEndpoint.IsBagItem() {
 		return nil, nil
@@ -483,7 +643,12 @@ func assignFromOptional(
 		return nil, nil
 	}
 
-	return func(reader dst.Expr, writer func(dst.Expr) []dst.Stmt, knownLocals *astmodel.KnownLocalsSet, generationContext *astmodel.CodeGenerationContext) []dst.Stmt {
+	return func(
+		reader dst.Expr,
+		writer func(dst.Expr) []dst.Stmt,
+		knownLocals *astmodel.KnownLocalsSet,
+		generationContext *astmodel.CodeGenerationContext,
+	) ([]dst.Stmt, error) {
 		var cacheOriginal dst.Stmt
 		var actualReader dst.Expr
 
@@ -506,12 +671,19 @@ func assignFromOptional(
 		checkForNil := astbuilder.AreNotEqual(actualReader, astbuilder.Nil())
 
 		// If we have a value, need to convert it to our destination type
-		// We use a cloned knownLocals as the write is within our if statement and we don't want locals to leak
-		writeActualValue := conversion(
+		// We use a cloned knownLocals as the Write is within our if statement, and we don't want locals to leak
+		writeActualValue, err := conversion(
 			astbuilder.Dereference(actualReader),
 			writer,
 			knownLocals.Clone(),
 			generationContext)
+		if err != nil {
+			return nil, eris.Wrapf(
+				err,
+				"unable to convert %s to %s",
+				sourceEndpoint.Name(),
+				destinationEndpoint.Name())
+		}
 
 		writeZeroValue := writer(
 			destinationEndpoint.Type().AsZero(conversionContext.Types(), generationContext))
@@ -521,7 +693,7 @@ func assignFromOptional(
 			writeActualValue,
 			writeZeroValue)
 
-		return astbuilder.Statements(cacheOriginal, stmt)
+		return astbuilder.Statements(cacheOriginal, stmt), nil
 	}, nil
 }
 
@@ -532,8 +704,8 @@ func assignFromOptional(
 func assignToEnumeration(
 	sourceEndpoint *TypedConversionEndpoint,
 	destinationEndpoint *TypedConversionEndpoint,
-	conversionContext *PropertyConversionContext) (PropertyConversion, error) {
-
+	conversionContext *PropertyConversionContext,
+) (PropertyConversion, error) {
 	// Require destination to not be a bag item
 	if destinationEndpoint.IsBagItem() {
 		return nil, nil
@@ -564,10 +736,80 @@ func assignToEnumeration(
 		return nil, nil
 	}
 
-	return func(reader dst.Expr, writer func(dst.Expr) []dst.Stmt, knownLocals *astmodel.KnownLocalsSet, generationContext *astmodel.CodeGenerationContext) []dst.Stmt {
-		convertingWriter := func(expr dst.Expr) []dst.Stmt {
+	conversionContext.AddPackageReference(astmodel.StringsReference)
+
+	return func(
+		reader dst.Expr,
+		writer func(dst.Expr) []dst.Stmt,
+		knownLocals *astmodel.KnownLocalsSet,
+		generationContext *astmodel.CodeGenerationContext,
+	) ([]dst.Stmt, error) {
+		// If the enum is NOT based on a string, we can just do a direct cast and keep things simple
+		if dstEnum.BaseType() != astmodel.StringType {
+			return writer(astbuilder.CallFunc(dstName.Name(), reader)), nil
+		}
+
+		var cacheOriginal dst.Stmt
+		var actualReader dst.Expr
+
+		// If the value we're reading is a local or a field, it's cheap to read and we can skip
+		// using a local (which makes the generated code easier to read). In other cases, we want
+		// to cache the value in a local to avoid repeating any expensive conversion.
+
+		switch reader.(type) {
+		case *dst.Ident, *dst.SelectorExpr:
+			// reading a local variable or a field
+			cacheOriginal = nil
+			actualReader = reader
+		default:
+			// Something else, so we cache the original
+			local := knownLocals.CreateSingularLocal(sourceEndpoint.Name(), "", "Value", "Cache")
+			cacheOriginal = astbuilder.ShortDeclaration(local, reader)
+			actualReader = dst.NewIdent(local)
+		}
+
+		dstNameExpr, err := dstName.AsTypeExpr(generationContext)
+		if err != nil {
+			return nil, eris.Wrapf(
+				err,
+				"unable to convert %s to %s",
+				sourceEndpoint.Name(),
+				destinationEndpoint.Name())
+		}
+
+		if dstEnum.NeedsMappingConversion(dstName) {
+			// We need to use the values mapping to convert the value in a case-insensitive way
+
+			mapperID := dstEnum.MapperVariableName(dstName)
+			genruntimePkg := generationContext.MustGetImportedPackageName(astmodel.GenRuntimeReference)
+
+			// genruntime.ToEnum(<actualReader>, <mapperId>)
+			toEnum := astbuilder.CallQualifiedFunc(
+				genruntimePkg,
+				"ToEnum",
+				actualReader,
+				dst.NewIdent(mapperID))
+
+			convert, err := conversion(
+				toEnum,
+				writer,
+				knownLocals,
+				generationContext)
+			if err != nil {
+				return nil, eris.Wrapf(
+					err,
+					"unable to convert %s to %s",
+					sourceEndpoint.Name(),
+					destinationEndpoint.Name())
+			}
+
+			return astbuilder.Statements(cacheOriginal, convert), nil
+		}
+
+		// Otherwise we just do a direct cast
+		castingWriter := func(expr dst.Expr) []dst.Stmt {
 			cast := &dst.CallExpr{
-				Fun:  dstName.AsType(generationContext),
+				Fun:  dstNameExpr,
 				Args: []dst.Expr{expr},
 			}
 			return writer(cast)
@@ -575,7 +817,7 @@ func assignToEnumeration(
 
 		return conversion(
 			reader,
-			convertingWriter,
+			castingWriter,
 			knownLocals,
 			generationContext)
 	}, nil
@@ -588,8 +830,8 @@ func assignToEnumeration(
 func assignPrimitiveFromPrimitive(
 	sourceEndpoint *TypedConversionEndpoint,
 	destinationEndpoint *TypedConversionEndpoint,
-	_ *PropertyConversionContext) (PropertyConversion, error) {
-
+	_ *PropertyConversionContext,
+) (PropertyConversion, error) {
 	// Require both source and destination to not be bag items
 	if sourceEndpoint.IsBagItem() || destinationEndpoint.IsBagItem() {
 		return nil, nil
@@ -617,9 +859,7 @@ func assignPrimitiveFromPrimitive(
 		return nil, nil
 	}
 
-	return func(reader dst.Expr, writer func(dst.Expr) []dst.Stmt, knownLocals *astmodel.KnownLocalsSet, generationContext *astmodel.CodeGenerationContext) []dst.Stmt {
-		return writer(reader)
-	}, nil
+	return directAssignmentPropertyConversion, nil
 }
 
 // assignAliasedPrimitiveFromAliasedPrimitive will generate a direct assignment if both
@@ -629,8 +869,8 @@ func assignPrimitiveFromPrimitive(
 func assignAliasedPrimitiveFromAliasedPrimitive(
 	sourceEndpoint *TypedConversionEndpoint,
 	destinationEndpoint *TypedConversionEndpoint,
-	conversionContext *PropertyConversionContext) (PropertyConversion, error) {
-
+	conversionContext *PropertyConversionContext,
+) (PropertyConversion, error) {
 	// Require both source and destination to not be bag items
 	if sourceEndpoint.IsBagItem() || destinationEndpoint.IsBagItem() {
 		return nil, nil
@@ -666,11 +906,21 @@ func assignAliasedPrimitiveFromAliasedPrimitive(
 		return nil, nil
 	}
 
-	return func(reader dst.Expr, writer func(dst.Expr) []dst.Stmt, knownLocals *astmodel.KnownLocalsSet, generationContext *astmodel.CodeGenerationContext) []dst.Stmt {
+	return func(
+		reader dst.Expr,
+		writer func(dst.Expr) []dst.Stmt,
+		knownLocals *astmodel.KnownLocalsSet,
+		generationContext *astmodel.CodeGenerationContext,
+	) ([]dst.Stmt, error) {
+		destinationNameExpr, err := destinationName.AsTypeExpr(generationContext)
+		if err != nil {
+			return nil, eris.Wrapf(err, "creating destination expression")
+		}
+
 		return writer(&dst.CallExpr{
-			Fun:  destinationName.AsType(generationContext),
+			Fun:  destinationNameExpr,
 			Args: []dst.Expr{reader},
-		})
+		}), nil
 	}, nil
 }
 
@@ -679,8 +929,8 @@ func assignAliasedPrimitiveFromAliasedPrimitive(
 func assignFromAliasedType(
 	sourceEndpoint *TypedConversionEndpoint,
 	destinationEndpoint *TypedConversionEndpoint,
-	conversionContext *PropertyConversionContext) (PropertyConversion, error) {
-
+	conversionContext *PropertyConversionContext,
+) (PropertyConversion, error) {
 	// Require source to not be a bag item
 	if sourceEndpoint.IsBagItem() {
 		return nil, nil
@@ -714,9 +964,19 @@ func assignFromAliasedType(
 		return nil, nil
 	}
 
-	return func(reader dst.Expr, writer func(dst.Expr) []dst.Stmt, knownLocals *astmodel.KnownLocalsSet, generationContext *astmodel.CodeGenerationContext) []dst.Stmt {
+	return func(
+		reader dst.Expr,
+		writer func(dst.Expr) []dst.Stmt,
+		knownLocals *astmodel.KnownLocalsSet,
+		generationContext *astmodel.CodeGenerationContext,
+	) ([]dst.Stmt, error) {
+		sourceTypeExpr, err := sourceType.AsTypeExpr(generationContext)
+		if err != nil {
+			return nil, eris.Wrapf(err, "creating source expression")
+		}
+
 		actualReader := &dst.CallExpr{
-			Fun:  sourceType.AsType(generationContext),
+			Fun:  sourceTypeExpr,
 			Args: []dst.Expr{reader},
 		}
 
@@ -731,8 +991,8 @@ func assignFromAliasedType(
 func assignToAliasedType(
 	sourceEndpoint *TypedConversionEndpoint,
 	destinationEndpoint *TypedConversionEndpoint,
-	conversionContext *PropertyConversionContext) (PropertyConversion, error) {
-
+	conversionContext *PropertyConversionContext,
+) (PropertyConversion, error) {
 	// Require destination to not be a bag item
 	if destinationEndpoint.IsBagItem() {
 		return nil, nil
@@ -766,10 +1026,20 @@ func assignToAliasedType(
 		return nil, nil
 	}
 
-	return func(reader dst.Expr, writer func(dst.Expr) []dst.Stmt, knownLocals *astmodel.KnownLocalsSet, generationContext *astmodel.CodeGenerationContext) []dst.Stmt {
+	return func(
+		reader dst.Expr,
+		writer func(dst.Expr) []dst.Stmt,
+		knownLocals *astmodel.KnownLocalsSet,
+		generationContext *astmodel.CodeGenerationContext,
+	) ([]dst.Stmt, error) {
+		destinationNameExpr, err := destinationName.AsTypeExpr(generationContext)
+		if err != nil {
+			return nil, eris.Wrapf(err, "creating destination expression")
+		}
+
 		actualWriter := func(expr dst.Expr) []dst.Stmt {
 			castToAlias := &dst.CallExpr{
-				Fun:  destinationName.AsType(generationContext),
+				Fun:  destinationNameExpr,
 				Args: []dst.Expr{expr},
 			}
 
@@ -833,24 +1103,140 @@ var handCraftedConversions = []handCraftedConversion{
 		implPackage: astmodel.GenRuntimeReference,
 		implFunc:    "GetOptionalIntValue",
 	},
+	{
+		fromType:    astmodel.StringType,
+		toType:      astmodel.ResourceReferenceType,
+		implPackage: astmodel.GenRuntimeReference,
+		implFunc:    "CreateResourceReferenceFromARMID",
+	},
+	{
+		fromType:    astmodel.FloatType,
+		toType:      astmodel.IntType,
+		implPackage: astmodel.GenRuntimeReference,
+		implFunc:    "GetIntFromFloat",
+	},
+	{
+		fromType:    astmodel.JSONType,
+		toType:      astmodel.StringType,
+		implPackage: astmodel.GenRuntimeReference,
+		implFunc:    "ConvertJSONToString",
+	},
+	{
+		fromType:    astmodel.StringType,
+		toType:      astmodel.JSONType,
+		implPackage: astmodel.GenRuntimeReference,
+		implFunc:    "ConvertStringToJSON",
+	},
 }
 
 func assignHandcraftedImplementations(
 	sourceEndpoint *TypedConversionEndpoint,
 	destinationEndpoint *TypedConversionEndpoint,
-	_ *PropertyConversionContext) (PropertyConversion, error) {
-
+	conversionContext *PropertyConversionContext,
+) (PropertyConversion, error) {
 	// Require both source and destination to not be bag items
 	if sourceEndpoint.IsBagItem() || destinationEndpoint.IsBagItem() {
 		return nil, nil
 	}
 
+	// Search for a handcrafted conversion to use
+	conversionFound := false
+	var conversion handCraftedConversion
 	for _, impl := range handCraftedConversions {
-		if astmodel.TypeEquals(sourceEndpoint.Type(), impl.fromType) &&
-			astmodel.TypeEquals(destinationEndpoint.Type(), impl.toType) {
-			return func(reader dst.Expr, writer func(dst.Expr) []dst.Stmt, _ *astmodel.KnownLocalsSet, cgc *astmodel.CodeGenerationContext) []dst.Stmt {
-				pkg := cgc.MustGetImportedPackageName(impl.implPackage)
-				return writer(astbuilder.CallQualifiedFunc(pkg, impl.implFunc, reader))
+		sourceType := sourceEndpoint.Type()
+		if vt, ok := astmodel.AsValidatedType(sourceType); ok {
+			// If the source is a validated type, we need to use the underlying type
+			sourceType = vt.ElementType()
+		}
+
+		destinationType := destinationEndpoint.Type()
+		if vt, ok := astmodel.AsValidatedType(destinationType); ok {
+			// If the destination is a validated type, we need to use the underlying type
+			destinationType = vt.ElementType()
+		}
+
+		if astmodel.TypeEquals(sourceType, impl.fromType) &&
+			astmodel.TypeEquals(destinationType, impl.toType) {
+			conversion = impl
+			conversionFound = true
+			break
+		}
+	}
+
+	if !conversionFound {
+		// No handcrafted conversion found
+		return nil, nil
+	}
+
+	// Make sure all the necessary packages are referenced
+	if ftn, ok := astmodel.AsTypeName(conversion.fromType); ok {
+		// Include a reference to the package our from type is found in
+		conversionContext.AddPackageReference(ftn.PackageReference())
+	}
+
+	if ttn, ok := astmodel.AsTypeName(conversion.toType); ok {
+		// Include a reference to the package our to type is found in
+		conversionContext.AddPackageReference(ttn.PackageReference())
+	}
+
+	// Include a reference to the package our implementation is found in
+	conversionContext.AddPackageReference(conversion.implPackage)
+
+	return func(
+		reader dst.Expr,
+		writer func(dst.Expr) []dst.Stmt,
+		knownLocals *astmodel.KnownLocalsSet,
+		generationContext *astmodel.CodeGenerationContext,
+	) ([]dst.Stmt, error) {
+		pkg := generationContext.MustGetImportedPackageName(conversion.implPackage)
+		return writer(astbuilder.CallQualifiedFunc(pkg, conversion.implFunc, reader)), nil
+	}, nil
+}
+
+// forbiddenConversion represents a conversion that we know we shouldn't even attempt to do
+// Encountering one isn't a fatal error, but it does mean we can't generate a conversion
+type forbiddenConversion struct {
+	fromType astmodel.Type
+	toType   astmodel.Type
+}
+
+var forbiddenConversions = []forbiddenConversion{
+	{
+		// Can't use a string (the value of a secret) to initialize a secret reference (pointing to the value source)
+		// We encounter this when initializing the spec of a resource from its status
+		fromType: astmodel.StringType,
+		toType:   astmodel.SecretReferenceType,
+	},
+	{
+		// Can't use a map[string]string (the value of a secret) to initialize a secret reference (pointing to the value source)
+		// We encounter this when initializing the spec of a resource from its status
+		fromType: astmodel.MapOfStringStringType,
+		toType:   astmodel.SecretMapReferenceType,
+	},
+}
+
+// neuterForbiddenConversions is a conversion factory that will return a conversion that does nothing if we encounter a
+// forbidden conversion
+func neuterForbiddenConversions(
+	sourceEndpoint *TypedConversionEndpoint,
+	destinationEndpoint *TypedConversionEndpoint,
+	_ *PropertyConversionContext,
+) (PropertyConversion, error) {
+	// Require both source and destination to not be bag items
+	if sourceEndpoint.IsBagItem() || destinationEndpoint.IsBagItem() {
+		return nil, nil
+	}
+
+	for _, forbidden := range forbiddenConversions {
+		if astmodel.TypeEquals(sourceEndpoint.Type(), forbidden.fromType) &&
+			astmodel.TypeEquals(destinationEndpoint.Type(), forbidden.toType) {
+			return func(
+				reader dst.Expr,
+				writer func(dst.Expr) []dst.Stmt,
+				knownLocals *astmodel.KnownLocalsSet,
+				generationContext *astmodel.CodeGenerationContext,
+			) ([]dst.Stmt, error) {
+				return nil, nil
 			}, nil
 		}
 	}
@@ -873,8 +1259,8 @@ func assignHandcraftedImplementations(
 func assignArrayFromArray(
 	sourceEndpoint *TypedConversionEndpoint,
 	destinationEndpoint *TypedConversionEndpoint,
-	conversionContext *PropertyConversionContext) (PropertyConversion, error) {
-
+	conversionContext *PropertyConversionContext,
+) (PropertyConversion, error) {
 	// Require both source and destination to not be bag items
 	if sourceEndpoint.IsBagItem() || destinationEndpoint.IsBagItem() {
 		return nil, nil
@@ -900,7 +1286,7 @@ func assignArrayFromArray(
 		unwrappedDestinationEndpoint,
 		conversionContext)
 	if err != nil {
-		return nil, errors.Wrapf(
+		return nil, eris.Wrapf(
 			err,
 			"finding array conversion from %s to %s",
 			astmodel.DebugDescription(sourceEndpoint.Type()),
@@ -910,7 +1296,12 @@ func assignArrayFromArray(
 		return nil, nil
 	}
 
-	return func(reader dst.Expr, writer func(dst.Expr) []dst.Stmt, knownLocals *astmodel.KnownLocalsSet, generationContext *astmodel.CodeGenerationContext) []dst.Stmt {
+	return func(
+		reader dst.Expr,
+		writer func(dst.Expr) []dst.Stmt,
+		knownLocals *astmodel.KnownLocalsSet,
+		generationContext *astmodel.CodeGenerationContext,
+	) ([]dst.Stmt, error) {
 		var cacheOriginal dst.Stmt
 		var actualReader dst.Expr
 
@@ -939,43 +1330,59 @@ func assignArrayFromArray(
 		// These suffixes must not overlap with those used for map conversion. (If these suffixes overlap, the naming
 		// becomes difficult to read when converting maps containing slices or vice versa.)
 		branchLocals := knownLocals.Clone()
-		tempId := branchLocals.CreateSingularLocal(sourceEndpoint.Name(), "List")
+		tempID := branchLocals.CreateSingularLocal(sourceEndpoint.Name(), "List")
 		loopLocals := branchLocals.Clone() // Clone after tempId is created so that it's visible within the loop
-		itemId := loopLocals.CreateSingularLocal(sourceEndpoint.Name(), "Item")
-		indexId := loopLocals.CreateSingularLocal(sourceEndpoint.Name(), "Index")
+		itemID := loopLocals.CreateSingularLocal(sourceEndpoint.Name(), "Item")
+		indexID := loopLocals.CreateSingularLocal(sourceEndpoint.Name(), "Index")
 
-		declaration := astbuilder.ShortDeclaration(
-			tempId,
-			astbuilder.MakeSlice(destinationArray.AsType(generationContext), astbuilder.CallFunc("len", actualReader)))
-
-		writeToElement := func(expr dst.Expr) []dst.Stmt {
-			return []dst.Stmt{
-				astbuilder.SimpleAssignment(
-					&dst.IndexExpr{
-						X:     dst.NewIdent(tempId),
-						Index: dst.NewIdent(indexId),
-					},
-					expr),
-			}
+		destinationArrayExpr, err := destinationArray.AsTypeExpr(generationContext)
+		if err != nil {
+			return nil, eris.Wrapf(
+				err,
+				"converting %s to %s",
+				sourceEndpoint.Name(),
+				destinationEndpoint.Name())
 		}
 
-		avoidAliasing := astbuilder.ShortDeclaration(itemId, dst.NewIdent(itemId))
+		declaration := astbuilder.ShortDeclaration(
+			tempID,
+			astbuilder.MakeSlice(destinationArrayExpr, astbuilder.CallFunc("len", actualReader)))
+
+		writeToElement := func(expr dst.Expr) []dst.Stmt {
+			return astbuilder.Statements(
+				astbuilder.SimpleAssignment(
+					&dst.IndexExpr{
+						X:     dst.NewIdent(tempID),
+						Index: dst.NewIdent(indexID),
+					},
+					expr),
+			)
+		}
+
+		avoidAliasing := astbuilder.ShortDeclaration(itemID, dst.NewIdent(itemID))
 		avoidAliasing.Decs.Start.Append("// Shadow the loop variable to avoid aliasing")
 		avoidAliasing.Decs.Before = dst.NewLine
 
-		loopBody := astbuilder.Statements(
-			avoidAliasing,
-			conversion(dst.NewIdent(itemId), writeToElement, loopLocals, generationContext))
+		elemConv, err := conversion(dst.NewIdent(itemID), writeToElement, loopLocals, generationContext)
+		if err != nil {
+			return nil, eris.Wrapf(
+				err,
+				"creating conversion for array element from %s to %s",
+				astmodel.DebugDescription(sourceEndpoint.Type()),
+				astmodel.DebugDescription(destinationEndpoint.Type()))
+		}
 
-		assignValue := writer(dst.NewIdent(tempId))
-		loop := astbuilder.IterateOverSliceWithIndex(indexId, itemId, reader, loopBody...)
+		loopBody := astbuilder.Statements(avoidAliasing, elemConv)
+
+		assignValue := writer(dst.NewIdent(tempID))
+		loop := astbuilder.IterateOverSliceWithIndex(indexID, itemID, reader, loopBody...)
 		trueBranch := astbuilder.Statements(declaration, loop, assignValue)
 
 		assignZero := writer(astbuilder.Nil())
 
 		return astbuilder.Statements(
 			cacheOriginal,
-			astbuilder.SimpleIfElse(checkForNil, trueBranch, assignZero))
+			astbuilder.SimpleIfElse(checkForNil, trueBranch, assignZero)), nil
 	}, nil
 }
 
@@ -995,8 +1402,8 @@ func assignArrayFromArray(
 func assignMapFromMap(
 	sourceEndpoint *TypedConversionEndpoint,
 	destinationEndpoint *TypedConversionEndpoint,
-	conversionContext *PropertyConversionContext) (PropertyConversion, error) {
-
+	conversionContext *PropertyConversionContext,
+) (PropertyConversion, error) {
 	// Require both source and destination to not be bag items
 	if sourceEndpoint.IsBagItem() || destinationEndpoint.IsBagItem() {
 		return nil, nil
@@ -1030,7 +1437,7 @@ func assignMapFromMap(
 		unwrappedDestinationEndpoint,
 		conversionContext)
 	if err != nil {
-		return nil, errors.Wrapf(
+		return nil, eris.Wrapf(
 			err,
 			"finding map conversion from %s to %s",
 			astmodel.DebugDescription(sourceEndpoint.Type()),
@@ -1040,7 +1447,12 @@ func assignMapFromMap(
 		return nil, nil
 	}
 
-	return func(reader dst.Expr, writer func(dst.Expr) []dst.Stmt, knownLocals *astmodel.KnownLocalsSet, generationContext *astmodel.CodeGenerationContext) []dst.Stmt {
+	return func(
+		reader dst.Expr,
+		writer func(dst.Expr) []dst.Stmt,
+		knownLocals *astmodel.KnownLocalsSet,
+		generationContext *astmodel.CodeGenerationContext,
+	) ([]dst.Stmt, error) {
 		var cacheOriginal dst.Stmt
 		var actualReader dst.Expr
 
@@ -1070,46 +1482,233 @@ func assignMapFromMap(
 		// These suffixes must not overlap with those used for array conversion. (If these suffixes overlap, the naming
 		// becomes difficult to read when converting maps containing slices or vice versa.)
 		branchLocals := knownLocals.Clone()
-		tempId := branchLocals.CreateSingularLocal(sourceEndpoint.Name(), "Map")
+		tempID := branchLocals.CreateSingularLocal(sourceEndpoint.Name(), "Map")
 		loopLocals := branchLocals.Clone() // Clone after tempId is created so that it's visible within the loop
-		itemId := loopLocals.CreateSingularLocal(sourceEndpoint.Name(), "Value")
-		keyId := loopLocals.CreateSingularLocal(sourceEndpoint.Name(), "Key")
+		itemID := loopLocals.CreateSingularLocal(sourceEndpoint.Name(), "Value")
+		keyID := loopLocals.CreateSingularLocal(sourceEndpoint.Name(), "Key")
+
+		keyTypeExpr, err := destinationMap.KeyType().AsTypeExpr(generationContext)
+		if err != nil {
+			return nil, eris.Wrapf(
+				err,
+				"creating map key type expression for %s",
+				astmodel.DebugDescription(destinationMap.KeyType()))
+		}
+
+		valueTypeExpr, err := destinationMap.ValueType().AsTypeExpr(generationContext)
+		if err != nil {
+			return nil, eris.Wrapf(
+				err,
+				"creating map value type expression for %s",
+				astmodel.DebugDescription(destinationMap.ValueType()))
+		}
 
 		declaration := astbuilder.ShortDeclaration(
-			tempId,
+			tempID,
 			astbuilder.MakeMapWithCapacity(
-				destinationMap.KeyType().AsType(generationContext),
-				destinationMap.ValueType().AsType(generationContext),
+				keyTypeExpr,
+				valueTypeExpr,
 				astbuilder.CallFunc("len", actualReader)))
 
 		assignToItem := func(expr dst.Expr) []dst.Stmt {
-			return []dst.Stmt{
+			return astbuilder.Statements(
 				astbuilder.SimpleAssignment(
 					&dst.IndexExpr{
-						X:     dst.NewIdent(tempId),
-						Index: dst.NewIdent(keyId),
+						X:     dst.NewIdent(tempID),
+						Index: dst.NewIdent(keyID),
 					},
 					expr),
-			}
+			)
 		}
 
-		avoidAliasing := astbuilder.ShortDeclaration(itemId, dst.NewIdent(itemId))
+		avoidAliasing := astbuilder.ShortDeclaration(itemID, dst.NewIdent(itemID))
 		avoidAliasing.Decs.Start.Append("// Shadow the loop variable to avoid aliasing")
 		avoidAliasing.Decs.Before = dst.NewLine
 
-		loopBody := astbuilder.Statements(
-			avoidAliasing,
-			conversion(dst.NewIdent(itemId), assignToItem, loopLocals, generationContext))
+		elemConv, err := conversion(dst.NewIdent(itemID), assignToItem, loopLocals, generationContext)
+		if err != nil {
+			return nil, eris.Wrapf(
+				err,
+				"creating map item conversion from %s to %s",
+				astmodel.DebugDescription(sourceMap.ValueType()),
+				astmodel.DebugDescription(destinationMap.ValueType()))
+		}
 
-		loop := astbuilder.IterateOverMapWithValue(keyId, itemId, actualReader, loopBody...)
-		assignMap := writer(dst.NewIdent(tempId))
+		loopBody := astbuilder.Statements(avoidAliasing, elemConv)
+
+		loop := astbuilder.IterateOverMapWithValue(keyID, itemID, actualReader, loopBody...)
+		assignMap := writer(dst.NewIdent(tempID))
 		trueBranch := astbuilder.Statements(declaration, loop, assignMap)
 
 		assignNil := writer(astbuilder.Nil())
 
 		return astbuilder.Statements(
 			cacheOriginal,
-			astbuilder.SimpleIfElse(checkForNil, trueBranch, assignNil))
+			astbuilder.SimpleIfElse(checkForNil, trueBranch, assignNil)), nil
+	}, nil
+}
+
+// assignUserAssignedIdentityMapFromArray will generate a code fragment to populate a userAssignedIdentity array from
+// a map whose key is the ARM ID of the userAssignedIdentity
+//
+//	if source.UserAssignedIdentities != nil {
+//	    <arr> := make([]<arrType>, 0, len(source.UserAssignedIdentities))
+//	    for key, _ := range source.UserAssignedIdentities {
+//	        ref := genruntime.CreateResourceReferenceFromARMID(key)
+//	        <arr> = append(<arr>, UserAssignedIdentityDetails{Reference: ref})
+//	    }
+//	    <writer> = <arr>
+//	} else {
+//	   <writer> = nil
+//	}
+func assignUserAssignedIdentityMapFromArray(
+	sourceEndpoint *TypedConversionEndpoint,
+	destinationEndpoint *TypedConversionEndpoint,
+	conversionContext *PropertyConversionContext,
+) (PropertyConversion, error) {
+	// There's no conversion in the other direction (array -> map) for this because property_conversions only deals with:
+	// 1. Conversions between storage types, where UserAssignedIdentity's are arrays on both sides and don't need
+	//    special handling.
+	// 2. Conversions from Status -> Spec, which is the direction that this conversion method deals with.
+
+	// Require both source and destination to not be bag items
+	if sourceEndpoint.IsBagItem() || destinationEndpoint.IsBagItem() {
+		return nil, nil
+	}
+
+	// Require source to be a map type
+	sourceMapType, sourceIsMap := astmodel.AsMapType(sourceEndpoint.Type())
+	if !sourceIsMap {
+		return nil, nil
+	}
+
+	// Require destination to be an array type
+	destinationArray, destinationIsArray := astmodel.AsArrayType(destinationEndpoint.Type())
+	if !destinationIsArray {
+		return nil, nil
+	}
+
+	// Require the source endpoint to have the expected property name
+	if sourceEndpoint.Name() != astmodel.UserAssignedIdentitiesProperty {
+		return nil, nil
+	}
+
+	// Require the destination endpoint to have the expected property name
+	if destinationEndpoint.Name() != astmodel.UserAssignedIdentitiesProperty {
+		return nil, nil
+	}
+
+	// The destination should be a typeName
+	destinationElement := destinationArray.Element()
+	_, ok := astmodel.AsTypeName(destinationElement)
+	if !ok {
+		return nil, nil
+	}
+
+	// The source map should be map[string]TypeName
+	_, ok = astmodel.AsTypeName(sourceMapType.ValueType())
+	if sourceMapType.KeyType() != astmodel.StringType || !ok {
+		return nil, nil
+	}
+
+	conversion, err := CreateTypeConversion(
+		sourceEndpoint.WithType(astmodel.StringType),
+		destinationEndpoint.WithType(astmodel.ResourceReferenceType),
+		conversionContext)
+	if err != nil {
+		return nil, eris.Wrapf(
+			err,
+			"finding UserAssignedIdentities conversion from %s to %s",
+			astmodel.DebugDescription(astmodel.StringType),
+			astmodel.DebugDescription(astmodel.ResourceReferenceType))
+	}
+
+	return func(
+		reader dst.Expr,
+		writer func(dst.Expr) []dst.Stmt,
+		knownLocals *astmodel.KnownLocalsSet,
+		generationContext *astmodel.CodeGenerationContext,
+	) ([]dst.Stmt, error) {
+		// <source>List := make([]<type>, 0, len(<source>)
+		tempID := knownLocals.CreateSingularLocal(sourceEndpoint.Name(), "List")
+		destinationArrayExpr, err := destinationArray.AsTypeExpr(generationContext)
+		if err != nil {
+			return nil, eris.Wrapf(
+				err,
+				"creating UserAssignedIdentities conversion from %s to %s",
+				astmodel.DebugDescription(astmodel.StringType),
+				astmodel.DebugDescription(astmodel.ResourceReferenceType))
+		}
+
+		declaration := astbuilder.ShortDeclaration(
+			tempID,
+			astbuilder.MakeEmptySlice(destinationArrayExpr, astbuilder.CallFunc("len", reader)))
+
+		loopLocals := knownLocals.Clone()
+		keyID := loopLocals.CreateLocal(sourceEndpoint.Name(), "Key")
+
+		intermediateDestination := loopLocals.CreateLocal(destinationEndpoint.Name(), "Ref")
+		destinationTypeExpr, err := destinationElement.AsTypeExpr(generationContext)
+		if err != nil {
+			return nil, eris.Wrapf(
+				err,
+				"creating UserAssignedIdentities conversion from %s to %s",
+				astmodel.DebugDescription(astmodel.StringType),
+				astmodel.DebugDescription(astmodel.ResourceReferenceType))
+		}
+
+		uaiBuilder := astbuilder.NewCompositeLiteralBuilder(destinationTypeExpr)
+		uaiBuilder.AddField("Reference", dst.NewIdent(intermediateDestination))
+
+		writeToElement := func(expr dst.Expr) []dst.Stmt {
+			return astbuilder.Statements(
+				astbuilder.ShortDeclaration(intermediateDestination, expr))
+		}
+
+		//	for key, _ := range source.UserAssignedIdentities {
+		//	   ref := genruntime.CreateResourceReferenceFromARMID(key)
+		//	   <arr> = append(<arr>, UserAssignedIdentityDetails{Reference: ref})
+		//	}
+		elemConv, err := conversion(dst.NewIdent(keyID), writeToElement, loopLocals, generationContext)
+		if err != nil {
+			return nil, eris.Wrapf(
+				err,
+				"creating UserAssignedIdentities conversion from %s to %s",
+				astmodel.DebugDescription(astmodel.StringType),
+				astmodel.DebugDescription(astmodel.ResourceReferenceType))
+		}
+
+		loopBody := astbuilder.Statements(
+			elemConv,
+			astbuilder.AppendItemToSlice(dst.NewIdent(tempID), uaiBuilder.Build()),
+		)
+		loop := astbuilder.IterateOverMapWithKey(
+			keyID,
+			reader,
+			loopBody...,
+		)
+
+		// if source.UserAssignedIdentities != nil
+		checkForNil := astbuilder.AreNotEqual(reader, astbuilder.Nil())
+
+		// <writer> = nil
+		assignNil := writer(astbuilder.Nil())
+
+		// <writer> = <arr>
+		assignValue := writer(dst.NewIdent(tempID))
+
+		// if source.UserAssignedIdentities != nil {
+		//     <loop>
+		// } else {
+		//     <writer> = nil
+		// }
+		trueBranch := astbuilder.Statements(
+			declaration,
+			loop,
+			assignValue)
+
+		return astbuilder.Statements(
+			astbuilder.SimpleIfElse(checkForNil, trueBranch, assignNil)), nil
 	}, nil
 }
 
@@ -1123,8 +1722,8 @@ func assignMapFromMap(
 func assignEnumFromEnum(
 	sourceEndpoint *TypedConversionEndpoint,
 	destinationEndpoint *TypedConversionEndpoint,
-	conversionContext *PropertyConversionContext) (PropertyConversion, error) {
-
+	conversionContext *PropertyConversionContext,
+) (PropertyConversion, error) {
 	// Require both source and destination to not be bag items
 	if sourceEndpoint.IsBagItem() || destinationEndpoint.IsBagItem() {
 		return nil, nil
@@ -1157,20 +1756,46 @@ func assignEnumFromEnum(
 
 	// Require enumerations to have the same base definitions
 	if !astmodel.TypeEquals(sourceEnum.BaseType(), destinationEnum.BaseType()) {
-		return nil, errors.Errorf(
+		return nil, eris.Errorf(
 			"no conversion from %s to %s",
 			astmodel.DebugDescription(sourceEnum.BaseType()),
 			astmodel.DebugDescription(destinationEnum.BaseType()))
 	}
 
-	return func(reader dst.Expr, writer func(dst.Expr) []dst.Stmt, knownLocals *astmodel.KnownLocalsSet, ctx *astmodel.CodeGenerationContext) []dst.Stmt {
+	return func(
+		reader dst.Expr,
+		writer func(dst.Expr) []dst.Stmt,
+		knownLocals *astmodel.KnownLocalsSet,
+		generationContext *astmodel.CodeGenerationContext,
+	) ([]dst.Stmt, error) {
 		local := knownLocals.CreateSingularLocal(destinationEndpoint.Name(), "", "As"+destinationName.Name(), "Value")
-		declare := astbuilder.ShortDeclaration(local, astbuilder.CallFunc(destinationName.Name(), reader))
+
+		var declare dst.Stmt
+		if destinationEnum.NeedsMappingConversion(destinationName) {
+			// We need to use the values mapping to convert the value in a case-insensitive manner
+
+			mapperID := destinationEnum.MapperVariableName(destinationName)
+			genruntimePkg := generationContext.MustGetImportedPackageName(astmodel.GenRuntimeReference)
+
+			// genruntime.ToEnum(<actualReader>, <mapperId>)
+			toEnum := astbuilder.CallQualifiedFunc(
+				genruntimePkg,
+				"ToEnum",
+				astbuilder.CallFunc("string", reader),
+				dst.NewIdent(mapperID))
+
+			declare = astbuilder.ShortDeclaration(local, toEnum)
+		} else {
+			// No conversion required
+			declare = astbuilder.ShortDeclaration(local, astbuilder.CallFunc(destinationName.Name(), reader))
+		}
+
 		write := writer(dst.NewIdent(local))
+
 		return astbuilder.Statements(
 			declare,
 			write,
-		)
+		), nil
 	}, nil
 }
 
@@ -1183,8 +1808,8 @@ func assignEnumFromEnum(
 func assignPrimitiveFromEnum(
 	sourceEndpoint *TypedConversionEndpoint,
 	destinationEndpoint *TypedConversionEndpoint,
-	conversionContext *PropertyConversionContext) (PropertyConversion, error) {
-
+	conversionContext *PropertyConversionContext,
+) (PropertyConversion, error) {
 	// Require both source and destination to not be bag items
 	if sourceEndpoint.IsBagItem() || destinationEndpoint.IsBagItem() {
 		return nil, nil
@@ -1216,8 +1841,13 @@ func assignPrimitiveFromEnum(
 		return nil, nil
 	}
 
-	return func(reader dst.Expr, writer func(dst.Expr) []dst.Stmt, knownLocals *astmodel.KnownLocalsSet, ctx *astmodel.CodeGenerationContext) []dst.Stmt {
-		return writer(astbuilder.CallFunc(dstPrimitive.Name(), reader))
+	return func(
+		reader dst.Expr,
+		writer func(dst.Expr) []dst.Stmt,
+		knownLocals *astmodel.KnownLocalsSet,
+		generationContext *astmodel.CodeGenerationContext,
+	) ([]dst.Stmt, error) {
+		return writer(astbuilder.CallFunc(dstPrimitive.Name(), reader)), nil
 	}, nil
 }
 
@@ -1235,8 +1865,8 @@ func assignPrimitiveFromEnum(
 func assignObjectDirectlyFromObject(
 	sourceEndpoint *TypedConversionEndpoint,
 	destinationEndpoint *TypedConversionEndpoint,
-	conversionContext *PropertyConversionContext) (PropertyConversion, error) {
-
+	conversionContext *PropertyConversionContext,
+) (PropertyConversion, error) {
 	// Require expected direction
 	if conversionContext.direction != ConvertFrom {
 		return nil, nil
@@ -1271,33 +1901,43 @@ func assignObjectDirectlyFromObject(
 		return nil, nil
 	}
 
-	// If our two types are not adjacent in our conversion graph, this is not the conversion you're looking for
-	nextType, err := conversionContext.FindNextType(destinationName)
-	if err != nil {
-		return nil, errors.Wrapf(
-			err,
-			"looking up next type for %s",
-			astmodel.DebugDescription(destinationEndpoint.Type()))
-	}
+	// If the source and destination types are in different packages, we must consult the conversion graph to make sure
+	// this is an expected conversion.
+	if !sourceName.PackageReference().Equals(destinationName.PackageReference()) {
 
-	if !nextType.IsEmpty() && !astmodel.TypeEquals(nextType, sourceName) {
-		return nil, nil
-	}
-
-	// If the two definitions have different names, require an explicit rename from one to the other
-	//
-	// Challenge: If we can detect incorrect renaming configuration here, why do we need that configuration at all?
-	// Answer: Because we need to use that configuration other places (such as ConversionGraph) where we don't have
-	// the right information to infer correctly.
-	//
-	if sourceName.Name() != destinationName.Name() {
-		err := validateTypeRename(sourceName, destinationName, conversionContext)
+		// If our two types are not adjacent in our conversion graph, this is not the conversion you're looking for
+		nextType, err := conversionContext.FindNextType(destinationName)
 		if err != nil {
-			return nil, err
+			return nil, eris.Wrapf(
+				err,
+				"looking up next type for %s",
+				astmodel.DebugDescription(destinationEndpoint.Type()))
+		}
+
+		if !nextType.IsEmpty() && !astmodel.TypeEquals(nextType, sourceName) {
+			return nil, nil
+		}
+
+		// If the two definitions have different names, require an explicit rename from one to the other
+		//
+		// Challenge: If we can detect incorrect renaming configuration here, why do we need that configuration at all?
+		// Answer: Because we need to use that configuration other places (such as ConversionGraph) where we don't have
+		// the right information to infer correctly.
+		//
+		if sourceName.Name() != destinationName.Name() {
+			err := conversionContext.validateTypeRename(sourceName, destinationName)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
-	return func(reader dst.Expr, writer func(dst.Expr) []dst.Stmt, knownLocals *astmodel.KnownLocalsSet, generationContext *astmodel.CodeGenerationContext) []dst.Stmt {
+	return func(
+		reader dst.Expr,
+		writer func(dst.Expr) []dst.Stmt,
+		knownLocals *astmodel.KnownLocalsSet,
+		generationContext *astmodel.CodeGenerationContext,
+	) ([]dst.Stmt, error) {
 		copyVar := knownLocals.CreateSingularLocal(destinationEndpoint.Name(), "", "Local", "Copy", "Temp")
 
 		// We have to do this at render time in order to ensure the first conversion generated
@@ -1307,19 +1947,20 @@ func assignObjectDirectlyFromObject(
 			tok = token.DEFINE
 		}
 
-		localId := dst.NewIdent(copyVar)
+		localID := dst.NewIdent(copyVar)
 		errLocal := dst.NewIdent("err")
 
-		errorsPackageName := generationContext.MustGetImportedPackageName(astmodel.GitHubErrorsReference)
+		errorsPackageName := generationContext.MustGetImportedPackageName(astmodel.ErisReference)
 
 		declaration := astbuilder.LocalVariableDeclaration(copyVar, createTypeDeclaration(destinationName, generationContext), "")
 
-		functionName := NameOfPropertyAssignmentFunction(sourceName, ConvertFrom, conversionContext.idFactory)
+		functionName := NameOfPropertyAssignmentFunction(
+			conversionContext.FunctionBaseName(), sourceName, ConvertFrom, conversionContext.idFactory)
 
 		conversion := astbuilder.AssignmentStatement(
 			errLocal,
 			tok,
-			astbuilder.CallExpr(localId, functionName, astbuilder.AsReference(reader)))
+			astbuilder.CallExpr(localID, functionName, astbuilder.AsReference(reader)))
 
 		checkForError := astbuilder.ReturnIfNotNil(
 			errLocal,
@@ -1329,8 +1970,8 @@ func assignObjectDirectlyFromObject(
 				functionName,
 				describeAssignment(sourceEndpoint, destinationEndpoint)))
 
-		assignment := writer(localId)
-		return astbuilder.Statements(declaration, conversion, checkForError, assignment)
+		assignment := writer(localID)
+		return astbuilder.Statements(declaration, conversion, checkForError, assignment), nil
 	}, nil
 }
 
@@ -1348,8 +1989,8 @@ func assignObjectDirectlyFromObject(
 func assignObjectDirectlyToObject(
 	sourceEndpoint *TypedConversionEndpoint,
 	destinationEndpoint *TypedConversionEndpoint,
-	conversionContext *PropertyConversionContext) (PropertyConversion, error) {
-
+	conversionContext *PropertyConversionContext,
+) (PropertyConversion, error) {
 	// Require expected direction
 	if conversionContext.direction != ConvertTo {
 		return nil, nil
@@ -1384,33 +2025,44 @@ func assignObjectDirectlyToObject(
 		return nil, nil
 	}
 
-	// If our two types are not adjacent in our conversion graph, this is not the conversion you're looking for
-	nextType, err := conversionContext.FindNextType(sourceName)
-	if err != nil {
-		return nil, errors.Wrapf(
-			err,
-			"looking up next type for %s",
-			astmodel.DebugDescription(sourceEndpoint.Type()))
-	}
+	// If the source and destination types are in different packages, we must consult the conversion graph to make sure
+	// this is an expected conversion.
+	if !sourceName.PackageReference().Equals(destinationName.PackageReference()) {
 
-	if !nextType.IsEmpty() && !astmodel.TypeEquals(nextType, destinationName) {
-		return nil, nil
-	}
-
-	// If the two definitions have different names, require an explicit rename from one to the other
-	//
-	// Challenge: If we can detect incorrect renaming configuration here, why do we need that configuration at all?
-	// Answer: Because we need to use that configuration other places (such as ConversionGraph) where we don't have
-	// the right information to infer correctly.
-	//
-	if sourceName.Name() != destinationName.Name() {
-		err := validateTypeRename(sourceName, destinationName, conversionContext)
+		// If our two types are not adjacent in our conversion graph, this is not the conversion you're looking for
+		// Check that
+		nextType, err := conversionContext.FindNextType(sourceName)
 		if err != nil {
-			return nil, err
+			return nil, eris.Wrapf(
+				err,
+				"looking up next type for %s",
+				astmodel.DebugDescription(sourceEndpoint.Type()))
+		}
+
+		if !nextType.IsEmpty() && !astmodel.TypeEquals(nextType, destinationName) {
+			return nil, nil
+		}
+
+		// If the two definitions have different names, require an explicit rename from one to the other
+		//
+		// Challenge: If we can detect incorrect renaming configuration here, why do we need that configuration at all?
+		// Answer: Because we need to use that configuration other places (such as ConversionGraph) where we don't have
+		// the right information to infer correctly.
+		//
+		if sourceName.Name() != destinationName.Name() {
+			err := conversionContext.validateTypeRename(sourceName, destinationName)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
-	return func(reader dst.Expr, writer func(dst.Expr) []dst.Stmt, knownLocals *astmodel.KnownLocalsSet, generationContext *astmodel.CodeGenerationContext) []dst.Stmt {
+	return func(
+		reader dst.Expr,
+		writer func(dst.Expr) []dst.Stmt,
+		knownLocals *astmodel.KnownLocalsSet,
+		generationContext *astmodel.CodeGenerationContext,
+	) ([]dst.Stmt, error) {
 		copyVar := knownLocals.CreateSingularLocal(destinationEndpoint.Name(), "", "Local", "Copy", "Temp")
 
 		// We have to do this at render time in order to ensure the first conversion generated
@@ -1420,18 +2072,19 @@ func assignObjectDirectlyToObject(
 			tok = token.DEFINE
 		}
 
-		localId := dst.NewIdent(copyVar)
+		localID := dst.NewIdent(copyVar)
 		errLocal := dst.NewIdent("err")
 
-		errorsPackageName := generationContext.MustGetImportedPackageName(astmodel.GitHubErrorsReference)
+		errorsPackageName := generationContext.MustGetImportedPackageName(astmodel.ErisReference)
 
 		declaration := astbuilder.LocalVariableDeclaration(copyVar, createTypeDeclaration(destinationName, generationContext), "")
 
-		functionName := NameOfPropertyAssignmentFunction(destinationName, ConvertTo, conversionContext.idFactory)
+		functionName := NameOfPropertyAssignmentFunction(
+			conversionContext.FunctionBaseName(), destinationName, ConvertTo, conversionContext.idFactory)
 		conversion := astbuilder.AssignmentStatement(
 			errLocal,
 			tok,
-			astbuilder.CallExpr(reader, functionName, astbuilder.AddrOf(localId)))
+			astbuilder.CallExpr(reader, functionName, astbuilder.AddrOf(localID)))
 
 		checkForError := astbuilder.ReturnIfNotNil(
 			errLocal,
@@ -1442,14 +2095,14 @@ func assignObjectDirectlyToObject(
 				describeAssignment(sourceEndpoint, destinationEndpoint)))
 
 		assignment := writer(dst.NewIdent(copyVar))
-		return astbuilder.Statements(declaration, conversion, checkForError, assignment)
+		return astbuilder.Statements(declaration, conversion, checkForError, assignment), nil
 	}, nil
 }
 
-// assignObjectsViaIntermediateObject will generate a conversion if both properties are TypeNames referencing ObjectType
-// definitions, neither property is optional, and the types are NOT adjacent in our storage conversion graph.
-// The conversion is implemented by assigning properties to an intermediate instance before assigning those to our
-// actual destination instance.
+// assignInlineObjectsViaIntermediateObject will generate a conversion if both properties are TypeNames referencing ObjectType
+// definitions, neither property is optional, the types are NOT adjacent in our storage conversion graph, and they are
+// inline with each other. The conversion is implemented by assigning properties to an intermediate instance before
+// assigning those to our actual destination instance.
 //
 // For ConvertFrom the generated code will be:
 //
@@ -1469,11 +2122,11 @@ func assignObjectDirectlyToObject(
 //
 // Note the actual steps are generated by nested conversions; this handler works by finding the two conversions needed
 // given our intermediate type and chaining them together.
-func assignObjectsViaIntermediateObject(
+func assignInlineObjectsViaIntermediateObject(
 	sourceEndpoint *TypedConversionEndpoint,
 	destinationEndpoint *TypedConversionEndpoint,
-	conversionContext *PropertyConversionContext) (PropertyConversion, error) {
-
+	conversionContext *PropertyConversionContext,
+) (PropertyConversion, error) {
 	// Require both source and destination to not be bag items
 	if sourceEndpoint.IsBagItem() || destinationEndpoint.IsBagItem() {
 		return nil, nil
@@ -1503,22 +2156,42 @@ func assignObjectsViaIntermediateObject(
 		return nil, nil
 	}
 
-	// If our two types are not adjacent in our conversion graph, this *IS* the conversion you're looking for
-	earlierName := conversionContext.direction.SelectType(destinationName, sourceName).(astmodel.TypeName)
-	intermediateName, err := conversionContext.FindNextType(earlierName)
-	if err != nil {
-		return nil, errors.Wrapf(
-			err,
-			"looking up next type for %s",
-			astmodel.DebugDescription(destinationEndpoint.Type()))
+	// Require a path from one name to the next, and work out an intermediate step to break down the conversion
+	var intermediateName astmodel.InternalTypeName
+	if conversionContext.PathExists(sourceName, destinationName) {
+		var err error
+		intermediateName, err = conversionContext.FindNextType(sourceName)
+		if err != nil {
+			return nil, eris.Wrapf(
+				err,
+				"looking up next type for %s",
+				astmodel.DebugDescription(destinationEndpoint.Type()))
+		}
+	} else if conversionContext.PathExists(destinationName, sourceName) {
+		var err error
+		intermediateName, err = conversionContext.FindNextType(destinationName)
+		if err != nil {
+			return nil, eris.Wrapf(
+				err,
+				"looking up next type for %s",
+				astmodel.DebugDescription(destinationEndpoint.Type()))
+		}
+	} else {
+		// No path between the two types, we can't handle the required conversion
+		return nil, nil
 	}
 
-	if intermediateName.IsEmpty() || astmodel.TypeEquals(intermediateName, sourceName) {
+	// If intermediateName is empty, we didn't find an intermediate to use, so this conversion step doesn't apply.
+	// If we found either our source or destination as the intermediate type, then the two types are directly
+	// convertible and (again), this conversion step doesn't apply.
+	if intermediateName.IsEmpty() ||
+		astmodel.TypeEquals(intermediateName, sourceName) ||
+		astmodel.TypeEquals(intermediateName, destinationName) {
 		return nil, nil
 	}
 
 	// Make sure we can reference our intermediate type when needed
-	conversionContext.AddPackageReference(intermediateName.PackageReference)
+	conversionContext.AddPackageReference(intermediateName.PackageReference())
 
 	// Need a pair of conversions, using our intermediate type
 	intermediateEndpoint := NewTypedConversionEndpoint(
@@ -1526,7 +2199,7 @@ func assignObjectsViaIntermediateObject(
 		intermediateName.Name()+"Stash")
 	firstConversion, err := CreateTypeConversion(sourceEndpoint, intermediateEndpoint, conversionContext)
 	if err != nil {
-		return nil, errors.Wrapf(
+		return nil, eris.Wrapf(
 			err,
 			"finding first intermediate conversion, from %s to %s",
 			astmodel.DebugDescription(sourceName),
@@ -1538,7 +2211,7 @@ func assignObjectsViaIntermediateObject(
 
 	secondConversion, err := CreateTypeConversion(intermediateEndpoint, destinationEndpoint, conversionContext)
 	if err != nil {
-		return nil, errors.Wrapf(
+		return nil, eris.Wrapf(
 			err,
 			"finding second intermediate conversion, from %s to %s",
 			astmodel.DebugDescription(intermediateName),
@@ -1549,8 +2222,12 @@ func assignObjectsViaIntermediateObject(
 		return nil, nil
 	}
 
-	return func(reader dst.Expr, writer func(dst.Expr) []dst.Stmt, knownLocals *astmodel.KnownLocalsSet, generationContext *astmodel.CodeGenerationContext) []dst.Stmt {
-
+	return func(
+		reader dst.Expr,
+		writer func(dst.Expr) []dst.Stmt,
+		knownLocals *astmodel.KnownLocalsSet,
+		generationContext *astmodel.CodeGenerationContext,
+	) ([]dst.Stmt, error) {
 		// We capture the expression written by the first step pass it to the second step,
 		// allowing us to avoid extra local variable (this is a bit sneaky, as we rely on assignObjectDirectlyFromObject
 		// and assignObjectDirectlyToObject using a local variable themselves.)
@@ -1561,12 +2238,183 @@ func assignObjectsViaIntermediateObject(
 		}
 
 		// Capture the first step
-		firstStep := firstConversion(reader, capturingWriter, knownLocals, generationContext)
-		secondStep := secondConversion(capture, writer, knownLocals, generationContext)
+		firstStep, err := firstConversion(reader, capturingWriter, knownLocals, generationContext)
+		if err != nil {
+			return nil, eris.Wrapf(
+				err,
+				"converting from %s to %s",
+				astmodel.DebugDescription(sourceName),
+				astmodel.DebugDescription(intermediateName))
+		}
+
+		secondStep, err := secondConversion(capture, writer, knownLocals, generationContext)
+		if err != nil {
+			return nil, eris.Wrapf(
+				err,
+				"converting from %s to %s",
+				astmodel.DebugDescription(intermediateName),
+				astmodel.DebugDescription(destinationName))
+		}
 
 		return astbuilder.Statements(
 			firstStep,
-			secondStep)
+			secondStep), nil
+	}, nil
+}
+
+// assignNonInlineObjectsViaPivotObject will generate a conversion if both properties are TypeNames referencing Object
+// Type definitions, neither property is optional, the types are NOT adjacent in our storage conversion graph, and they
+// are NOT inline with each other. The conversion is implemented by assigning properties to an intermediate pivot
+// instance before assigning those to our actual destination instance.
+//
+// A key difference between this and assignInlineObjectsViaIntermediateObject is that this handles the case where
+// the types are on different branches of the conversion graph, necessitating discovery of the closest shared type
+// to use as a pivot. Using this kind of pivot requires reversing the direction of the second half of the conversion!
+//
+// For ConvertFrom the generated code will be:
+//
+// var <pivot> <pivotType>
+// err := <pivot>.AssignPropertiesFrom(<source>)
+//
+//	if err != nil {
+//	   return errors.Wrap(err, "while calling <pivot>.AssignPropertiesFrom(<source>)")
+//	}
+//
+// var <otherlocal> <destinationType>
+// err := <pviot>.AssignPropertiesTo(<otherLocakl>)
+//
+//	if err != nil {
+//	   return errors.Wrap(err, "while calling <otherlocal>.AssignPropertiesFrom(<local>)")
+//	}
+//
+// Note the actual steps are generated by nested conversions; this handler works by finding the two conversions needed
+// given our intermediate type and chaining them together.
+func assignNonInlineObjectsViaPivotObject(
+	sourceEndpoint *TypedConversionEndpoint,
+	destinationEndpoint *TypedConversionEndpoint,
+	conversionContext *PropertyConversionContext,
+) (PropertyConversion, error) {
+	// Require both source and destination to not be bag items
+	if sourceEndpoint.IsBagItem() || destinationEndpoint.IsBagItem() {
+		return nil, nil
+	}
+
+	// Require both source and destination to be non-optional
+	if sourceEndpoint.IsOptional() || destinationEndpoint.IsOptional() {
+		return nil, nil
+	}
+
+	// Require source to be the name of an object
+	sourceName, sourceType, sourceFound := conversionContext.ResolveType(sourceEndpoint.Type())
+	if !sourceFound {
+		return nil, nil
+	}
+	if _, sourceIsObject := astmodel.AsObjectType(sourceType); !sourceIsObject {
+		return nil, nil
+	}
+
+	// Require destination to be the name of an object
+	destinationName, destinationType, destinationFound := conversionContext.ResolveType(destinationEndpoint.Type())
+	if !destinationFound {
+		return nil, nil
+	}
+	_, destinationIsObject := astmodel.AsObjectType(destinationType)
+	if !destinationIsObject {
+		return nil, nil
+	}
+
+	// Require that there's no direct conversion path between our source and destination types
+	if conversionContext.PathExists(sourceName, destinationName) ||
+		conversionContext.PathExists(destinationName, sourceName) {
+		return nil, nil
+	}
+
+	// Find the pivot type; if we can't find one, this conversion doesn't apply
+	pivotName, found := conversionContext.FindPivotType(sourceName, destinationName)
+	if !found {
+		// No pivot found, do nothing
+		return nil, nil
+	}
+
+	// Make sure we can reference our intermediate type when needed
+	conversionContext.AddPackageReference(pivotName.PackageReference())
+
+	// Need a pair of conversions, using our intermediate type.
+	// First convert forward to the pivot.
+	// We can't call any methods on the pivot type (as it's later in the conversion graph), so we
+	// have to use ConvertTo to write to it
+	pivotEndpoint := NewTypedConversionEndpoint(
+		pivotName,
+		pivotName.Name()+"Pivot")
+	firstConversion, err := CreateTypeConversion(
+		sourceEndpoint,
+		pivotEndpoint,
+		conversionContext.WithDirection(ConvertTo))
+	if err != nil {
+		return nil, eris.Wrapf(
+			err,
+			"finding first intermediate conversion, from %s to %s",
+			astmodel.DebugDescription(sourceName),
+			astmodel.DebugDescription(pivotName))
+	}
+	if firstConversion == nil {
+		return nil, nil
+	}
+
+	// Second conversion needs to run in the opposite direction, using ConvertFrom to read from the pivot
+	secondConversion, err := CreateTypeConversion(
+		pivotEndpoint,
+		destinationEndpoint,
+		conversionContext.WithDirection(ConvertFrom))
+	if err != nil {
+		return nil, eris.Wrapf(
+			err,
+			"finding second intermediate conversion, from %s to %s",
+			astmodel.DebugDescription(pivotName),
+			astmodel.DebugDescription(destinationType))
+	}
+
+	if secondConversion == nil {
+		return nil, nil
+	}
+
+	return func(
+		reader dst.Expr,
+		writer func(dst.Expr) []dst.Stmt,
+		knownLocals *astmodel.KnownLocalsSet,
+		generationContext *astmodel.CodeGenerationContext,
+	) ([]dst.Stmt, error) {
+		// We capture the expression written by the first step pass it to the second step,
+		// allowing us to avoid extra local variable (this is a bit sneaky, as we rely on assignObjectDirectlyFromObject
+		// and assignObjectDirectlyToObject using a local variable themselves.)
+		var capture dst.Expr = nil
+		capturingWriter := func(expr dst.Expr) []dst.Stmt {
+			capture = expr
+			return []dst.Stmt{}
+		}
+
+		// Capture the first step
+		firstStep, err := firstConversion(reader, capturingWriter, knownLocals, generationContext)
+		if err != nil {
+			return nil, eris.Wrapf(
+				err,
+				"converting from %s to %s",
+				astmodel.DebugDescription(sourceName),
+				astmodel.DebugDescription(pivotName))
+		}
+
+		secondStep, err := secondConversion(capture, writer, knownLocals, generationContext)
+		if err != nil {
+			return nil, eris.Wrapf(
+				err,
+				"converting from %s to %s",
+				astmodel.DebugDescription(pivotName),
+				astmodel.DebugDescription(destinationName))
+		}
+
+		return astbuilder.Statements(
+			firstStep,
+			secondStep), nil
 	}, nil
 }
 
@@ -1609,9 +2457,7 @@ func assignKnownType(name astmodel.TypeName) func(*TypedConversionEndpoint, *Typ
 			return nil, nil
 		}
 
-		return func(reader dst.Expr, writer func(dst.Expr) []dst.Stmt, knownLocals *astmodel.KnownLocalsSet, generationContext *astmodel.CodeGenerationContext) []dst.Stmt {
-			return writer(reader)
-		}, nil
+		return directAssignmentPropertyConversion, nil
 	}
 }
 
@@ -1659,7 +2505,12 @@ func copyKnownType(name astmodel.TypeName, methodName string, returnKind knownTy
 			return nil, nil
 		}
 
-		return func(reader dst.Expr, writer func(dst.Expr) []dst.Stmt, knownLocals *astmodel.KnownLocalsSet, generationContext *astmodel.CodeGenerationContext) []dst.Stmt {
+		return func(
+			reader dst.Expr,
+			writer func(dst.Expr) []dst.Stmt,
+			knownLocals *astmodel.KnownLocalsSet,
+			generationContext *astmodel.CodeGenerationContext,
+		) ([]dst.Stmt, error) {
 			// If our writer is dereferencing a value, skip that as we don't need to dereference before a method call
 			if star, ok := reader.(*dst.StarExpr); ok {
 				reader = star.X
@@ -1669,67 +2520,24 @@ func copyKnownType(name astmodel.TypeName, methodName string, returnKind knownTy
 				// If the copy method returns a ptr, we need to dereference
 				// This dereference is always safe because we ensured that both source and destination are always
 				// non-optional. The handler assignToOptional() should do the right thing when this happens.
-				return writer(astbuilder.Dereference(astbuilder.CallExpr(reader, methodName)))
+				return writer(astbuilder.Dereference(astbuilder.CallExpr(reader, methodName))), nil
 			}
 
-			return writer(astbuilder.CallExpr(reader, methodName))
+			return writer(astbuilder.CallExpr(reader, methodName)), nil
 		}, nil
 	}
 }
 
-func createTypeDeclaration(name astmodel.TypeName, generationContext *astmodel.CodeGenerationContext) dst.Expr {
-	if name.PackageReference.Equals(generationContext.CurrentPackage()) {
+func createTypeDeclaration(
+	name astmodel.InternalTypeName,
+	generationContext *astmodel.CodeGenerationContext,
+) dst.Expr {
+	if name.InternalPackageReference().Equals(generationContext.CurrentPackage()) {
 		return dst.NewIdent(name.Name())
 	}
 
-	packageName := generationContext.MustGetImportedPackageName(name.PackageReference)
+	packageName := generationContext.MustGetImportedPackageName(name.InternalPackageReference())
 	return astbuilder.Selector(dst.NewIdent(packageName), name.Name())
-}
-
-// validateTypeRename is used to validate two types with different names are a properly renamed set
-func validateTypeRename(sourceName astmodel.TypeName, destinationName astmodel.TypeName, conversionContext *PropertyConversionContext) error {
-	// Work out which name represents the earlier package release
-	// (needed in order to do the lookup as the type rename is configured on the last type *before* the rename.)
-	var earlier astmodel.TypeName
-	var later astmodel.TypeName
-	if conversionContext.direction == ConvertTo {
-		earlier = sourceName
-		later = destinationName
-	} else {
-		earlier = destinationName
-		later = sourceName
-	}
-
-	n, err := conversionContext.TypeRename(earlier)
-	if err != nil {
-
-		if config.IsNotConfiguredError(err) {
-			// No rename configured, but we can't proceed without one. Return an error - it'll be wrapped with property
-			// details by CreateTypeConversion() so we only need the specific details here
-			return errors.Wrapf(
-				err,
-				"no configuration to rename %s to %s",
-				earlier.Name(),
-				later.Name())
-		}
-
-		// Some other kind of problem, need to report back
-		return errors.Wrapf(
-			err,
-			"looking up type rename of %s",
-			earlier.Name())
-	}
-
-	if later.Name() != n {
-		// Configured rename doesn't match what we found. Return an error - it'll be wrapped with property details
-		// by CreateTypeConversion() so we only need the specific details here
-		return errors.Errorf(
-			"configuration includes rename of %s to %s, but found %s",
-			earlier.Name(),
-			n,
-			later.Name())
-	}
-	return nil
 }
 
 func describeAssignment(sourceEndpoint *TypedConversionEndpoint, destinationEndpoint *TypedConversionEndpoint) string {

@@ -78,3 +78,9 @@ hack/tools
 
 # Private powershell scripts
 .ps
+
+# goenv condiguration
+.go-version
+v2/controller
+v2/cmd/asoctl/asoctl
+v2/tools/generator/aso-gen

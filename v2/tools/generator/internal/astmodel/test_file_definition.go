@@ -6,31 +6,52 @@
 package astmodel
 
 import (
+	"cmp"
 	"go/token"
 
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
+	"golang.org/x/exp/slices"
+	kerrors "k8s.io/apimachinery/pkg/util/errors"
 )
 
 // TestFileDefinition defines the content of a test file we're generating
 type TestFileDefinition struct {
 	// the package this file is in
-	packageReference PackageReference
+	packageReference InternalPackageReference
 	// definitions containing test cases to include in this file
 	definitions []TypeDefinition
 	// other packages whose references may be needed for code generation
-	generatedPackages map[PackageReference]*PackageDefinition
+	generatedPackages map[InternalPackageReference]*PackageDefinition
 }
 
 var _ GoSourceFile = &TestFileDefinition{}
 
 // NewTestFileDefinition creates a file definition containing test cases from the specified definitions
+// packageRef is the package to which this file belongs.
+// definitions are the type definitions to include in this specific file.
+// generatedPackages is a map of all other packages being generated (to allow for cross-package references).
 func NewTestFileDefinition(
-	packageRef PackageReference,
+	packageRef InternalPackageReference,
 	definitions []TypeDefinition,
-	generatedPackages map[PackageReference]*PackageDefinition,
+	generatedPackages map[InternalPackageReference]*PackageDefinition,
 ) *TestFileDefinition {
+	// Force deterministic ordering of type definitions
+	defs := make([]TypeDefinition, len(definitions))
+	copy(defs, definitions)
+
+	slices.SortFunc(
+		defs,
+		func(left TypeDefinition, right TypeDefinition) int {
+			return cmp.Compare(left.Name().Name(), right.Name().Name())
+		})
+
 	// TODO: check that all definitions are from same package
-	return &TestFileDefinition{packageRef, definitions, generatedPackages}
+	return &TestFileDefinition{
+		packageReference:  packageRef,
+		definitions:       defs,
+		generatedPackages: generatedPackages,
+	}
 }
 
 // AsAst generates an array of declarations for the content of the file
@@ -40,6 +61,7 @@ func (file *TestFileDefinition) AsAst() (*dst.File, error) {
 
 	// Emit all test cases:
 	var testcases []dst.Decl
+	var errs []error
 	for _, s := range file.definitions {
 		container, ok := AsTestCaseContainer(s.Type())
 		if !ok {
@@ -47,8 +69,20 @@ func (file *TestFileDefinition) AsAst() (*dst.File, error) {
 		}
 
 		for _, testcase := range container.TestCases() {
-			testcases = append(testcases, testcase.AsFuncs(s.name, codeGenContext)...)
+			decls, err := testcase.AsFuncs(s.name, codeGenContext)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+
+			testcases = append(testcases, decls...)
 		}
+	}
+
+	if len(errs) > 0 {
+		return nil, eris.Wrap(
+			kerrors.NewAggregate(errs),
+			"failed to generate test cases")
 	}
 
 	var decls []dst.Decl

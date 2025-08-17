@@ -25,7 +25,6 @@ type FuncDetails struct {
 // NewTestFuncDetails returns a FuncDetails for a test method
 // Tests require a particular signature, so this makes it simpler to create test functions
 func NewTestFuncDetails(testingPackage string, testName string, body ...dst.Stmt) *FuncDetails {
-
 	// Ensure the method name starts with `Test` as required
 	var name string
 	if strings.HasPrefix(testName, "Test") {
@@ -39,13 +38,7 @@ func NewTestFuncDetails(testingPackage string, testName string, body ...dst.Stmt
 		Body: body,
 	}
 
-	result.AddParameter("t",
-		&dst.StarExpr{
-			X: &dst.SelectorExpr{
-				X:   dst.NewIdent(testingPackage),
-				Sel: dst.NewIdent("T"),
-			}},
-	)
+	result.AddParameter("t", PointerTo(Selector(dst.NewIdent(testingPackage), "T")))
 
 	return result
 }
@@ -57,7 +50,18 @@ func NewTestFuncDetails(testingPackage string, testName string, body ...dst.Stmt
 //		<body...>
 //	}
 func (fn *FuncDetails) DefineFunc() *dst.FuncDecl {
+	return fn.defineFunc(false)
+}
 
+// DefineFuncHeader defines a function header like:
+//
+//	<comment>
+//	func (<receiverIdent> <receiverType>) <name>(<params...>) (<returns...>)
+func (fn *FuncDetails) DefineFuncHeader() *dst.FuncDecl {
+	return fn.defineFunc(true)
+}
+
+func (fn *FuncDetails) defineFunc(noBody bool) *dst.FuncDecl {
 	// Safety check that we are making something valid
 	if (fn.ReceiverIdent == "") != (fn.ReceiverType == nil) {
 		reason := fmt.Sprintf(
@@ -82,6 +86,17 @@ func (fn *FuncDetails) DefineFunc() *dst.FuncDecl {
 		AddComments(&comment, fn.Comments)
 	}
 
+	var bodyBlock *dst.BlockStmt
+	if noBody {
+		if len(body) > 0 {
+			panic("cannot generate fuction header for function that also has body")
+		}
+	} else {
+		bodyBlock = &dst.BlockStmt{
+			List: body,
+		}
+	}
+
 	result := &dst.FuncDecl{
 		Name: dst.NewIdent(fn.Name),
 		Decs: dst.FuncDeclDecorations{
@@ -99,9 +114,7 @@ func (fn *FuncDetails) DefineFunc() *dst.FuncDecl {
 				List: fn.Returns,
 			},
 		},
-		Body: &dst.BlockStmt{
-			List: body,
-		},
+		Body: bodyBlock,
 	}
 
 	if fn.ReceiverIdent != "" {

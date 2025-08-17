@@ -8,13 +8,15 @@ package astmodel
 import (
 	"fmt"
 	"go/token"
-	"golang.org/x/exp/slices"
-	"sort"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/dave/dst"
-	"k8s.io/klog/v2"
+	"github.com/rotisserie/eris"
+	"golang.org/x/exp/slices"
 
+	"github.com/Azure/azure-service-operator/v2/internal/set"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 )
 
@@ -39,14 +41,34 @@ func NewEnumType(baseType *PrimitiveType, options ...EnumValue) *EnumType {
 		panic("baseType must be provided")
 	}
 
-	sort.Slice(options, func(left int, right int) bool {
-		return options[left].Identifier < options[right].Identifier
-	})
+	slices.SortFunc(
+		options,
+		func(left EnumValue, right EnumValue) int {
+			if baseType == IntType {
+				// Compare integers as numbers if we can
+				l, lOk := strconv.Atoi(left.Identifier)
+				r, rOk := strconv.Atoi(right.Identifier)
+				if lOk == nil && rOk == nil {
+					return l - r
+				}
+
+				if lOk == nil && rOk != nil {
+					return -1 // put the int first
+				}
+
+				if lOk != nil && rOk == nil {
+					return 1 // put the int first
+				}
+			}
+
+			return strings.Compare(left.Identifier, right.Identifier)
+		})
 
 	return &EnumType{
 		baseType:       baseType,
 		options:        options,
-		emitValidation: true}
+		emitValidation: true,
+	}
 }
 
 // WithoutValidation returns a copy of this enum, without associated Kubebuilder annotations.
@@ -64,36 +86,39 @@ func (enum *EnumType) WithValidation() *EnumType {
 }
 
 // AsDeclarations converts the EnumType to a series of Go AST Decls
-func (enum *EnumType) AsDeclarations(codeGenerationContext *CodeGenerationContext, declContext DeclarationContext) []dst.Decl {
-	result := []dst.Decl{enum.createBaseDeclaration(codeGenerationContext, declContext.Name, declContext.Description, declContext.Validations)}
+func (enum *EnumType) AsDeclarations(
+	codeGenerationContext *CodeGenerationContext,
+	declContext DeclarationContext,
+) ([]dst.Decl, error) {
+	declareEnum := enum.createBaseDeclaration(
+		codeGenerationContext,
+		declContext.Name,
+		declContext.Description,
+		declContext.Validations)
 
-	specs := make([]dst.Spec, 0, len(enum.options))
-	for _, v := range enum.options {
-		s := enum.createValueDeclaration(declContext.Name, v)
-		specs = append(specs, s)
+	valuesDeclaration := enum.createValuesDeclaration(declContext)
+	mapperDeclaration, err := enum.createMappingDeclaration(declContext.Name, codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating mapping declaration")
 	}
 
-	if len(specs) > 0 {
-		declaration := &dst.GenDecl{
-			Tok:   token.CONST,
-			Specs: specs,
-		}
-
-		result = append(result, declaration)
-	}
-
-	return result
+	return astbuilder.Declarations(
+		declareEnum,
+		valuesDeclaration,
+		mapperDeclaration,
+	), nil
 }
 
 func (enum *EnumType) createBaseDeclaration(
 	codeGenerationContext *CodeGenerationContext,
 	name TypeName,
 	description []string,
-	validations []KubeBuilderValidation) dst.Decl {
-
+	validations []KubeBuilderValidation,
+) dst.Decl {
+	baseTypeExpr, _ := enum.baseType.AsTypeExpr(codeGenerationContext)
 	typeSpecification := &dst.TypeSpec{
 		Name: dst.NewIdent(name.Name()),
-		Type: enum.baseType.AsType(codeGenerationContext),
+		Type: baseTypeExpr,
 	}
 
 	declaration := &dst.GenDecl{
@@ -119,9 +144,70 @@ func (enum *EnumType) createBaseDeclaration(
 	return declaration
 }
 
+func (enum *EnumType) createValuesDeclaration(
+	declContext DeclarationContext,
+) dst.Decl {
+	values := make([]dst.Spec, 0, len(enum.options))
+	for _, v := range enum.options {
+		value := enum.createValueDeclaration(declContext.Name, v)
+		values = append(values, value)
+	}
+
+	if len(values) == 0 {
+		return nil
+	}
+
+	return &dst.GenDecl{
+		Tok:   token.CONST,
+		Specs: values,
+	}
+}
+
+func (enum *EnumType) createMappingDeclaration(
+	name InternalTypeName,
+	codeGenerationContext *CodeGenerationContext,
+) (dst.Decl, error) {
+	if !enum.NeedsMappingConversion(name) {
+		// We don't need a mapping conversion map for this enum
+		return nil, nil
+	}
+
+	baseTypeExpr, err := enum.baseType.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating base type expression")
+	}
+
+	nameExpr, err := name.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating name expression")
+	}
+
+	literal := astbuilder.NewMapLiteral(
+		baseTypeExpr,
+		nameExpr)
+
+	for _, v := range enum.options {
+		key := astbuilder.TextLiteral(strings.ToLower(v.Value))
+		value := dst.NewIdent(GetEnumValueID(name.Name(), v))
+		literal.Add(key, value)
+	}
+
+	decl := astbuilder.NewVariableAssignment(
+		enum.MapperVariableName(name),
+		literal.AsExpr(),
+	)
+
+	decl.Decorations().Before = dst.EmptyLine
+	decl.Decorations().Start = append(
+		decl.Decorations().Start,
+		fmt.Sprintf("// Mapping from string to %s", name.Name()))
+
+	return decl, nil
+}
+
 func (enum *EnumType) createValueDeclaration(name TypeName, value EnumValue) dst.Spec {
 	valueSpec := &dst.ValueSpec{
-		Names: []*dst.Ident{dst.NewIdent(GetEnumValueId(name.name, value))},
+		Names: []*dst.Ident{dst.NewIdent(GetEnumValueID(name.Name(), value))},
 		Values: []dst.Expr{
 			astbuilder.CallFunc(name.Name(), astbuilder.TextLiteral(value.Value)),
 		},
@@ -131,10 +217,9 @@ func (enum *EnumType) createValueDeclaration(name TypeName, value EnumValue) dst
 }
 
 // AsType implements Type for EnumType
-func (enum *EnumType) AsType(codeGenerationContext *CodeGenerationContext) dst.Expr {
-	// this should "never" happen as we name all enums; warn about it if it does
-	klog.Warning("Emitting unnamed enum, something’s awry")
-	return enum.baseType.AsType(codeGenerationContext)
+func (enum *EnumType) AsTypeExpr(codeGenerationContext *CodeGenerationContext) (dst.Expr, error) {
+	// this should "never" happen as we name all enums; panic if it does
+	panic(eris.New("Emitting unnamed enum, something’s awry"))
 }
 
 // AsZero renders an expression for the "zero" value of the type,
@@ -216,7 +301,7 @@ func (enum *EnumType) clone() *EnumType {
 	return &result
 }
 
-func GetEnumValueId(name string, value EnumValue) string {
+func GetEnumValueID(name string, value EnumValue) string {
 	return name + "_" + value.Identifier
 }
 
@@ -228,8 +313,8 @@ func (enum *EnumType) String() string {
 // WriteDebugDescription adds a description of the current enum type, including option names, to the
 // passed builder.
 // builder receives the full description.
-// definitions is for resolving named types.
-func (enum *EnumType) WriteDebugDescription(builder *strings.Builder, currentPackage PackageReference) {
+// currentPackage is the package that the enum is being written into.
+func (enum *EnumType) WriteDebugDescription(builder *strings.Builder, currentPackage InternalPackageReference) {
 	if enum == nil {
 		builder.WriteString("<nilEnum>")
 		return
@@ -243,8 +328,41 @@ func (enum *EnumType) WriteDebugDescription(builder *strings.Builder, currentPac
 			if i > 0 {
 				builder.WriteString("|")
 			}
+
 			builder.WriteString(v.Identifier)
 		}
+
 		builder.WriteString("]")
 	}
+}
+
+var availableMapperSuffixes = []string{"Values", "Cache", "Mapping", "Mapper"}
+
+// MapperVariableName returns the name of the variable used to map enum values to strings.
+// We check the values of the enum to ensure we don't have a name collision.
+func (enum *EnumType) MapperVariableName(name InternalTypeName) string {
+	used := set.Make[string]()
+	for _, v := range enum.options {
+		used.Add(v.Identifier)
+	}
+
+	for _, suffix := range availableMapperSuffixes {
+		if !used.Contains(suffix) {
+			name := fmt.Sprintf("%s_%s", name.Name(), suffix)
+			// Force the name to an internal one
+			runes := []rune(name)
+			runes[0] = unicode.ToLower(runes[0])
+			return string(runes)
+		}
+	}
+
+	panic("No available suffix for enum mapper variable name")
+}
+
+// NeedsMappingConversion returns true if the enum needs a mapping conversion.
+// A mapping conversion is needed if the base type is a string and the enum is
+// *not* APIVersion (that enum isn't actually used on Spec or Status types).
+func (enum *EnumType) NeedsMappingConversion(name InternalTypeName) bool {
+	return enum.baseType == StringType &&
+		name.Name() != "APIVersion"
 }

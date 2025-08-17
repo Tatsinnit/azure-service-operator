@@ -9,62 +9,103 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"regexp"
+	"strings"
 	"time"
 
-	"github.com/pkg/errors"
-	"k8s.io/apimachinery/pkg/conversion"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
-	ctrlconversion "sigs.k8s.io/controller-runtime/pkg/conversion"
-	"sigs.k8s.io/controller-runtime/pkg/source"
+	. "github.com/Azure/azure-service-operator/v2/internal/logging"
 
 	"github.com/go-logr/logr"
+	"github.com/rotisserie/eris"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/conversion"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mysql "github.com/Azure/azure-service-operator/v2/api/dbformysql/v1beta1"
-	networkstorage "github.com/Azure/azure-service-operator/v2/api/network/v1beta20201101storage"
-	resourcesalpha "github.com/Azure/azure-service-operator/v2/api/resources/v1alpha1api20200601"
-	resourcesbeta "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
-	. "github.com/Azure/azure-service-operator/v2/internal/logging"
+	mysqlv1 "github.com/Azure/azure-service-operator/v2/api/dbformysql/v1"
+	mysqlv1webhook "github.com/Azure/azure-service-operator/v2/api/dbformysql/v1/webhook"
+	postgresqlv1 "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1"
+	postgresqlv1webhook "github.com/Azure/azure-service-operator/v2/api/dbforpostgresql/v1/webhook"
+	entrav1 "github.com/Azure/azure-service-operator/v2/api/entra/v1"
+	entrav1webhook "github.com/Azure/azure-service-operator/v2/api/entra/v1/webhook"
+	azuresqlv1 "github.com/Azure/azure-service-operator/v2/api/sql/v1"
+	azuresqlv1webhook "github.com/Azure/azure-service-operator/v2/api/sql/v1/webhook"
+	"github.com/Azure/azure-service-operator/v2/internal/identity"
+	"github.com/Azure/azure-service-operator/v2/internal/reconcilers"
 	"github.com/Azure/azure-service-operator/v2/internal/reconcilers/arm"
+	azuresqlreconciler "github.com/Azure/azure-service-operator/v2/internal/reconcilers/azuresql"
+	entrareconciler "github.com/Azure/azure-service-operator/v2/internal/reconcilers/entra"
 	"github.com/Azure/azure-service-operator/v2/internal/reconcilers/generic"
 	mysqlreconciler "github.com/Azure/azure-service-operator/v2/internal/reconcilers/mysql"
+	postgresqlreconciler "github.com/Azure/azure-service-operator/v2/internal/reconcilers/postgresql"
 	"github.com/Azure/azure-service-operator/v2/internal/reflecthelpers"
 	"github.com/Azure/azure-service-operator/v2/internal/resolver"
+	asocel "github.com/Azure/azure-service-operator/v2/internal/util/cel"
 	"github.com/Azure/azure-service-operator/v2/internal/util/kubeclient"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/registration"
 )
 
-func GetKnownStorageTypes(
-	mgr ctrl.Manager,
-	armClientFactory arm.ARMClientFactory,
-	kubeClient kubeclient.Client,
-	positiveConditions *conditions.PositiveConditionBuilder,
-	options generic.Options) ([]*registration.StorageType, error) {
+type Schemer interface {
+	GetScheme() *runtime.Scheme
+}
 
-	resourceResolver := resolver.NewResolver(kubeClient)
-	knownStorageTypes, err := getGeneratedStorageTypes(mgr, armClientFactory, kubeClient, resourceResolver, positiveConditions, options)
+type ClientsProvider struct {
+	KubeClient             kubeclient.Client
+	ARMConnectionFactory   arm.ARMConnectionFactory
+	EntraConnectionFactory entrareconciler.EntraConnectionFactory
+}
+
+func GetKnownStorageTypes(
+	schemer Schemer,
+	clients *ClientsProvider,
+	credentialProvider identity.CredentialProvider,
+	positiveConditions *conditions.PositiveConditionBuilder,
+	expressionEvaluator asocel.ExpressionEvaluator,
+	options generic.Options,
+) ([]*registration.StorageType, error) {
+	resourceResolver := resolver.NewResolver(clients.KubeClient)
+	knownStorageTypes, err := getGeneratedStorageTypes(
+		schemer,
+		clients.ARMConnectionFactory,
+		clients.KubeClient,
+		resourceResolver,
+		positiveConditions,
+		expressionEvaluator,
+		options)
 	if err != nil {
 		return nil, err
 	}
 
+	for _, t := range knownStorageTypes {
+		err := augmentWithControllerName(t)
+		if err != nil {
+			return nil, err
+		}
+
+		augmentWithPredicate(t)
+	}
+
+	// mysql
 	knownStorageTypes = append(
 		knownStorageTypes,
 		&registration.StorageType{
-			Obj: &mysql.User{},
+			Obj:  &mysqlv1.User{},
+			Name: "mysql_user",
 			Reconciler: mysqlreconciler.NewMySQLUserReconciler(
-				kubeClient,
+				clients.KubeClient,
 				resourceResolver,
 				positiveConditions,
+				credentialProvider,
 				options.Config),
+			Predicate: makeStandardPredicate(),
 			Indexes: []registration.Index{
 				{
 					Key:  ".spec.localUser.password",
@@ -73,79 +114,122 @@ func GetKnownStorageTypes(
 			},
 			Watches: []registration.Watch{
 				{
-					Src:              &source.Kind{Type: &corev1.Secret{}},
-					MakeEventHandler: watchSecretsFactory([]string{".spec.localUser.password"}, &mysql.UserList{}),
+					Type:             &corev1.Secret{},
+					MakeEventHandler: watchSecretsFactory([]string{".spec.localUser.password"}, &mysqlv1.UserList{}),
 				},
 			},
 		})
 
-	for _, t := range knownStorageTypes {
-		err := augmentWithControllerName(t)
-		if err != nil {
-			return nil, err
-		}
-	}
+	// dbforpostgresql
+	knownStorageTypes = append(
+		knownStorageTypes,
+		&registration.StorageType{
+			Obj:  &postgresqlv1.User{},
+			Name: "postgresql_user",
+			Reconciler: postgresqlreconciler.NewPostgreSQLUserReconciler(
+				clients.KubeClient,
+				resourceResolver,
+				positiveConditions,
+				options.Config),
+			Predicate: makeStandardPredicate(),
+			Indexes: []registration.Index{
+				{
+					Key:  ".spec.localUser.password",
+					Func: indexPostgreSQLUserPassword,
+				},
+			},
+			Watches: []registration.Watch{
+				{
+					Type:             &corev1.Secret{},
+					MakeEventHandler: watchSecretsFactory([]string{".spec.localUser.password"}, &postgresqlv1.UserList{}),
+				},
+			},
+		})
+
+	// azuresql
+	knownStorageTypes = append(
+		knownStorageTypes,
+		&registration.StorageType{
+			Obj:  &azuresqlv1.User{},
+			Name: "sql_user",
+			Reconciler: azuresqlreconciler.NewAzureSQLUserReconciler(
+				clients.KubeClient,
+				resourceResolver,
+				positiveConditions,
+				credentialProvider,
+				options.Config),
+			Predicate: makeStandardPredicate(),
+			Indexes: []registration.Index{
+				{
+					Key:  ".spec.localUser.password",
+					Func: indexAzureSQLUserPassword,
+				},
+			},
+			Watches: []registration.Watch{
+				{
+					Type:             &corev1.Secret{},
+					MakeEventHandler: watchSecretsFactory([]string{".spec.localUser.password"}, &azuresqlv1.UserList{}),
+				},
+			},
+		})
+
+	// entra
+	knownStorageTypes = append(
+		knownStorageTypes,
+		&registration.StorageType{
+			Obj:  &entrav1.SecurityGroup{},
+			Name: "entra_securitygroup",
+			Reconciler: entrareconciler.NewEntraSecurityGroupReconciler(
+				clients.KubeClient,
+				clients.EntraConnectionFactory,
+				resourceResolver,
+				positiveConditions,
+				options.Config),
+			Predicate: makeStandardPredicate(),
+			Indexes:   []registration.Index{},
+			Watches:   []registration.Watch{},
+		})
 
 	return knownStorageTypes, nil
 }
 
 func getGeneratedStorageTypes(
-	mgr ctrl.Manager,
-	armClientFactory arm.ARMClientFactory,
+	schemer Schemer,
+	armConnectionFactory arm.ARMConnectionFactory,
 	kubeClient kubeclient.Client,
 	resourceResolver *resolver.Resolver,
 	positiveConditions *conditions.PositiveConditionBuilder,
-	options generic.Options) ([]*registration.StorageType, error) {
+	expressionEvaluator asocel.ExpressionEvaluator,
+	options generic.Options,
+) ([]*registration.StorageType, error) {
 	knownStorageTypes := getKnownStorageTypes()
 
-	knownStorageTypes = append(
-		knownStorageTypes,
-		registration.NewStorageType(&resourcesbeta.ResourceGroup{}))
-
-	// Verify we're using the hub version of VirtualNetworksSubnet in the loop below
-	var _ ctrlconversion.Hub = &networkstorage.VirtualNetworksSubnet{}
-
-	// TODO: Modifying this list would be easier if it were a map
-	for _, t := range knownStorageTypes {
-		if _, ok := t.Obj.(*networkstorage.VirtualNetworksSubnet); ok {
-			t.Indexes = append(t.Indexes, registration.Index{
-				Key:  ".metadata.ownerReferences[0]",
-				Func: indexOwner,
-			})
-		}
-		if _, ok := t.Obj.(*networkstorage.RouteTablesRoute); ok {
-			t.Indexes = append(t.Indexes, registration.Index{
-				Key:  ".metadata.ownerReferences[0]",
-				Func: indexOwner,
-			})
-		}
-	}
-
-	err := resourceResolver.IndexStorageTypes(mgr.GetScheme(), knownStorageTypes)
+	err := resourceResolver.IndexStorageTypes(schemer.GetScheme(), knownStorageTypes)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed add storage types to resource resolver")
+		return nil, eris.Wrap(err, "failed add storage types to resource resolver")
 	}
 
 	var extensions map[schema.GroupVersionKind]genruntime.ResourceExtension
-	extensions, err = GetResourceExtensions(mgr.GetScheme())
+	extensions, err = GetResourceExtensions(schemer.GetScheme())
 	if err != nil {
-		return nil, errors.Wrap(err, "failed getting extensions")
+		return nil, eris.Wrap(err, "failed getting extensions")
 	}
 
 	for _, t := range knownStorageTypes {
 		// Use the provided GVK to construct a new runtime object of the desired concrete type.
 		var gvk schema.GroupVersionKind
-		gvk, err = apiutil.GVKForObject(t.Obj, mgr.GetScheme())
+		gvk, err = apiutil.GVKForObject(t.Obj, schemer.GetScheme())
 		if err != nil {
-			return nil, errors.Wrapf(err, "creating GVK for obj %T", t.Obj)
+			return nil, eris.Wrapf(err, "creating GVK for obj %T", t.Obj)
 		}
 		extension := extensions[gvk]
 
 		augmentWithARMReconciler(
-			armClientFactory,
+			armConnectionFactory,
 			kubeClient,
 			resourceResolver,
 			positiveConditions,
+			expressionEvaluator,
 			options,
 			extension,
 			t)
@@ -155,26 +239,42 @@ func getGeneratedStorageTypes(
 }
 
 func augmentWithARMReconciler(
-	armClientFactory arm.ARMClientFactory,
+	armConnectionFactory arm.ARMConnectionFactory,
 	kubeClient kubeclient.Client,
 	resourceResolver *resolver.Resolver,
 	positiveConditions *conditions.PositiveConditionBuilder,
+	expressionEvaluator asocel.ExpressionEvaluator,
 	options generic.Options,
 	extension genruntime.ResourceExtension,
-	t *registration.StorageType) {
+	t *registration.StorageType,
+) {
 	t.Reconciler = arm.NewAzureDeploymentReconciler(
-		armClientFactory,
+		armConnectionFactory,
 		kubeClient,
 		resourceResolver,
 		positiveConditions,
+		expressionEvaluator,
 		options.Config,
 		extension)
+}
+
+func augmentWithPredicate(t *registration.StorageType) {
+	t.Predicate = makeStandardPredicate()
+}
+
+func makeStandardPredicate() predicate.Predicate {
+	// Note: These predicates prevent status updates from triggering a reconcile.
+	// to learn more look at https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/predicate#GenerationChangedPredicate
+	return predicate.Or(
+		predicate.GenerationChangedPredicate{},
+		reconcilers.ARMReconcilerAnnotationChangedPredicate(),
+		reconcilers.ARMPerResourceSecretAnnotationChangedPredicate())
 }
 
 func augmentWithControllerName(t *registration.StorageType) error {
 	controllerName, err := getControllerName(t.Obj)
 	if err != nil {
-		return errors.Wrapf(err, "failed to get controller name for obj %T", t.Obj)
+		return eris.Wrapf(err, "failed to get controller name for obj %T", t.Obj)
 	}
 
 	t.Name = controllerName
@@ -182,50 +282,77 @@ func augmentWithControllerName(t *registration.StorageType) error {
 	return nil
 }
 
+var groupRegex = regexp.MustCompile(`.*/v2/api/([a-zA-Z0-9.]+)/`)
+
 func getControllerName(obj client.Object) (string, error) {
 	v, err := conversion.EnforcePtr(obj)
 	if err != nil {
-		return "", errors.Wrap(err, "t.Obj was expected to be ptr but was not")
+		return "", eris.Wrap(err, "t.Obj was expected to be ptr but was not")
 	}
 
 	typ := v.Type()
-	return fmt.Sprintf("%sController", typ.Name()), nil
-}
-
-func indexOwner(rawObj client.Object) []string {
-	owners := rawObj.GetOwnerReferences()
-	if len(owners) == 0 {
-		return nil
+	pkgPath := typ.PkgPath()
+	matches := groupRegex.FindStringSubmatch(pkgPath)
+	if len(matches) == 0 {
+		return "", eris.Errorf("couldn't parse package path %s", pkgPath)
 	}
-
-	// Only works for 1 owner now but that's fine
-	return []string{string(owners[0].UID)}
+	group := strings.ReplaceAll(matches[1], ".", "") // elide . for groups like network.frontdoor
+	name := fmt.Sprintf("%s_%s", group, strings.ToLower(typ.Name()))
+	return name, nil
 }
 
-func GetKnownTypes() []client.Object {
+func GetKnownTypes() []*registration.KnownType {
 	knownTypes := getKnownTypes()
 
+	// MySQL
 	knownTypes = append(
 		knownTypes,
-		&resourcesalpha.ResourceGroup{},
-		&resourcesbeta.ResourceGroup{},
-		&mysql.User{})
+		&registration.KnownType{
+			Obj:       &mysqlv1.User{},
+			Defaulter: &mysqlv1webhook.User_Webhook{},
+			Validator: &mysqlv1webhook.User_Webhook{},
+		})
+
+	// dbforpostgresql
+	knownTypes = append(
+		knownTypes,
+		&registration.KnownType{
+			Obj:       &postgresqlv1.User{},
+			Defaulter: &postgresqlv1webhook.User_Webhook{},
+			Validator: &postgresqlv1webhook.User_Webhook{},
+		})
+
+	// Azure SQL
+	knownTypes = append(
+		knownTypes,
+		&registration.KnownType{
+			Obj:       &azuresqlv1.User{},
+			Defaulter: &azuresqlv1webhook.User_Webhook{},
+			Validator: &azuresqlv1webhook.User_Webhook{},
+		})
+	// Entra
+	knownTypes = append(
+		knownTypes,
+		&registration.KnownType{
+			Obj:       &entrav1.SecurityGroup{},
+			Defaulter: &entrav1webhook.SecurityGroup_Webhook{},
+			Validator: &entrav1webhook.SecurityGroup_Webhook{},
+		})
 
 	return knownTypes
 }
 
 func CreateScheme() *runtime.Scheme {
 	scheme := createScheme()
-	_ = resourcesalpha.AddToScheme(scheme)
-	_ = resourcesbeta.AddToScheme(scheme)
-	_ = mysql.AddToScheme(scheme)
-
+	_ = mysqlv1.AddToScheme(scheme)
+	_ = postgresqlv1.AddToScheme(scheme)
+	_ = azuresqlv1.AddToScheme(scheme)
+	_ = entrav1.AddToScheme(scheme)
 	return scheme
 }
 
 // GetResourceExtensions returns a map between resource and resource extension
 func GetResourceExtensions(scheme *runtime.Scheme) (map[schema.GroupVersionKind]genruntime.ResourceExtension, error) {
-
 	extensionMapping := make(map[schema.GroupVersionKind]genruntime.ResourceExtension)
 
 	for _, extension := range getResourceExtensions() {
@@ -234,7 +361,7 @@ func GetResourceExtensions(scheme *runtime.Scheme) (map[schema.GroupVersionKind]
 			// Make sure the type casting goes well, and we can extract the GVK successfully.
 			resourceObj, ok := resource.(runtime.Object)
 			if !ok {
-				err := errors.Errorf("unexpected resource type for resource '%s', found '%T'", resource.AzureName(), resource)
+				err := eris.Errorf("unexpected resource type for resource '%s', found '%T'", resource.AzureName(), resource)
 				return nil, err
 			}
 
@@ -269,7 +396,7 @@ func watchConfigMapsFactory(keys []string, objList client.ObjectList) registrati
 func watchEntity(c client.Client, log logr.Logger, keys []string, objList client.ObjectList, entity client.Object) handler.MapFunc {
 	listType := reflect.TypeOf(objList).Elem()
 
-	return func(o client.Object) []reconcile.Request {
+	return func(ctx context.Context, o client.Object) []reconcile.Request {
 		// Safety check that we're looking at the right kind of entity
 		if reflect.TypeOf(o) != reflect.TypeOf(entity) {
 			log.V(Status).Info(
@@ -284,7 +411,7 @@ func watchEntity(c client.Client, log logr.Logger, keys []string, objList client
 		// This should be fast since the list of items it's going through should always be cached
 		// locally with the shared informer.
 		// Unfortunately we don't have a ctx we can use here, see https://github.com/kubernetes-sigs/controller-runtime/issues/1628
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 
 		var allMatches []client.Object

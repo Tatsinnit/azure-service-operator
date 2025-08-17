@@ -7,28 +7,29 @@ package pipeline
 
 import (
 	"context"
-	"sort"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
+	"golang.org/x/exp/slices"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
 
-// MarkLatestAPIVersionAsStorageVersionId is the unique identifier for this pipeline stage
-const MarkLatestAPIVersionAsStorageVersionId = "markStorageVersion"
+// MarkLatestAPIVersionAsStorageVersionID is the unique identifier for this pipeline stage
+const MarkLatestAPIVersionAsStorageVersionID = "markStorageVersion"
 
 // MarkLatestAPIVersionAsStorageVersion creates a Stage to mark a particular version as a storage version
 func MarkLatestAPIVersionAsStorageVersion() *Stage {
-	return NewLegacyStage(
-		MarkLatestAPIVersionAsStorageVersionId,
+	return NewStage(
+		MarkLatestAPIVersionAsStorageVersionID,
 		"Mark the latest API version of each resource as the storage version",
-		func(ctx context.Context, definitions astmodel.TypeDefinitionSet) (astmodel.TypeDefinitionSet, error) {
+		func(ctx context.Context, state *State) (*State, error) {
+			definitions := state.Definitions()
 			updatedDefs, err := MarkLatestResourceVersionsForStorage(definitions)
 			if err != nil {
-				return nil, errors.Wrapf(err, "unable to mark latest resource version as storage version")
+				return nil, eris.Wrapf(err, "unable to mark latest resource version as storage version")
 			}
 
-			return updatedDefs, nil
+			return state.WithDefinitions(updatedDefs), nil
 		})
 }
 
@@ -44,8 +45,8 @@ func MarkLatestResourceVersionsForStorage(definitions astmodel.TypeDefinitionSet
 			allVersionsOfResource := resourceLookup[unversionedName]
 			latestVersionOfResource := allVersionsOfResource[len(allVersionsOfResource)-1]
 
-			thisPackagePath := def.Name().PackageReference.PackagePath()
-			latestPackagePath := latestVersionOfResource.Name().PackageReference.PackagePath()
+			thisPackagePath := def.Name().PackageReference().ImportPath()
+			latestPackagePath := latestVersionOfResource.Name().PackageReference().ImportPath()
 
 			// mark as storage version if it's the latest version
 			isLatestVersion := thisPackagePath == latestPackagePath
@@ -67,7 +68,7 @@ func groupResourcesByVersion(definitions astmodel.TypeDefinitionSet) map[unversi
 
 		// We want to explicitly avoid storage definitions, as this approach for flagging the hub version is
 		// used when we aren't leveraging the conversions between storage versions.
-		if astmodel.IsStoragePackageReference(def.Name().PackageReference) {
+		if astmodel.IsStoragePackageReference(def.Name().PackageReference()) {
 			continue
 		}
 
@@ -79,20 +80,25 @@ func groupResourcesByVersion(definitions astmodel.TypeDefinitionSet) map[unversi
 
 	// order each set of resources by package name (== by version as these are sortable dates)
 	for _, slice := range result {
-		sort.Slice(slice, func(i, j int) bool {
-			return astmodel.ComparePathAndVersion(
-				slice[i].Name().PackageReference.PackagePath(),
-				slice[j].Name().PackageReference.PackagePath())
-		})
+		slices.SortFunc(
+			slice,
+			func(left astmodel.TypeDefinition, right astmodel.TypeDefinition) int {
+				return astmodel.ComparePathAndVersion(
+					left.Name().PackageReference().ImportPath(),
+					right.Name().PackageReference().ImportPath())
+			})
 	}
 
 	return result
 }
 
-func getUnversionedName(name astmodel.TypeName) unversionedName {
-	ref := name.PackageReference
-	group, _ := ref.GroupVersion()
-	return unversionedName{group, name.Name()}
+func getUnversionedName(name astmodel.InternalTypeName) unversionedName {
+	ref := name.InternalPackageReference()
+	group := ref.Group()
+	return unversionedName{
+		group: group,
+		name:  name.Name(),
+	}
 }
 
 type unversionedName struct {

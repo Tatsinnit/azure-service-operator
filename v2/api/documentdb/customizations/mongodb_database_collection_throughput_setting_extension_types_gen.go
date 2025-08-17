@@ -4,10 +4,12 @@
 package customizations
 
 import (
-	alpha20210515 "github.com/Azure/azure-service-operator/v2/api/documentdb/v1alpha1api20210515"
-	alpha20210515s "github.com/Azure/azure-service-operator/v2/api/documentdb/v1alpha1api20210515storage"
-	v20210515 "github.com/Azure/azure-service-operator/v2/api/documentdb/v1beta20210515"
-	v20210515s "github.com/Azure/azure-service-operator/v2/api/documentdb/v1beta20210515storage"
+	v20210515 "github.com/Azure/azure-service-operator/v2/api/documentdb/v1api20210515"
+	v20210515s "github.com/Azure/azure-service-operator/v2/api/documentdb/v1api20210515/storage"
+	v20231115 "github.com/Azure/azure-service-operator/v2/api/documentdb/v1api20231115"
+	v20231115s "github.com/Azure/azure-service-operator/v2/api/documentdb/v1api20231115/storage"
+	v20240815 "github.com/Azure/azure-service-operator/v2/api/documentdb/v1api20240815"
+	v20240815s "github.com/Azure/azure-service-operator/v2/api/documentdb/v1api20240815/storage"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
 
@@ -17,8 +19,10 @@ type MongodbDatabaseCollectionThroughputSettingExtension struct {
 // GetExtendedResources Returns the KubernetesResource slice for Resource versions
 func (extension *MongodbDatabaseCollectionThroughputSettingExtension) GetExtendedResources() []genruntime.KubernetesResource {
 	return []genruntime.KubernetesResource{
-		&alpha20210515.MongodbDatabaseCollectionThroughputSetting{},
-		&alpha20210515s.MongodbDatabaseCollectionThroughputSetting{},
 		&v20210515.MongodbDatabaseCollectionThroughputSetting{},
-		&v20210515s.MongodbDatabaseCollectionThroughputSetting{}}
+		&v20210515s.MongodbDatabaseCollectionThroughputSetting{},
+		&v20231115.MongodbDatabaseCollectionThroughputSetting{},
+		&v20231115s.MongodbDatabaseCollectionThroughputSetting{},
+		&v20240815.MongodbDatabaseCollectionThroughputSetting{},
+		&v20240815s.MongodbDatabaseCollectionThroughputSetting{}}
 }

@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
+	kerrors "k8s.io/apimachinery/pkg/util/errors"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/readonly"
@@ -75,7 +77,7 @@ func (i *InterfaceType) References() TypeNameSet {
 }
 
 // AsType renders the Go abstract syntax tree for the interface type
-func (i *InterfaceType) AsType(codeGenerationContext *CodeGenerationContext) dst.Expr {
+func (i *InterfaceType) AsTypeExpr(codeGenerationContext *CodeGenerationContext) (dst.Expr, error) {
 	fields := make([]*dst.Field, 0, i.functions.Len())
 
 	functions := i.functions.Values()
@@ -84,19 +86,38 @@ func (i *InterfaceType) AsType(codeGenerationContext *CodeGenerationContext) dst
 		return functions[i].Name() < functions[j].Name()
 	})
 
+	var errs []error
 	for _, method := range functions {
-		field := functionToField(codeGenerationContext, method.Name(), method)
+		field, err := functionToField(method.Name(), method, codeGenerationContext)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+
 		fields = append(fields, field)
+	}
+
+	if len(errs) > 0 {
+		// Temporarily panic until we modify the signature for AsTypeExpr resolving #2970
+		panic(kerrors.NewAggregate(errs))
 	}
 
 	return &dst.InterfaceType{
 		Methods: &dst.FieldList{
 			List: fields,
 		},
-	}
+	}, nil
 }
 
-func (i *InterfaceType) AsDeclarations(codeGenerationContext *CodeGenerationContext, declContext DeclarationContext) []dst.Decl {
+func (i *InterfaceType) AsDeclarations(
+	codeGenerationContext *CodeGenerationContext,
+	declContext DeclarationContext,
+) ([]dst.Decl, error) {
+	iExpr, err := i.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrapf(err, "creating type expression for interface %s", declContext.Name)
+	}
+
 	declaration := &dst.GenDecl{
 		Decs: dst.GenDeclDecorations{
 			NodeDecs: dst.NodeDecs{
@@ -108,7 +129,7 @@ func (i *InterfaceType) AsDeclarations(codeGenerationContext *CodeGenerationCont
 		Specs: []dst.Spec{
 			&dst.TypeSpec{
 				Name: dst.NewIdent(declContext.Name.Name()),
-				Type: i.AsType(codeGenerationContext),
+				Type: iExpr,
 			},
 		},
 	}
@@ -117,7 +138,7 @@ func (i *InterfaceType) AsDeclarations(codeGenerationContext *CodeGenerationCont
 	AddValidationComments(&declaration.Decs.Start, declContext.Validations)
 
 	result := []dst.Decl{declaration}
-	return result
+	return result, nil
 }
 
 // AsZero always panics; Interface does not have a zero type
@@ -150,11 +171,8 @@ func (i *InterfaceType) Equals(t Type, overrides EqualityOverrides) bool {
 	equalityFunc := func(l, r Function) bool {
 		return l.Equals(r, overrides)
 	}
-	if !i.functions.Equals(other.functions, equalityFunc) {
-		return false
-	}
 
-	return true
+	return i.functions.Equals(other.functions, equalityFunc)
 }
 
 // String implements fmt.Stringer
@@ -163,7 +181,7 @@ func (i *InterfaceType) String() string {
 }
 
 // WriteDebugDescription adds a description of the current InterfaceType to the passed builder.
-func (i *InterfaceType) WriteDebugDescription(builder *strings.Builder, currentPackage PackageReference) {
+func (i *InterfaceType) WriteDebugDescription(builder *strings.Builder, currentPackage InternalPackageReference) {
 	if i == nil {
 		builder.WriteString("<nilInterface>")
 	} else {
@@ -194,16 +212,27 @@ func AsInterfaceType(t Type) (*InterfaceType, bool) {
 	return nil, false
 }
 
-func functionToField(codeGenerationContext *CodeGenerationContext, name string, function Function) *dst.Field {
-	var names []*dst.Ident
+func functionToField(
+	name string,
+	function Function,
+	codeGenerationContext *CodeGenerationContext,
+) (*dst.Field, error) {
+	result := &dst.Field{}
+
+	// Populate Name
 	if name != "" {
-		names = []*dst.Ident{dst.NewIdent(name)}
+		result.Names = []*dst.Ident{
+			dst.NewIdent(name),
+		}
 	}
 
-	f := function.AsFunc(codeGenerationContext, TypeName{}) // Empty typename here because we have no receiver
-
-	return &dst.Field{
-		Names: names,
-		Type:  f.Type,
+	// Populate Type
+	f, err := function.AsFunc(codeGenerationContext, InternalTypeName{}) // Empty typename here because we have no receiver
+	if err != nil {
+		return nil, eris.Wrapf(err, "unable to determiine type of function %s", function.Name())
 	}
+
+	result.Type = f.Type
+
+	return result, nil
 }

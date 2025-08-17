@@ -7,13 +7,12 @@ package pipeline
 
 import (
 	"fmt"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"strings"
 	"unicode"
 
-	"github.com/pkg/errors"
-	"k8s.io/klog/v2"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 )
@@ -25,9 +24,9 @@ type PipelineDiagram struct {
 }
 
 // NewPipelineDiagram creates a new PipelineDiagram to write into the specified directory.
-func NewPipelineDiagram(debugDir string) *PipelineDiagram {
+func NewPipelineDiagram(settings *DebugSettings) *PipelineDiagram {
 	return &PipelineDiagram{
-		debugDir:   debugDir,
+		debugDir:   settings.outputFolder,
 		stageIds:   make(map[*Stage]string, 70),
 		stageNames: make(map[string][]*Stage, 70),
 	}
@@ -37,9 +36,8 @@ func NewPipelineDiagram(debugDir string) *PipelineDiagram {
 func (diagram *PipelineDiagram) WriteDiagram(stages []*Stage) error {
 	dotsrc := diagram.createDiagram(stages)
 	filename := filepath.Join(diagram.debugDir, "pipeline.dot")
-	err := ioutil.WriteFile(filename, dotsrc, 0600)
-	klog.V(2).Infof("Wrote diagram for pipeline to %s", filename)
-	return errors.Wrapf(err, "failed to write diagram to %s", filename)
+	err := os.WriteFile(filename, dotsrc, 0o600)
+	return eris.Wrapf(err, "failed to write diagram to %s", filename)
 }
 
 // createDiagram creates a dot file for the pipeline
@@ -109,7 +107,7 @@ func (diagram *PipelineDiagram) idFor(stage *Stage) string {
 
 	// Generate a new ID for this stage
 	// (We need to do this because the stages are sometimes reused)
-	id := diagram.safeId(stage.Id())
+	id := diagram.safeID(stage.ID())
 	clashes := diagram.stageNames[id]
 
 	if len(clashes) > 0 {
@@ -120,13 +118,13 @@ func (diagram *PipelineDiagram) idFor(stage *Stage) string {
 	diagram.stageIds[stage] = id // Quick lookup if we need it again
 
 	// Keep track of how many times we've seen a particular stage, so we can disambiguate references
-	diagram.stageNames[stage.Id()] = append(clashes, stage)
+	diagram.stageNames[stage.ID()] = append(clashes, stage)
 
 	return id
 }
 
-// safeId returns a string containing only alphanumeric characters
-func (diagram *PipelineDiagram) safeId(id string) string {
+// safeID returns a string containing only alphanumeric characters
+func (diagram *PipelineDiagram) safeID(id string) string {
 	var b strings.Builder
 	for _, r := range id {
 		if unicode.IsLetter(r) || unicode.IsNumber(r) {

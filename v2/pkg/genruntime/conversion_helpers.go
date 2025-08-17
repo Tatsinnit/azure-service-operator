@@ -5,7 +5,13 @@
 
 package genruntime
 
-import "github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
+import (
+	"math"
+
+	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+
+	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
+)
 
 /*
 This file contains manual implementations to reduce code bloat in generated code.
@@ -94,4 +100,25 @@ func GetOptionalIntValue(ptr *int) int {
 	}
 
 	return *ptr
+}
+
+// GetIntFromFloat returns the int value of the given float64.
+// Primarily used when initializing Spec properties from Status properties.
+func GetIntFromFloat(f float64) int {
+	return int(math.Round(f))
+}
+
+// ConvertJSONToString returns the string value of the given v1.JSON.
+func ConvertJSONToString(json v1.JSON) string {
+	// Ignoring error here, its always nil
+	marshalJSON, _ := json.MarshalJSON()
+	return string(marshalJSON)
+}
+
+// ConvertStringToJSON returns the v1.JSON value of the given string.
+func ConvertStringToJSON(s string) v1.JSON {
+	json := v1.JSON{}
+	// Ignoring error here, its always nil
+	_ = json.UnmarshalJSON([]byte(s))
+	return json
 }

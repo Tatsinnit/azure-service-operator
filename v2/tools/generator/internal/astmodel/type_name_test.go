@@ -28,20 +28,20 @@ func TestSingular_GivesExpectedResults(t *testing.T) {
 		{"Exportservices", "Exportservice"},
 		{"AzureRedis", "AzureRedis"},
 		{"Aliases", "Alias"},
+		{"AdoptedFoxes", "AdoptedFox"},
 	}
 
 	ref := makeTestLocalPackageReference("Demo", "v2010")
 
-	idFactory := NewIdentifierFactory()
 	for _, c := range cases {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			g := NewGomegaWithT(t)
 
-			name := MakeTypeName(ref, c.name)
-			result := name.Singular(idFactory)
-			g.Expect(result.name).To(Equal(c.expected))
+			name := MakeInternalTypeName(ref, c.name)
+			result := name.Singular()
+			g.Expect(result.Name()).To(Equal(c.expected))
 		})
 	}
 }
@@ -70,20 +70,9 @@ func TestPlural_GivesExpectedResults(t *testing.T) {
 			t.Parallel()
 			g := NewGomegaWithT(t)
 
-			name := MakeTypeName(ref, c.name)
+			name := MakeInternalTypeName(ref, c.name)
 			result := name.Plural()
-			g.Expect(result.name).To(Equal(c.expected))
+			g.Expect(result.Name()).To(Equal(c.expected))
 		})
 	}
-}
-
-func TestTypeName_IsEmpty(t *testing.T) {
-	t.Parallel()
-	g := NewGomegaWithT(t)
-	ref := makeTestLocalPackageReference("Demo", "v2010")
-	blank := TypeName{}
-	name := MakeTypeName(ref, "Person")
-
-	g.Expect(blank.IsEmpty()).To(BeTrue())
-	g.Expect(name.IsEmpty()).To(BeFalse())
 }

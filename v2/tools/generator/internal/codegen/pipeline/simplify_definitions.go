@@ -9,19 +9,19 @@ import (
 	"context"
 
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
-	"k8s.io/klog/v2"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
 
-const SimplifyDefinitionsStageId = "simplifyDefinitions"
+const SimplifyDefinitionsStageID = "simplifyDefinitions"
 
 // SimplifyDefinitions creates a pipeline stage that removes any wrapper types prior to actual code generation
 func SimplifyDefinitions() *Stage {
-	return NewLegacyStage(
-		SimplifyDefinitionsStageId,
+	return NewStage(
+		SimplifyDefinitionsStageID,
 		"Flatten definitions by removing wrapper types",
-		func(ctx context.Context, defs astmodel.TypeDefinitionSet) (astmodel.TypeDefinitionSet, error) {
+		func(ctx context.Context, state *State) (*State, error) {
+			defs := state.Definitions()
 			visitor := createSimplifyingVisitor()
 			var errs []error
 			result := make(astmodel.TypeDefinitionSet)
@@ -31,9 +31,6 @@ func SimplifyDefinitions() *Stage {
 					errs = append(errs, err)
 				} else {
 					result.Add(visited)
-					if !astmodel.TypeEquals(def.Type(), visited.Type()) {
-						klog.V(3).Infof("Simplified %s from %s to %s", def.Name(), def.Type(), visited.Type())
-					}
 				}
 			}
 
@@ -41,12 +38,12 @@ func SimplifyDefinitions() *Stage {
 				return nil, kerrors.NewAggregate(errs)
 			}
 
-			return result, nil
+			return state.WithDefinitions(result), nil
 		})
 }
 
-func createSimplifyingVisitor() astmodel.TypeVisitor {
-	removeFlags := func(tv *astmodel.TypeVisitor, ft *astmodel.FlaggedType, ctx interface{}) (astmodel.Type, error) {
+func createSimplifyingVisitor() astmodel.TypeVisitor[any] {
+	removeFlags := func(tv *astmodel.TypeVisitor[any], ft *astmodel.FlaggedType, ctx any) (astmodel.Type, error) {
 		element := ft.Element()
 		return tv.Visit(element, ctx)
 	}
@@ -55,7 +52,7 @@ func createSimplifyingVisitor() astmodel.TypeVisitor {
 		return ot
 	}
 
-	result := astmodel.TypeVisitorBuilder{
+	result := astmodel.TypeVisitorBuilder[any]{
 		VisitFlaggedType: removeFlags,
 		VisitObjectType:  skipComplexTypes,
 	}.Build()

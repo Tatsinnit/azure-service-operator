@@ -15,13 +15,8 @@ import (
 )
 
 type ArrayValidations struct {
-	MaxItems    *int64
-	MinItems    *int64
-	UniqueItems bool
-	/*
-		maxContains *int
-		minContains *int
-	*/
+	MaxItems *int64
+	MinItems *int64
 }
 
 func (av ArrayValidations) Equals(other Validations) bool {
@@ -31,8 +26,7 @@ func (av ArrayValidations) Equals(other Validations) bool {
 	}
 
 	return equalOptionalInt64s(av.MaxItems, o.MaxItems) &&
-		equalOptionalInt64s(av.MinItems, o.MinItems) &&
-		av.UniqueItems == o.UniqueItems
+		equalOptionalInt64s(av.MinItems, o.MinItems)
 }
 
 func (av ArrayValidations) ToKubeBuilderValidations() []KubeBuilderValidation {
@@ -43,10 +37,6 @@ func (av ArrayValidations) ToKubeBuilderValidations() []KubeBuilderValidation {
 
 	if av.MinItems != nil {
 		result = append(result, MakeMinItemsValidation(*av.MinItems))
-	}
-
-	if av.UniqueItems {
-		result = append(result, MakeUniqueItemsValidation())
 	}
 
 	return result
@@ -177,13 +167,16 @@ func (v *ValidatedType) WithType(newElement Type) *ValidatedType {
 	return &result
 }
 
-func (v *ValidatedType) AsDeclarations(c *CodeGenerationContext, declContext DeclarationContext) []dst.Decl {
+func (v *ValidatedType) AsDeclarations(
+	codeGenerationContext *CodeGenerationContext,
+	declContext DeclarationContext,
+) ([]dst.Decl, error) {
 	declContext.Validations = append(declContext.Validations, v.validations.ToKubeBuilderValidations()...)
-	return v.ElementType().AsDeclarations(c, declContext)
+	return v.ElementType().AsDeclarations(codeGenerationContext, declContext)
 }
 
 // AsType panics because validated types should always be named
-func (v *ValidatedType) AsType(_ *CodeGenerationContext) dst.Expr {
+func (v *ValidatedType) AsTypeExpr(codeGenerationContext *CodeGenerationContext) (dst.Expr, error) {
 	panic("Should never happen: validated types must either be named (handled by 'name types for CRDs' pipeline stage) or be directly under properties (handled by PropertyDefinition.AsField)")
 }
 
@@ -250,14 +243,14 @@ func equalRegexpSlices(left []*regexp.Regexp, right []*regexp.Regexp) bool {
 }
 
 // Unwrap returns the type contained within the validated type
-func (v ValidatedType) Unwrap() Type {
+func (v *ValidatedType) Unwrap() Type {
 	return v.element
 }
 
 // WriteDebugDescription adds a description of the current type to the passed builder
 // builder receives the full description, including nested types
 // definitions is a dictionary for resolving named types
-func (v ValidatedType) WriteDebugDescription(builder *strings.Builder, currentPackage PackageReference) {
+func (v *ValidatedType) WriteDebugDescription(builder *strings.Builder, currentPackage InternalPackageReference) {
 	builder.WriteString("Validated[")
 	if v.element != nil {
 		v.element.WriteDebugDescription(builder, currentPackage)

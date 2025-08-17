@@ -7,29 +7,28 @@ package resolver_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
-	"github.com/Azure/go-autorest/autorest/to"
 	. "github.com/onsi/gomega"
-	"github.com/pkg/errors"
+
+	"github.com/rotisserie/eris"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-
-	//nolint:staticcheck // ignoring deprecation (SA1019) to unblock CI builds
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	batch "github.com/Azure/azure-service-operator/v2/api/batch/v1beta20210101"
-	mysql "github.com/Azure/azure-service-operator/v2/api/dbformysql/v1beta20210501"
-	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
-	storage "github.com/Azure/azure-service-operator/v2/api/storage/v1beta20210401"
-	subscription "github.com/Azure/azure-service-operator/v2/api/subscription/v1beta20211001"
-
+	batch "github.com/Azure/azure-service-operator/v2/api/batch/v1api20210101"
+	mysql "github.com/Azure/azure-service-operator/v2/api/dbformysql/v1api20210501"
+	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1api20200601"
+	storage "github.com/Azure/azure-service-operator/v2/api/storage/v1api20210401"
+	subscription "github.com/Azure/azure-service-operator/v2/api/subscription/v1api20211001"
 	"github.com/Azure/azure-service-operator/v2/internal/resolver"
 	"github.com/Azure/azure-service-operator/v2/internal/set"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 	"github.com/Azure/azure-service-operator/v2/internal/util/kubeclient"
+	"github.com/Azure/azure-service-operator/v2/internal/util/to"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/core"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/registration"
@@ -90,9 +89,12 @@ func createResourceGroup(name string) *resources.ResourceGroup {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: testNamespace,
+			Annotations: map[string]string{
+				genruntime.ResourceIDAnnotation: fmt.Sprintf("/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/%s", name),
+			},
 		},
-		Spec: resources.ResourceGroupSpec{
-			Location:  to.StringPtr("West US"),
+		Spec: resources.ResourceGroup_Spec{
+			Location:  to.Ptr("West US"),
 			AzureName: name, // defaulter webhook will copy Name to AzureName
 		},
 	}
@@ -137,6 +139,25 @@ func createResourceGroupRootedResource(rgName string, name string) (genruntime.A
 	return a, b
 }
 
+func createResourceGroupARMIDRootedResource(armID string, name string) genruntime.ARMMetaObject {
+	return &batch.BatchAccount{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "BatchAccount",
+			APIVersion: batch.GroupVersion.String(),
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: testNamespace,
+		},
+		Spec: batch.BatchAccount_Spec{
+			Owner: &genruntime.KnownResourceReference{
+				ARMID: armID,
+			},
+			AzureName: name, // defaulter webhook will copy Name to AzureName
+		},
+	}
+}
+
 func createDeeplyNestedResource(rgName string, parentName string, name string) resolver.ResourceHierarchy {
 	a := createResourceGroup(rgName)
 
@@ -166,7 +187,7 @@ func createDeeplyNestedResource(rgName string, parentName string, name string) r
 			Name:      name,
 			Namespace: testNamespace,
 		},
-		Spec: storage.StorageAccounts_BlobService_Spec{
+		Spec: storage.StorageAccountsBlobService_Spec{
 			Owner: &genruntime.KnownResourceReference{
 				Name: parentName,
 			},
@@ -174,6 +195,24 @@ func createDeeplyNestedResource(rgName string, parentName string, name string) r
 	}
 
 	return resolver.ResourceHierarchy{a, b, c}
+}
+
+func createChildResourceOwnedByARMID(armID string, name string) genruntime.ARMMetaObject {
+	return &storage.StorageAccountsBlobService{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "StorageAccountsBlobService",
+			APIVersion: storage.GroupVersion.String(),
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: testNamespace,
+		},
+		Spec: storage.StorageAccountsBlobService_Spec{
+			Owner: &genruntime.KnownResourceReference{
+				ARMID: armID,
+			},
+		},
+	}
 }
 
 func createSimpleExtensionResource(name string, ownerName string, ownerGVK schema.GroupVersionKind) genruntime.ARMMetaObject {
@@ -187,10 +226,29 @@ func createSimpleExtensionResource(name string, ownerName string, ownerGVK schem
 			Namespace: testNamespace,
 		},
 		Spec: testcommon.SimpleExtensionResourceSpec{
-			Owner: genruntime.ResourceReference{
+			Owner: genruntime.ArbitraryOwnerReference{
 				Group: ownerGVK.Group,
 				Kind:  ownerGVK.Kind,
 				Name:  ownerName,
+			},
+			AzureName: name, // defaulter webhook will copy Name to AzureName
+		},
+	}
+}
+
+func createSimpleExtensionResourceOwnedByARMID(name string, armID string) genruntime.ARMMetaObject {
+	return &testcommon.SimpleExtensionResource{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "SimpleExtensionResource",
+			APIVersion: testcommon.SimpleExtensionResourceGroupVersion.String(),
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: testNamespace,
+		},
+		Spec: testcommon.SimpleExtensionResourceSpec{
+			Owner: genruntime.ArbitraryOwnerReference{
+				ARMID: armID,
 			},
 			AzureName: name, // defaulter webhook will copy Name to AzureName
 		},
@@ -225,12 +283,19 @@ func createExtensionResourceOnDeepHierarchyInResourceGroup(rgName string, parent
 }
 
 func createExtensionResourceOnTenantScopeResource(subscriptionName string, name string) resolver.ResourceHierarchy {
-
 	sub := createSubscription(subscriptionName)
 	gvk := sub.GetObjectKind().GroupVersionKind()
 	ext := createSimpleExtensionResource(name, sub.GetName(), gvk)
 
 	return resolver.ResourceHierarchy{sub, ext}
+}
+
+func createExtensionResourceOnDeepHierarchyOwnedByARMID(armID string, resourceName string, name string) resolver.ResourceHierarchy {
+	extensionParent := createChildResourceOwnedByARMID(armID, resourceName)
+	gvk := extensionParent.GetObjectKind().GroupVersionKind()
+
+	extension := createSimpleExtensionResource(name, extensionParent.GetName(), gvk)
+	return resolver.ResourceHierarchy{extensionParent, extension}
 }
 
 func Test_ResolveResourceHierarchy_ResourceGroupOnly(t *testing.T) {
@@ -344,7 +409,7 @@ func Test_ResolveResourceHierarchy_ReturnsReferenceNotFound(t *testing.T) {
 	_, err = test.resolver.ResolveResourceHierarchy(ctx, b)
 	g.Expect(err).To(HaveOccurred())
 
-	g.Expect(errors.Unwrap(err)).To(BeAssignableToTypeOf(&core.ReferenceNotFound{}))
+	g.Expect(eris.Unwrap(err)).To(BeAssignableToTypeOf(&core.ReferenceNotFound{}))
 }
 
 func Test_ResolveReference_FindsReference(t *testing.T) {
@@ -382,6 +447,26 @@ func Test_ResolveReference_ReturnsErrorIfReferenceIsNotAKubernetesReference(t *t
 	_, err = test.resolver.ResolveReference(ctx, ref.AsNamespacedRef(""))
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err).To(MatchError("reference abcd is not pointing to a Kubernetes resource"))
+}
+
+func Test_ResolveReference_ReturnsErrorIfReferenceContainsArmIdAsName(t *testing.T) {
+	t.Parallel()
+	g := NewGomegaWithT(t)
+	ctx := context.TODO()
+
+	test, err := testSetup()
+	g.Expect(err).ToNot(HaveOccurred())
+
+	armID := "/subscriptions/00000000-0000-0000-000000000000/resources/resourceGroups/myrg"
+
+	ref := genruntime.ResourceReference{Group: resolver.ResourceGroupGroup, Kind: resolver.ResourceGroupKind, Name: armID}
+	_, err = test.resolver.ResolveReference(ctx, ref.AsNamespacedRef(testNamespace))
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("couldn't resolve reference"))
+	g.Expect(err.Error()).To(ContainSubstring(fmt.Sprintf("%s/%s", testNamespace, armID)))
+	g.Expect(err.Error()).To(ContainSubstring("did you mean 'armID:"))
+	g.Expect(err.Error()).To(ContainSubstring(armID))
 }
 
 func Test_ResolveReferenceToARMID_KubernetesResource_ReturnsExpectedID(t *testing.T) {
@@ -434,7 +519,7 @@ func Test_ResolveSecrets_ReturnsExpectedSecretValue(t *testing.T) {
 	armID := "/subscriptions/00000000-0000-0000-000000000000/resources/resourceGroups/myrg"
 
 	resourceGroup := createResourceGroup(resourceGroupName)
-	genruntime.SetResourceID(resourceGroup, armID) // TODO: Do I actually need this here?
+	genruntime.SetResourceID(resourceGroup, armID)
 
 	err = test.client.Create(ctx, resourceGroup)
 	g.Expect(err).ToNot(HaveOccurred())
@@ -484,7 +569,76 @@ func Test_ResolveSecrets_ReturnsReferenceNotFound(t *testing.T) {
 
 	_, err = test.resolver.ResolveSecretReferences(ctx, set.Make(namespacedRef))
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(errors.Unwrap(err)).To(BeAssignableToTypeOf(&core.SecretNotFound{}))
+	g.Expect(eris.Unwrap(err)).To(BeAssignableToTypeOf(&core.SecretNotFound{}))
+}
+
+func Test_ResolveSecretMaps_ReturnsExpectedSecretValues(t *testing.T) {
+	t.Parallel()
+	g := NewGomegaWithT(t)
+	ctx := context.TODO()
+
+	test, err := testSetup()
+	g.Expect(err).ToNot(HaveOccurred())
+
+	resourceGroupName := "myrg"
+	armID := "/subscriptions/00000000-0000-0000-000000000000/resources/resourceGroups/myrg"
+
+	resourceGroup := createResourceGroup(resourceGroupName)
+	genruntime.SetResourceID(resourceGroup, armID)
+
+	err = test.client.Create(ctx, resourceGroup)
+	g.Expect(err).ToNot(HaveOccurred())
+
+	stringData := map[string]string{
+		"mysecretkey": "myPinIs1234",
+		"myotherkey":  "justKiddingIts5678",
+	}
+
+	data := make(map[string][]byte, len(stringData))
+	for k, v := range stringData {
+		data[k] = []byte(v)
+	}
+
+	secretName := "testsecret"
+	// Create a secret
+	secret := &v1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: testNamespace,
+		},
+		Data: data,
+		Type: "Opaque",
+	}
+
+	err = test.client.Create(ctx, secret)
+	g.Expect(err).ToNot(HaveOccurred())
+
+	ref := genruntime.SecretMapReference{Name: secretName}
+	namespacedRef := ref.AsNamespacedRef(testNamespace)
+
+	resolvedSecrets, err := test.resolver.ResolveSecretMapReferences(ctx, set.Make(namespacedRef))
+	g.Expect(err).ToNot(HaveOccurred())
+
+	actualSecret, err := resolvedSecrets.Lookup(ref)
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(actualSecret).To(Equal(stringData))
+}
+
+func Test_ResolveSecretMaps_ReturnsReferenceNotFound(t *testing.T) {
+	t.Parallel()
+	g := NewGomegaWithT(t)
+	ctx := context.TODO()
+
+	test, err := testSetup()
+	g.Expect(err).ToNot(HaveOccurred())
+
+	secretName := "testsecret"
+	ref := genruntime.SecretMapReference{Name: secretName}
+	namespacedRef := ref.AsNamespacedRef(testNamespace)
+
+	_, err = test.resolver.ResolveSecretMapReferences(ctx, set.Make(namespacedRef))
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(eris.Unwrap(err)).To(BeAssignableToTypeOf(&core.SecretNotFound{}))
 }
 
 func Test_ResolveConfigMaps_ReturnsExpectedValue(t *testing.T) {
@@ -548,7 +702,7 @@ func Test_ResolveConfigMaps_ReturnsReferenceNotFound(t *testing.T) {
 
 	_, err = test.resolver.ResolveConfigMapReferences(ctx, set.Make(namespacedRef))
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(errors.Unwrap(err)).To(BeAssignableToTypeOf(&core.ConfigMapNotFound{}))
+	g.Expect(eris.Unwrap(err)).To(BeAssignableToTypeOf(&core.ConfigMapNotFound{}))
 }
 
 func createTestScheme() *runtime.Scheme {

@@ -8,23 +8,22 @@ package pipeline
 import (
 	"context"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
 
-const FixOptionalCollectionAliasesStageId = "fixOptionalCollectionAliases"
+const FixOptionalCollectionAliasesStageID = "fixOptionalCollectionAliases"
 
 func FixOptionalCollectionAliases() *Stage {
 	return NewStage(
-		FixOptionalCollectionAliasesStageId,
+		FixOptionalCollectionAliasesStageID,
 		"Replace types which are optional aliases to collections with just the collection alias",
 		func(ctx context.Context, state *State) (*State, error) {
-
 			fixer := optionalCollectionAliasFixer{
 				definitions: state.Definitions(),
 			}
-			fixer.visitor = astmodel.TypeVisitorBuilder{
+			fixer.visitor = astmodel.TypeVisitorBuilder[any]{
 				VisitOptionalType: fixer.fixOptionalCollectionAliases,
 			}.Build()
 
@@ -32,7 +31,7 @@ func FixOptionalCollectionAliases() *Stage {
 			for _, def := range state.Definitions() {
 				d, err := fixer.visitor.VisitDefinition(def, nil)
 				if err != nil {
-					return nil, errors.Wrapf(err, "visiting %q", def.Name())
+					return nil, eris.Wrapf(err, "visiting %q", def.Name())
 				}
 				results.Add(d)
 			}
@@ -44,17 +43,15 @@ func FixOptionalCollectionAliases() *Stage {
 
 type optionalCollectionAliasFixer struct {
 	definitions astmodel.TypeDefinitionSet
-	visitor     astmodel.TypeVisitor
+	visitor     astmodel.TypeVisitor[any]
 }
 
-func (f *optionalCollectionAliasFixer) fixOptionalCollectionAliases(this *astmodel.TypeVisitor, it *astmodel.OptionalType, ctx interface{}) (astmodel.Type, error) {
-	typeName, ok := astmodel.AsTypeName(it)
-	if !ok {
-		return astmodel.IdentityVisitOfOptionalType(this, it, ctx)
-	}
-
-	// Make sure we're a local reference
-	_, _, ok = typeName.PackageReference.TryGroupVersion()
+func (f *optionalCollectionAliasFixer) fixOptionalCollectionAliases(
+	this *astmodel.TypeVisitor[any],
+	it *astmodel.OptionalType,
+	ctx any,
+) (astmodel.Type, error) {
+	typeName, ok := astmodel.AsInternalTypeName(it)
 	if !ok {
 		return astmodel.IdentityVisitOfOptionalType(this, it, ctx)
 	}

@@ -12,11 +12,11 @@ import (
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
 
-const AddAPIVersionEnumsStageId = "add-api-version-enums"
+const AddAPIVersionEnumsStageID = "add-api-version-enums"
 
 func AddAPIVersionEnums() *Stage {
 	stage := NewStage(
-		AddAPIVersionEnumsStageId,
+		AddAPIVersionEnumsStageID,
 		"Add enums for API Versions in each package",
 		func(ctx context.Context, state *State) (*State, error) {
 			newDefs := make(astmodel.TypeDefinitionSet)
@@ -28,14 +28,13 @@ func AddAPIVersionEnums() *Stage {
 
 			for name, def := range state.Definitions() {
 				if rt, ok := astmodel.AsResourceType(def.Type()); ok {
-					version := apiVersions.Get(name.PackageReference)
+					version := apiVersions.Get(name.InternalPackageReference())
 					def = def.WithType(rt.WithAPIVersion(version.name, version.value))
+					newDefs.Add(def)
 				}
-
-				newDefs.Add(def)
 			}
 
-			return state.WithDefinitions(newDefs), nil
+			return state.WithOverlaidDefinitions(newDefs), nil
 		},
 	)
 
@@ -48,16 +47,16 @@ type apiVersions struct {
 }
 
 type apiVersion struct {
-	name  astmodel.TypeName
+	name  astmodel.InternalTypeName
 	value astmodel.EnumValue
 }
 
-func (vs apiVersions) Get(pr astmodel.PackageReference) apiVersion {
+func (vs apiVersions) Get(pr astmodel.InternalPackageReference) apiVersion {
 	if v, ok := vs.generated[pr]; ok {
 		return v
 	}
 
-	name := astmodel.MakeTypeName(pr, "APIVersion") // TODO: constant?
+	name := astmodel.MakeInternalTypeName(pr, "APIVersion") // TODO: constant?
 	value := astmodel.MakeEnumValue(
 		"Value",
 		fmt.Sprintf("%q", apiVersionFromPackageReference(pr)))
@@ -77,5 +76,5 @@ func apiVersionFromPackageReference(pr astmodel.PackageReference) string {
 		panic("all resources should have local package references")
 	}
 
-	return localPR.ApiVersion()
+	return localPR.APIVersion()
 }

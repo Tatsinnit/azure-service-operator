@@ -98,6 +98,19 @@ func AsEnumType(aType Type) (*EnumType, bool) {
 	return nil, false
 }
 
+// AsFlaggedType unwraps any wrappers around the provided type and returns either the underlying FlaggedType and true, or nil and false.
+func AsFlaggedType(aType Type) (*FlaggedType, bool) {
+	if flagged, ok := aType.(*FlaggedType); ok {
+		return flagged, true
+	}
+
+	if wrapper, ok := aType.(MetaType); ok {
+		return AsFlaggedType(wrapper.Unwrap())
+	}
+
+	return nil, false
+}
+
 // AsTypeName unwraps any wrappers around the provided type and returns either the underlying TypeName and true, or a
 // blank and false.
 func AsTypeName(aType Type) (TypeName, bool) {
@@ -109,7 +122,35 @@ func AsTypeName(aType Type) (TypeName, bool) {
 		return AsTypeName(wrapper.Unwrap())
 	}
 
-	return TypeName{}, false
+	return nil, false
+}
+
+// AsInternalTypeName unwraps any wrappers around the provided type and returns either the underlying TypeName and true, or a
+// blank and false.
+func AsInternalTypeName(aType Type) (InternalTypeName, bool) {
+	if name, ok := aType.(InternalTypeName); ok {
+		return name, true
+	}
+
+	if wrapper, ok := aType.(MetaType); ok {
+		return AsInternalTypeName(wrapper.Unwrap())
+	}
+
+	return InternalTypeName{}, false
+}
+
+// AsExternalTypeName unwraps any wrappers around the provided type and returns either the underlying TypeName and true, or a
+// blank and false.
+func AsExternalTypeName(aType Type) (ExternalTypeName, bool) {
+	if name, ok := aType.(ExternalTypeName); ok {
+		return name, true
+	}
+
+	if wrapper, ok := aType.(MetaType); ok {
+		return AsExternalTypeName(wrapper.Unwrap())
+	}
+
+	return ExternalTypeName{}, false
 }
 
 // AsResourceType unwraps any wrappers around the provided type and returns either the underlying ResourceType and true,
@@ -121,6 +162,20 @@ func AsResourceType(aType Type) (*ResourceType, bool) {
 
 	if wrapper, ok := aType.(MetaType); ok {
 		return AsResourceType(wrapper.Unwrap())
+	}
+
+	return nil, false
+}
+
+// AsValidatedType unwraps any wrappers around the provided type and returns either the underlying ValidatedType and true,
+// or a nil and false.
+func AsValidatedType(aType Type) (*ValidatedType, bool) {
+	if validated, ok := aType.(*ValidatedType); ok {
+		return validated, true
+	}
+
+	if wrapper, ok := aType.(MetaType); ok {
+		return AsValidatedType(wrapper.Unwrap())
 	}
 
 	return nil, false
@@ -146,9 +201,9 @@ func Unwrap(aType Type) Type {
 
 // ExtractTypeName extracts a TypeName from the specified type if possible. This includes unwrapping
 // MetaType's like ValidatedType as well as checking the element type of types such as ArrayType and MapType.
-func ExtractTypeName(aType Type) (TypeName, bool) {
-	if typeName, ok := AsTypeName(aType); ok {
-		return typeName, ok
+func ExtractTypeName(aType Type) (InternalTypeName, bool) {
+	if internalTypeName, ok := AsInternalTypeName(aType); ok {
+		return internalTypeName, ok
 	}
 
 	if arrayType, ok := AsArrayType(aType); ok {
@@ -159,5 +214,5 @@ func ExtractTypeName(aType Type) (TypeName, bool) {
 		return ExtractTypeName(mapType.ValueType())
 	}
 
-	return TypeName{}, false
+	return InternalTypeName{}, false
 }

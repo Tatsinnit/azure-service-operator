@@ -9,24 +9,25 @@ import (
 	"context"
 	"strings"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
 
 // AddCrossplaneAtProvider adds an "AtProvider" property as the sole property in every resource status
 func AddCrossplaneAtProvider(idFactory astmodel.IdentifierFactory) *Stage {
-	return NewLegacyStage(
+	return NewStage(
 		"addCrossplaneAtProviderProperty",
 		"Add an 'AtProvider' property on every status",
-		func(ctx context.Context, definitions astmodel.TypeDefinitionSet) (astmodel.TypeDefinitionSet, error) {
+		func(ctx context.Context, state *State) (*State, error) {
+			definitions := state.Definitions()
 			result := make(astmodel.TypeDefinitionSet)
 			for _, typeDef := range definitions {
 				if _, ok := astmodel.AsResourceType(typeDef.Type()); ok {
 					atProviderTypes, err := nestStatusIntoAtProvider(
 						idFactory, definitions, typeDef)
 					if err != nil {
-						return nil, errors.Wrapf(err, "creating AtProvider definitions")
+						return nil, eris.Wrapf(err, "creating AtProvider definitions")
 					}
 
 					// Allow duplicates here because some resources share the same _Status type
@@ -42,7 +43,7 @@ func AddCrossplaneAtProvider(idFactory astmodel.IdentifierFactory) *Stage {
 			unmodified := definitions.Except(result)
 			result.AddTypes(unmodified)
 
-			return result, nil
+			return state.WithDefinitions(result), nil
 		})
 }
 
@@ -51,11 +52,11 @@ func AddCrossplaneAtProvider(idFactory astmodel.IdentifierFactory) *Stage {
 func nestStatusIntoAtProvider(
 	idFactory astmodel.IdentifierFactory,
 	definitions astmodel.TypeDefinitionSet,
-	typeDef astmodel.TypeDefinition) ([]astmodel.TypeDefinition, error) {
-
+	typeDef astmodel.TypeDefinition,
+) ([]astmodel.TypeDefinition, error) {
 	resource, ok := astmodel.AsResourceType(typeDef.Type())
 	if !ok {
-		return nil, errors.Errorf("provided typeDef was not a resourceType, instead %T", typeDef.Type())
+		return nil, eris.Errorf("provided typeDef was not a resourceType, instead %T", typeDef.Type())
 	}
 	resourceName := typeDef.Name()
 
@@ -64,9 +65,9 @@ func nestStatusIntoAtProvider(
 		return nil, nil // TODO: Some definitions don't have status yet
 	}
 
-	statusName, ok := astmodel.AsTypeName(resource.StatusType())
+	statusName, ok := astmodel.AsInternalTypeName(resource.StatusType())
 	if !ok {
-		return nil, errors.Errorf("resource %q status was not of type TypeName, instead: %T", resourceName, resource.StatusType())
+		return nil, eris.Errorf("resource %q status was not of type TypeName, instead: %T", resourceName, resource.StatusType())
 	}
 
 	// In the case where a status type is reused across multiple resource definitions, we need to make sure

@@ -5,9 +5,10 @@ typesOutputPath: apis
 
 supportedResourcesReport:
   # Path is relative to the module path, above
-  outputPath: apis/resources.md
+  outputFolder: apis
   # Path to documentation fragments to inject into the report
   fragmentPath: ../../docs/v2/crossplane/supported-resources
+  currentRelease: v2.14.0
 
 pipeline: crossplane
 typeFilters:
@@ -37,28 +38,28 @@ typeFilters:
 
   - action: include
     group: sql
-    version: '*v1'
+    version: "*v1"
     because: Including sql v1 common types
     matchRequired: false # only triggers for Status types
 
   - action: include
     group: sql
-    version: '*v2'
+    version: "*v2"
     because: Including sql v2 common types
     matchRequired: false # only triggers for Status types
 
   - action: prune
-    version: '*preview'
+    version: "*preview"
     because: preview SDK versions are excluded by default
 
   - action: prune
     group: network
-    version: '*'
+    version: "*"
     because: Pruning all networking api versions since we don't use them anyway
 
   - action: prune
     group: compute
-    version: '*'
+    version: "*"
     because: Pruning all compute api versions since we don't use them anyway
 
   - action: prune
@@ -170,7 +171,8 @@ typeTransformers:
     because: NumberOrExpression is an ARM template artifact that doesn't make sense in CRDs
     target:
       name: float
-    matchRequired: false  # TODO: Remove this if/when we actually require it
+    matchRequired: false # TODO: Remove this if/when we actually require it
+    
   - name: "*"
     property: Tags
     ifType:
@@ -186,16 +188,6 @@ typeTransformers:
         value:
           name: string
     because: Tags is defined as map[string]interface{} when it should be map[string]string
-  - group: deploymenttemplate
-    name: ResourceLocations
-    target:
-      name: string
-    because: Modeling this as an enum doesn't work well in the context of CRDs because new regions are regularly added
-  - group: definitions
-    name: ResourceLocations
-    target:
-      name: string
-    because: Modeling this as an enum doesn't work well in the context of CRDs because new regions are regularly added
 
   # Deal with readonly properties that were not properly pruned in the JSON schema
   - name: ResourceIdentity
@@ -205,158 +197,136 @@ typeTransformers:
     because: The UserAssignedIdentities property is enitrely readOnly but is modelled poorly in the JSON schemas. See discussion on https://github.com/Azure/azure-resource-manager-schemas/issues/835
 
 status:
-
   overrides: [
-    {
-      # give the common types their own namespace
-      basePath: 'common-types/resource-management',
-      namespace: 'Microsoft.Common'
-    },
-    {
-      # force the namespace here or it can fall foul of the sibling-name-collision test
-      basePath: 'sql/resource-manager/common',
-      namespace: 'Microsoft.Sql'
-    },
-    {
-      # force the namespace here or it can fall foul of the sibling-name-collision test
-      basePath: 'security/resource-manager/common',
-      namespace: 'Microsoft.Security'
-    },
-    {
-      # force the namespace here or it can fall foul of the sibling-name-collision test
-      basePath: 'eventhub/resource-manager/common',
-      namespace: 'Microsoft.EventHub'
-    },
-    {
-      # force the namespace here or it can fall foul of the sibling-name-collision test
-      basePath: 'securityinsights/resource-manager/common',
-      namespace: 'Microsoft.SecurityInsights'
-    },
-    # the rest of the configuration below is copied from the ARM schema repo:
-    # https://github.com/Azure/azure-resource-manager-schemas/blob/master/generator/autogenlist.ts
-    {
-      basePath: 'blueprint/resource-manager',
-      namespace: 'Microsoft.Blueprint',
-      resourceConfig: [
-        {
-          type: 'blueprintAssignments',
-          scopes: ScopeType.Subcription | ScopeType.ManagementGroup,
-        },
-        {
-          type: 'blueprints',
-          scopes: ScopeType.Subcription | ScopeType.ManagementGroup,
-        },
-        {
-          type: 'blueprints/artifacts',
-          scopes: ScopeType.Subcription | ScopeType.ManagementGroup,
-        },
-        {
-          type: 'blueprints/versions',
-          scopes: ScopeType.Subcription | ScopeType.ManagementGroup,
-        },
-      ]
-    },
-    {
-      basePath: 'customproviders/resource-manager',
-      namespace: 'Microsoft.CustomProviders',
-      resourceConfig: [
-        {
-          type: 'associations',
-          scopes: ScopeType.Extension,
-        },
-      ],
-    },
-    {
-      basePath: 'consumption/resource-manager',
-      namespace: 'Microsoft.Consumption',
-      resourceConfig: [
-        {
-          type: 'budgets',
-          scopes: ScopeType.Subcription | ScopeType.ResourceGroup | ScopeType.Extension,
-        },
-      ],
-    },
-    {
-      basePath: 'digitaltwins/resource-manager',
-      resourceConfig: [
-        {
-          type: 'integrationResources',
-          scopes: ScopeType.Extension,
-        }
-      ]
-    },
-    {
-      basePath: 'deviceprovisioningservices/resource-manager',
-      suffix: 'Provisioning',
-    },
-    {
-      basePath: 'frontdoor/resource-manager',
-      suffix: 'FrontDoor',
-    },
-    {
-      basePath: 'eventgrid/resource-manager',
-      resourceConfig: [
-        {
-          type: 'eventSubscriptions',
-          scopes: ScopeType.Extension | ScopeType.Subcription | ScopeType.ResourceGroup,
-        },
-      ],
-    },
-    {
-      basePath: 'machinelearning/resource-manager',
-      postProcessor: machineLearningPostProcessor,
-    },
-    {
-      basePath: 'managednetwork/resource-manager',
-      resourceConfig: [
-        {
-          type: 'scopeAssignments',
-          scopes: ScopeType.Subcription,
-        },
-      ],
-    },
-    {
-      basePath: 'policyinsights/resource-manager',
-      resourceConfig: [
-        {
-          type: 'remediations',
-          scopes: ScopeType.Subcription | ScopeType.ResourceGroup | ScopeType.ManagementGroup,
-        }
-      ]
-    },
-    {
-      basePath: 'resources/resource-manager',
-      resourceConfig: [
-        {
-          type: 'deployments',
-          scopes: ScopeType.Tenant | ScopeType.ManagementGroup | ScopeType.Subcription | ScopeType.ResourceGroup,
-        },
-        {
-          type: 'tags',
-          scopes: ScopeType.ManagementGroup | ScopeType.Subcription | ScopeType.ResourceGroup | ScopeType.Extension,
-        },
-      ],
-      postProcessor: resourcesPostProcessor,
-    },
-    {
-      basePath: 'storSimple1200Series/resource-manager',
-      suffix: '1200'
-    },
-    {
-      basePath: 'storsimple8000series/resource-manager',
-      suffix: '8000',
-    },
-    {
-      basePath: 'softwareplan/resource-manager',
-      resourceConfig: [
-        {
-          type: 'hybridUseBenefits',
-          scopes: ScopeType.Extension,
-        },
-      ]
-    },
-  ]
-objectModelConfiguration: 
+      {
+        # give the common types their own namespace
+        basePath: "common-types/resource-management",
+        namespace: "Microsoft.Common",
+      },
+      {
+        # force the namespace here or it can fall foul of the sibling-name-collision test
+        basePath: "sql/resource-manager/common",
+        namespace: "Microsoft.Sql",
+      },
+      {
+        # force the namespace here or it can fall foul of the sibling-name-collision test
+        basePath: "security/resource-manager/common",
+        namespace: "Microsoft.Security",
+      },
+      {
+        # force the namespace here or it can fall foul of the sibling-name-collision test
+        basePath: "eventhub/resource-manager/common",
+        namespace: "Microsoft.EventHub",
+      },
+      {
+        # force the namespace here or it can fall foul of the sibling-name-collision test
+        basePath: "securityinsights/resource-manager/common",
+        namespace: "Microsoft.SecurityInsights",
+      },
+      # the rest of the configuration below is copied from the ARM schema repo:
+      # https://github.com/Azure/azure-resource-manager-schemas/blob/master/generator/autogenlist.ts
+      {
+        basePath: "blueprint/resource-manager",
+        namespace: "Microsoft.Blueprint",
+        resourceConfig:
+          [
+            {
+              type: "blueprintAssignments",
+              scopes: ScopeType.Subcription | ScopeType.ManagementGroup,
+            },
+            {
+              type: "blueprints",
+              scopes: ScopeType.Subcription | ScopeType.ManagementGroup,
+            },
+            {
+              type: "blueprints/artifacts",
+              scopes: ScopeType.Subcription | ScopeType.ManagementGroup,
+            },
+            {
+              type: "blueprints/versions",
+              scopes: ScopeType.Subcription | ScopeType.ManagementGroup,
+            },
+          ],
+      },
+      {
+        basePath: "customproviders/resource-manager",
+        namespace: "Microsoft.CustomProviders",
+        resourceConfig: [{ type: "associations", scopes: ScopeType.Extension }],
+      },
+      {
+        basePath: "consumption/resource-manager",
+        namespace: "Microsoft.Consumption",
+        resourceConfig:
+          [
+            {
+              type: "budgets",
+              scopes: ScopeType.Subcription | ScopeType.ResourceGroup | ScopeType.Extension,
+            },
+          ],
+      },
+      {
+        basePath: "digitaltwins/resource-manager",
+        resourceConfig:
+          [{ type: "integrationResources", scopes: ScopeType.Extension }],
+      },
+      {
+        basePath: "deviceprovisioningservices/resource-manager",
+        suffix: "Provisioning",
+      },
+      { basePath: "frontdoor/resource-manager", suffix: "FrontDoor" },
+      {
+        basePath: "eventgrid/resource-manager",
+        resourceConfig:
+          [
+            {
+              type: "eventSubscriptions",
+              scopes: ScopeType.Extension | ScopeType.Subcription | ScopeType.ResourceGroup,
+            },
+          ],
+      },
+      {
+        basePath: "machinelearning/resource-manager",
+        postProcessor: machineLearningPostProcessor,
+      },
+      {
+        basePath: "managednetwork/resource-manager",
+        resourceConfig:
+          [{ type: "scopeAssignments", scopes: ScopeType.Subcription }],
+      },
+      {
+        basePath: "policyinsights/resource-manager",
+        resourceConfig:
+          [
+            {
+              type: "remediations",
+              scopes: ScopeType.Subcription | ScopeType.ResourceGroup | ScopeType.ManagementGroup,
+            },
+          ],
+      },
+      {
+        basePath: "resources/resource-manager",
+        resourceConfig:
+          [
+            {
+              type: "deployments",
+              scopes: ScopeType.Tenant | ScopeType.ManagementGroup | ScopeType.Subcription | ScopeType.ResourceGroup,
+            },
+            {
+              type: "tags",
+              scopes: ScopeType.ManagementGroup | ScopeType.Subcription | ScopeType.ResourceGroup | ScopeType.Extension,
+            },
+          ],
+        postProcessor: resourcesPostProcessor,
+      },
+      { basePath: "storSimple1200Series/resource-manager", suffix: "1200" },
+      { basePath: "storsimple8000series/resource-manager", suffix: "8000" },
+      {
+        basePath: "softwareplan/resource-manager",
+        resourceConfig:
+          [{ type: "hybridUseBenefits", scopes: ScopeType.Extension }],
+      },
+    ]
+objectModelConfiguration:
   sql:
     2020-11-01-preview:
       Server:
@@ -371,6 +341,6 @@ objectModelConfiguration:
         $supportedFrom: "-"
   cache:
     2020-06-01:
-      Redis: 
+      Redis:
         $export: true
         $supportedFrom: "-"

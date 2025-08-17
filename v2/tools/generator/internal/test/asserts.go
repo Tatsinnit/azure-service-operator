@@ -7,12 +7,12 @@ package test
 
 import (
 	"bytes"
-	"fmt"
-	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/reporting"
-	"github.com/sebdah/goldie/v2"
 	"testing"
 
+	"github.com/sebdah/goldie/v2"
+
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
+	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/reporting"
 )
 
 // AssertPackagesGenerateExpectedCode creates a golden file for each package represented in the set of type definitions,
@@ -26,20 +26,13 @@ func AssertPackagesGenerateExpectedCode(
 	options ...AssertionOption,
 ) {
 	t.Helper()
-	// Group type definitions by package
-	groups := make(map[astmodel.PackageReference][]astmodel.TypeDefinition, len(definitions))
-	for _, def := range definitions {
-		ref := def.Name().PackageReference
-		groups[ref] = append(groups[ref], def)
-	}
 
-	// Write a file for each package
-	for _, defs := range groups {
-		ref := defs[0].Name().PackageReference
-		group, version := ref.GroupVersion()
-		fileName := fmt.Sprintf("%s-%s", group, version)
-		AssertTypeDefinitionsGenerateExpectedCode(t, fileName, defs, options...)
-	}
+	defs := definitions.AsSlice()
+	packages := createSetOfPackages(defs)
+
+	asserter := newTypeAsserter(t)
+	asserter.configure(options)
+	asserter.assert("", defs, packages)
 }
 
 // AssertTypeDefinitionsGenerateExpectedCode serialises the given FileDefinition as a golden file test, checking that the expected
@@ -55,9 +48,12 @@ func AssertTypeDefinitionsGenerateExpectedCode(
 	options ...AssertionOption,
 ) {
 	t.Helper()
+
+	packages := createSetOfPackages(defs)
+
 	asserter := newTypeAsserter(t)
 	asserter.configure(options)
-	asserter.assert(name, defs...)
+	asserter.assert(name, defs, packages)
 }
 
 // AssertSingleTypeDefinitionGeneratesExpectedCode serialises the given TypeDefinition as a golden file test, checking
@@ -73,9 +69,16 @@ func AssertSingleTypeDefinitionGeneratesExpectedCode(
 	options ...AssertionOption,
 ) {
 	t.Helper()
+
+	defs := []astmodel.TypeDefinition{
+		def,
+	}
+
+	packages := createSetOfPackages(defs)
+
 	asserter := newTypeAsserter(t)
 	asserter.configure(options)
-	asserter.assert(fileName, def)
+	asserter.assert(fileName, defs, packages)
 }
 
 // AssertDefinitionHasExpectedShape fails the test if the given definition does not have the expected shape.
@@ -87,6 +90,20 @@ func AssertDefinitionHasExpectedShape(
 	filename string,
 	def astmodel.TypeDefinition,
 ) {
+	defs := make(astmodel.TypeDefinitionSet)
+	defs.Add(def)
+	AssertDefinitionsHaveExpectedShapes(t, filename, defs)
+}
+
+// AssertDefinitionsHaveExpectedShapes fails the test if the given definition does not have the expected shape.
+// t is the current test.
+// filename is the name of the golden file to write.
+// def is the definition to be asserted.
+func AssertDefinitionsHaveExpectedShapes(
+	t *testing.T,
+	filename string,
+	defs astmodel.TypeDefinitionSet,
+) {
 	t.Helper()
 	g := goldie.New(t)
 
@@ -94,9 +111,6 @@ func AssertDefinitionHasExpectedShape(
 	if err != nil {
 		t.Fatalf("Unable to configure goldie output folder %s", err)
 	}
-
-	defs := make(astmodel.TypeDefinitionSet)
-	defs.Add(def)
 
 	buf := &bytes.Buffer{}
 	report := reporting.NewTypeCatalogReport(defs)
@@ -131,7 +145,7 @@ func AssertPropertyExists(
 	return property
 }
 
-// AssertPropertyExists fails the test if the given object does not have a property with the given name and type
+// AssertPropertyExistsWithType fails the test if the given object does not have a property with the given name and type
 // t is the current test.
 // atype is the type that's expected to have the property.
 // expectedName is the name of the property we expect to be present.

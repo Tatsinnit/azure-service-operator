@@ -9,12 +9,12 @@ import (
 	"context"
 	"testing"
 
+	. "github.com/onsi/gomega"
+
+	"github.com/rotisserie/eris"
+
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/test"
-
-	"github.com/pkg/errors"
-
-	. "github.com/onsi/gomega"
 )
 
 func TestFindsAnyTypes(t *testing.T) {
@@ -25,8 +25,8 @@ func TestFindsAnyTypes(t *testing.T) {
 	p3 := test.MakeLocalPackageReference("wah.wah", "v20200730")
 
 	defs := make(astmodel.TypeDefinitionSet)
-	add := func(p astmodel.PackageReference, n string, t astmodel.Type) {
-		defs.Add(astmodel.MakeTypeDefinition(astmodel.MakeTypeName(p, n), t))
+	add := func(p astmodel.InternalPackageReference, n string, t astmodel.Type) {
+		defs.Add(astmodel.MakeTypeDefinition(astmodel.MakeInternalTypeName(p, n), t))
 	}
 
 	// A couple of types in the same package...
@@ -40,7 +40,7 @@ func TestFindsAnyTypes(t *testing.T) {
 	// One that's fine.
 	add(p3, "C", astmodel.NewArrayType(astmodel.IntType))
 
-	state := NewState().WithDefinitions(defs)
+	state := NewState(defs)
 	stage := FilterOutDefinitionsUsingAnyType(nil)
 	finalState, err := stage.Run(context.Background(), state)
 
@@ -56,8 +56,8 @@ func TestIgnoresExpectedAnyTypePackages(t *testing.T) {
 	p3 := test.MakeLocalPackageReference("wah.wah", "v20200730")
 
 	defs := make(astmodel.TypeDefinitionSet)
-	add := func(p astmodel.PackageReference, n string, t astmodel.Type) {
-		defs.Add(astmodel.MakeTypeDefinition(astmodel.MakeTypeName(p, n), t))
+	add := func(p astmodel.InternalPackageReference, n string, t astmodel.Type) {
+		defs.Add(astmodel.MakeTypeDefinition(astmodel.MakeInternalTypeName(p, n), t))
 	}
 	// A couple of types in the same package...
 	add(p1, "A", astmodel.AnyType)
@@ -72,13 +72,13 @@ func TestIgnoresExpectedAnyTypePackages(t *testing.T) {
 
 	exclusions := []string{"horo.logy/v20200730", "road.train/v20200730"}
 
-	state := NewState().WithDefinitions(defs)
+	state := NewState(defs)
 	finalState, err := FilterOutDefinitionsUsingAnyType(exclusions).action(context.Background(), state)
 	g.Expect(err).To(BeNil())
 
 	expected := make(astmodel.TypeDefinitionSet)
 	expected.Add(astmodel.MakeTypeDefinition(
-		astmodel.MakeTypeName(p3, "C"), astmodel.NewArrayType(astmodel.IntType),
+		astmodel.MakeInternalTypeName(p3, "C"), astmodel.NewArrayType(astmodel.IntType),
 	))
 	g.Expect(finalState.Definitions()).To(Equal(expected))
 }
@@ -91,8 +91,8 @@ func TestComplainsAboutUnneededExclusions(t *testing.T) {
 	p3 := test.MakeLocalPackageReference("wah.wah", "v20200730")
 
 	defs := make(astmodel.TypeDefinitionSet)
-	add := func(p astmodel.PackageReference, n string, t astmodel.Type) {
-		defs.Add(astmodel.MakeTypeDefinition(astmodel.MakeTypeName(p, n), t))
+	add := func(p astmodel.InternalPackageReference, n string, t astmodel.Type) {
+		defs.Add(astmodel.MakeTypeDefinition(astmodel.MakeInternalTypeName(p, n), t))
 	}
 	// A couple of types in the same package...
 	add(p1, "A", astmodel.AnyType)
@@ -112,9 +112,9 @@ func TestComplainsAboutUnneededExclusions(t *testing.T) {
 		"road.train/v20200730",
 	}
 
-	state := NewState().WithDefinitions(defs)
+	state := NewState(defs)
 	stage := FilterOutDefinitionsUsingAnyType(exclusions)
 	finalState, err := stage.Run(context.Background(), state)
 	g.Expect(finalState).To(BeNil())
-	g.Expect(errors.Cause(err)).To(MatchError("no AnyTypes found in: gamma.knife/v20200821, people.vultures/20200821"))
+	g.Expect(eris.Cause(err)).To(MatchError("no AnyTypes found in: gamma.knife/v20200821, people.vultures/20200821"))
 }

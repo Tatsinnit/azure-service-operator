@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
@@ -17,13 +17,13 @@ import (
 
 func AsTypedError[T error](err error) (T, bool) {
 	var typedErr T
-	if errors.As(err, &typedErr) {
+	if eris.As(err, &typedErr) {
 		return typedErr, true
 	}
 
 	// Also deal with the possibility that this is a kerrors.Aggregate
 	var aggregate kerrors.Aggregate
-	if errors.As(err, &aggregate) {
+	if eris.As(err, &aggregate) {
 		for _, e := range aggregate.Errors() {
 			// This is a bit hacky but allows us to pick out the first error and raise on that
 			if result, ok := AsTypedError[T](e); ok {
@@ -75,6 +75,9 @@ func (e *NotOwnedError) Error() string {
 type causer interface {
 	error
 	Cause() error
+
+	// Note that we use Cause() and not Unwrap here because we don't want these errors mistakenly classified as generic
+	// NotFound errors (which are ignored and retried).
 }
 
 type ReferenceNotFound struct {
@@ -89,8 +92,10 @@ func NewReferenceNotFoundError(name types.NamespacedName, cause error) *Referenc
 	}
 }
 
-var _ error = &ReferenceNotFound{}
-var _ causer = &ReferenceNotFound{}
+var (
+	_ error  = &ReferenceNotFound{}
+	_ causer = &ReferenceNotFound{}
+)
 
 func (e *ReferenceNotFound) Error() string {
 	return fmt.Sprintf("%s does not exist (%s)", e.NamespacedName, e.cause)
@@ -98,13 +103,17 @@ func (e *ReferenceNotFound) Error() string {
 
 func (e *ReferenceNotFound) Is(err error) bool {
 	var typedErr *ReferenceNotFound
-	if errors.As(err, &typedErr) {
+	if eris.As(err, &typedErr) {
 		return e.NamespacedName == typedErr.NamespacedName
 	}
 	return false
 }
 
 func (e *ReferenceNotFound) Cause() error {
+	return e.cause
+}
+
+func (e *ReferenceNotFound) Unwrap() error {
 	return e.cause
 }
 
@@ -125,8 +134,10 @@ func NewSecretNotFoundError(name types.NamespacedName, cause error) *SecretNotFo
 	}
 }
 
-var _ error = &SecretNotFound{}
-var _ causer = &SecretNotFound{}
+var (
+	_ error  = &SecretNotFound{}
+	_ causer = &SecretNotFound{}
+)
 
 func (e *SecretNotFound) Error() string {
 	return fmt.Sprintf("%s does not exist (%s)", e.NamespacedName, e.cause)
@@ -134,7 +145,7 @@ func (e *SecretNotFound) Error() string {
 
 func (e *SecretNotFound) Is(err error) bool {
 	var typedErr *SecretNotFound
-	if errors.As(err, &typedErr) {
+	if eris.As(err, &typedErr) {
 		return e.NamespacedName == typedErr.NamespacedName
 	}
 	return false
@@ -161,8 +172,10 @@ func NewConfigMapNotFoundError(name types.NamespacedName, cause error) *ConfigMa
 	}
 }
 
-var _ error = &ConfigMapNotFound{}
-var _ causer = &ConfigMapNotFound{}
+var (
+	_ error  = &ConfigMapNotFound{}
+	_ causer = &ConfigMapNotFound{}
+)
 
 func (e *ConfigMapNotFound) Error() string {
 	return fmt.Sprintf("%s does not exist (%s)", e.NamespacedName, e.cause)
@@ -170,7 +183,7 @@ func (e *ConfigMapNotFound) Error() string {
 
 func (e *ConfigMapNotFound) Is(err error) bool {
 	var typedErr *ConfigMapNotFound
-	if errors.As(err, &typedErr) {
+	if eris.As(err, &typedErr) {
 		return e.NamespacedName == typedErr.NamespacedName
 	}
 	return false
@@ -181,6 +194,48 @@ func (e *ConfigMapNotFound) Cause() error {
 }
 
 func (e *ConfigMapNotFound) Format(s fmt.State, verb rune) {
+	format(e, s, verb)
+}
+
+// SubscriptionMismatch error is used when a child resource and parent resource subscription don't match
+type SubscriptionMismatch struct {
+	ExpectedSubscription string
+	ActualSubscription   string
+	inner                error
+}
+
+func NewSubscriptionMismatchError(expectedSub string, actualSub string) *SubscriptionMismatch {
+	err := eris.Errorf(
+		"resource subscription %q does not match parent subscription %q",
+		actualSub,
+		expectedSub)
+
+	return &SubscriptionMismatch{
+		ExpectedSubscription: expectedSub,
+		ActualSubscription:   actualSub,
+		inner:                err,
+	}
+}
+
+var (
+	_ error  = &SubscriptionMismatch{}
+	_ causer = &SubscriptionMismatch{}
+)
+
+func (e *SubscriptionMismatch) Error() string {
+	return e.inner.Error()
+}
+
+func (e *SubscriptionMismatch) Is(err error) bool {
+	var typedErr *SubscriptionMismatch
+	return eris.As(err, &typedErr)
+}
+
+func (e *SubscriptionMismatch) Cause() error {
+	return e.inner
+}
+
+func (e *SubscriptionMismatch) Format(s fmt.State, verb rune) {
 	format(e, s, verb)
 }
 

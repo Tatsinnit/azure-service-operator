@@ -9,15 +9,13 @@ import (
 	"bufio"
 	"context"
 	"io"
-	"io/ioutil"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/bmatcuk/doublestar"
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
@@ -28,28 +26,34 @@ const DeleteGeneratedCodeStageID = "deleteGenerated"
 
 // DeleteGeneratedCode creates a pipeline stage for cleanup of our output folder prior to generating files
 func DeleteGeneratedCode(outputFolder string) *Stage {
-	return NewLegacyStage(
+	return NewStage(
 		DeleteGeneratedCodeStageID,
 		"Delete generated code from "+outputFolder,
-		func(ctx context.Context, definitions astmodel.TypeDefinitionSet) (astmodel.TypeDefinitionSet, error) {
+		func(ctx context.Context, state *State) (*State, error) {
 			err := deleteGeneratedCodeFromFolder(ctx, outputFolder)
 			if err != nil {
 				return nil, err
 			}
 
-			return definitions, nil
+			return state, nil
 		})
 }
 
 func deleteGeneratedCodeFromFolder(ctx context.Context, outputFolder string) error {
-	genPattern := path.Join(outputFolder, "**", "*", "*"+astmodel.CodeGeneratedFileSuffix+"*.go")
+	genPattern := filepath.Join(outputFolder, "**", "*", "*"+astmodel.CodeGeneratedFileSuffix+"*.go")
 	err := deleteGeneratedCodeByPattern(ctx, genPattern)
 	if err != nil {
 		return err
 	}
 
-	docPattern := path.Join(outputFolder, "**", "*", "doc.go")
+	docPattern := filepath.Join(outputFolder, "**", "*", "doc.go")
 	err = deleteGeneratedCodeByPattern(ctx, docPattern)
+	if err != nil {
+		return err
+	}
+
+	structurePattern := filepath.Join(outputFolder, "**", "*", "*.txt")
+	err = deleteGeneratedCodeByPattern(ctx, structurePattern)
 	if err != nil {
 		return err
 	}
@@ -61,29 +65,59 @@ func deleteGeneratedCodeByPattern(ctx context.Context, globPattern string) error
 	// We use doublestar here rather than filepath.Glob because filepath.Glob doesn't support **
 	files, err := doublestar.Glob(globPattern)
 	if err != nil {
-		return errors.Wrapf(err, "error globbing files with pattern %q", globPattern)
+		return eris.Wrapf(err, "error globbing files with pattern %q", globPattern)
 	}
 
-	var errs []error
-	for _, file := range files {
+	// We treat files as a queue of files needing deletion
+	// If we have an error deleting a file, it might be due to a transient lock on the file (e.g. from an editor or
+	// security software); if this happens, we requeue the file so we retry the deletion later
+	// To avoid getting stuck in an infinite loop, we keep track of the number of consequetive deletion failures; if
+	// this exceeds the size of the queue, we give up and return an error
+
+	consecutiveDeleteFailures := 0
+	errorsSeen := make(map[string]error, len(files))
+	for len(files) > 0 {
+		file := files[0]
 		if ctx.Err() != nil { // check for cancellation
 			return ctx.Err()
 		}
 
 		isGenerated, err := isFileGenerated(file)
 		if err != nil {
-			errs = append(errs, errors.Wrapf(err, "error determining if file was generated"))
+			errorsSeen[file] = eris.Wrapf(err, "error determining if file was generated")
+			consecutiveDeleteFailures++
+			files = append(files, file) // requeue the file
 		}
 
 		if isGenerated {
 			err := os.Remove(file)
 			if err != nil {
-				errs = append(errs, errors.Wrapf(err, "error removing file %q", file))
+				errorsSeen[file] = eris.Wrapf(err, "error determining if file was generated")
+				consecutiveDeleteFailures++
+				files = append(files, file) // requeue the file
+			} else {
+				consecutiveDeleteFailures = 0
+				delete(errorsSeen, file) // remove from errors if we previously failed
 			}
+		}
+
+		files = files[1:]
+
+		if consecutiveDeleteFailures > len(files) {
+			break
 		}
 	}
 
-	return kerrors.NewAggregate(errs)
+	if len(errorsSeen) > 0 {
+		errs := make([]error, 0, len(errorsSeen))
+		for _, err := range errorsSeen {
+			errs = append(errs, err)
+		}
+
+		return kerrors.NewAggregate(errs)
+	}
+
+	return nil
 }
 
 func isFileGenerated(filename string) (bool, error) {
@@ -101,7 +135,7 @@ func isFileGenerated(filename string) (bool, error) {
 	reader := bufio.NewReader(f)
 	for i := 0; i < maxLinesToCheck; i++ {
 		line, err := reader.ReadString('\n')
-		if errors.Is(err, io.EOF) {
+		if eris.Is(err, io.EOF) {
 			return false, nil
 		}
 
@@ -165,16 +199,16 @@ func deleteEmptyDirectories(ctx context.Context, path string) error {
 			return ctx.Err()
 		}
 
-		files, err := ioutil.ReadDir(dir)
+		files, err := os.ReadDir(dir)
 		if err != nil {
-			errs = append(errs, errors.Wrapf(err, "error reading directory %q", dir))
+			errs = append(errs, eris.Wrapf(err, "error reading directory %q", dir))
 		}
 
 		if len(files) == 0 {
 			// Directory is empty now, we can delete it
 			err := os.Remove(dir)
 			if err != nil {
-				errs = append(errs, errors.Wrapf(err, "error removing dir %q", dir))
+				errs = append(errs, eris.Wrapf(err, "error removing dir %q", dir))
 			}
 		}
 	}

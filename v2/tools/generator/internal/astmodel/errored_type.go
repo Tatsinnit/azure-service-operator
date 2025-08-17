@@ -10,9 +10,8 @@ import (
 	"strings"
 
 	"github.com/dave/dst"
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
-	"k8s.io/klog/v2"
 )
 
 type ErroredType struct {
@@ -129,41 +128,55 @@ func (e *ErroredType) RequiredPackageReferences() *PackageReferenceSet {
 	return e.inner.RequiredPackageReferences()
 }
 
-func (e *ErroredType) handleWarningsAndErrors() {
-	for _, warning := range e.warnings {
-		klog.Warning(warning)
-	}
+func (e *ErroredType) checkForWarningsAndErrors() error {
+	var errs []error
 
 	if len(e.errors) > 0 {
-		var errs []error
 		for _, err := range e.errors {
-			errs = append(errs, errors.New(err))
-		}
-
-		if len(errs) == 1 {
-			panic(errs[0])
-		} else {
-			panic(kerrors.NewAggregate(errs))
+			errs = append(errs, eris.New(err))
 		}
 	}
-}
 
-func (e *ErroredType) AsDeclarations(cgc *CodeGenerationContext, dc DeclarationContext) []dst.Decl {
-	e.handleWarningsAndErrors()
-	if e.inner == nil {
-		return nil
+	// Treating warnings as errors isn't quite right, but good enough for now
+	if len(e.warnings) > 0 {
+		for _, wrn := range e.warnings {
+			errs = append(errs, eris.New(wrn))
+		}
 	}
 
-	return e.inner.AsDeclarations(cgc, dc)
+	return kerrors.NewAggregate(errs)
 }
 
-func (e *ErroredType) AsType(cgc *CodeGenerationContext) dst.Expr {
-	e.handleWarningsAndErrors()
-	if e.inner == nil {
-		return nil
+func (e *ErroredType) AsDeclarations(
+	codeGenerationContext *CodeGenerationContext,
+	declContext DeclarationContext,
+) ([]dst.Decl, error) {
+	if err := e.checkForWarningsAndErrors(); err != nil {
+		return nil, err
 	}
 
-	return e.inner.AsType(cgc)
+	if e.inner == nil {
+		return nil, nil
+	}
+
+	return e.inner.AsDeclarations(codeGenerationContext, declContext)
+}
+
+func (e *ErroredType) AsTypeExpr(codeGenerationContext *CodeGenerationContext) (dst.Expr, error) {
+	if err := e.checkForWarningsAndErrors(); err != nil {
+		// Temporary hack until we change AsTypeExpr to return an error
+		panic(err)
+	}
+	if e.inner == nil {
+		return nil, nil
+	}
+
+	result, err := e.inner.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating inner type expression for errored type")
+	}
+
+	return result, nil
 }
 
 // AsZero renders an expression for the "zero" value of the type
@@ -193,7 +206,7 @@ func (e *ErroredType) Unwrap() Type {
 // WriteDebugDescription adds a description of the current errored type to the passed builder,
 // builder receives the full description, including the nested type, errors and warnings
 // definitions is for resolving named types
-func (e *ErroredType) WriteDebugDescription(builder *strings.Builder, currentPackage PackageReference) {
+func (e *ErroredType) WriteDebugDescription(builder *strings.Builder, currentPackage InternalPackageReference) {
 	builder.WriteString("Error[")
 	if e.inner != nil {
 		e.inner.WriteDebugDescription(builder, currentPackage)

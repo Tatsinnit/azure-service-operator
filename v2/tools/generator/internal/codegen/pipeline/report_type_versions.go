@@ -8,12 +8,11 @@ package pipeline
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
-	"path"
+	"path/filepath"
 	"strings"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
@@ -27,14 +26,15 @@ const ReportOnTypesAndVersionsStageID = "reportTypesAndVersions"
 // ReportOnTypesAndVersions creates a pipeline stage that generates a report for each group showing a matrix of all
 // types and versions
 func ReportOnTypesAndVersions(configuration *config.Configuration) *Stage {
-	return NewLegacyStage(
+	return NewStage(
 		ReportOnTypesAndVersionsStageID,
 		"Generate reports on types and versions in each package",
-		func(ctx context.Context, definitions astmodel.TypeDefinitionSet) (astmodel.TypeDefinitionSet, error) {
+		func(ctx context.Context, state *State) (*State, error) {
+			definitions := state.Definitions()
 			report := NewPackagesMatrixReport()
 			report.Summarize(definitions)
 			err := report.WriteTo(configuration.FullTypesOutputPath())
-			return definitions, err
+			return state, err
 		})
 }
 
@@ -52,8 +52,8 @@ func NewPackagesMatrixReport() *PackagesMatrixReport {
 func (report *PackagesMatrixReport) Summarize(definitions astmodel.TypeDefinitionSet) {
 	for _, t := range definitions {
 		typeName := t.Name().Name()
-		packageName := report.ServiceName(t.Name().PackageReference)
-		packageVersion := t.Name().PackageReference.PackageName()
+		packageName := report.ServiceName(t.Name().InternalPackageReference())
+		packageVersion := t.Name().PackageReference().PackageName()
 		table, ok := report.tables[packageName]
 		if !ok {
 			table = reporting.NewSparseTable(fmt.Sprintf("Type Definitions in package %q", packageName))
@@ -76,14 +76,9 @@ func (report *PackagesMatrixReport) WriteTo(outputPath string) error {
 	return kerrors.NewAggregate(errs)
 }
 
-func (report *PackagesMatrixReport) ServiceName(ref astmodel.PackageReference) string {
-	pathBits := strings.Split(ref.PackagePath(), "/")
-	index := len(pathBits) - 1
-	if index > 0 {
-		index--
-	}
-
-	return pathBits[index]
+func (report *PackagesMatrixReport) ServiceName(ref astmodel.InternalPackageReference) string {
+	grp, _ := ref.GroupVersion()
+	return grp
 }
 
 func (report *PackagesMatrixReport) WriteTableTo(table *reporting.SparseTable, pkg string, outputPath string) error {
@@ -97,14 +92,14 @@ func (report *PackagesMatrixReport) WriteTableTo(table *reporting.SparseTable, p
 	var buffer strings.Builder
 	table.WriteTo(&buffer)
 
-	outputFolder := path.Join(outputPath, pkg)
+	outputFolder := filepath.Join(outputPath, pkg)
 	if _, err := os.Stat(outputFolder); os.IsNotExist(err) {
-		err = os.MkdirAll(outputFolder, 0700)
+		err = os.MkdirAll(outputFolder, 0o700)
 		if err != nil {
-			return errors.Wrapf(err, "Unable to create directory %q", outputFolder)
+			return eris.Wrapf(err, "Unable to create directory %q", outputFolder)
 		}
 	}
 
-	destination := path.Join(outputFolder, "versions_matrix.md")
-	return ioutil.WriteFile(destination, []byte(buffer.String()), 0600)
+	destination := filepath.Join(outputFolder, "versions_matrix.md")
+	return os.WriteFile(destination, []byte(buffer.String()), 0o600)
 }

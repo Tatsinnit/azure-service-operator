@@ -58,21 +58,13 @@ func (set Set[T]) Copy() Set[T] {
 
 // Clear removes all the items from this set.
 func (set Set[T]) Clear() {
-	// TODO: Once the generics bug in Go 1.18.2 is fixed, revert to this implementation
-	// See https://github.com/golang/go/issues/53087 for details
-	// maps.Clear(set)
-	for k := range set {
-		delete(set, k)
-	}
+	maps.Clear(set)
 }
 
-/* compiler crashes at the moment: https://github.com/golang/go/issues/51840
-
+// Equals checks to see if the two sets are equivalent
 func (set Set[T]) Equals(other Set[T]) bool {
 	return maps.Equal(set, other)
 }
-
-*/
 
 func AreEqual[T comparable](left, right Set[T]) bool {
 	return maps.Equal(left, right)
@@ -83,9 +75,50 @@ func (set Set[T]) Values() []T {
 	return maps.Keys(set)
 }
 
+// Where returns a new set with only the set of values which match the predicate
+func (set Set[T]) Where(predicate func(T) bool) Set[T] {
+	result := make(Set[T], len(set))
+
+	for val := range set {
+		if predicate(val) {
+			result.Add(val)
+		}
+	}
+
+	return result
+}
+
+// Except returns a new set with only the set of values which are not in the other set
+func (set Set[T]) Except(other Set[T]) Set[T] {
+	result := make(Set[T], len(set))
+
+	for val := range set {
+		if !other.Contains(val) {
+			result.Add(val)
+		}
+	}
+
+	return result
+}
+
 // AsSortedSlice returns a sorted slice of values from this set
 func AsSortedSlice[T constraints.Ordered](set Set[T]) []T {
 	result := maps.Keys(set)
 	slices.Sort(result)
+	return result
+}
+
+// Union returns the union of the specified sets
+func Union[T comparable](sets ...Set[T]) Set[T] {
+	size := 0
+	for _, set := range sets {
+		size += len(set)
+	}
+	result := make(Set[T], size)
+
+	for _, set := range sets {
+		result.AddAll(set)
+	}
+
 	return result
 }

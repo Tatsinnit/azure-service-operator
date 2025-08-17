@@ -9,7 +9,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
@@ -17,14 +17,15 @@ import (
 
 // NameTypesForCRD - for CRDs all inner enums and objects and validated types must be named, so we do it here
 func NameTypesForCRD(idFactory astmodel.IdentifierFactory) *Stage {
-	return NewLegacyStage(
+	return NewStage(
 		"nameTypes",
 		"Name inner types for CRD",
-		func(ctx context.Context, definitions astmodel.TypeDefinitionSet) (astmodel.TypeDefinitionSet, error) {
+		func(ctx context.Context, state *State) (*State, error) {
+			definitions := state.Definitions()
 			result := make(astmodel.TypeDefinitionSet)
 
 			// this is a little bit of a hack, better way to do it?
-			getDescription := func(typeName astmodel.TypeName) []string {
+			getDescription := func(typeName astmodel.InternalTypeName) []string {
 				if typeDef, ok := definitions[typeName]; ok {
 					return typeDef.Description()
 				}
@@ -36,7 +37,7 @@ func NameTypesForCRD(idFactory astmodel.IdentifierFactory) *Stage {
 
 				newDefs, err := nameInnerTypes(typeDef, getDescription)
 				if err != nil {
-					return nil, errors.Wrapf(err, "failed to name inner definitions")
+					return nil, eris.Wrapf(err, "failed to name inner definitions")
 				}
 
 				for _, def := range newDefs {
@@ -44,27 +45,25 @@ func NameTypesForCRD(idFactory astmodel.IdentifierFactory) *Stage {
 				}
 
 				if _, ok := result[typeName]; !ok {
-					// if we didn't regenerate the “input” type in nameInnerTypes then it won’t
+					// if we didn't regenerate the "input" type in nameInnerTypes then it won't
 					// have been added to the output; do it here
 					result.Add(typeDef)
 				}
 			}
 
-			return result, nil
+			return state.WithDefinitions(result), nil
 		})
 }
 
 func nameInnerTypes(
 	def astmodel.TypeDefinition,
-	getDescription func(typeName astmodel.TypeName) []string,
+	getDescription func(typeName astmodel.InternalTypeName) []string,
 ) ([]astmodel.TypeDefinition, error) {
 	var resultTypes []astmodel.TypeDefinition
 
-	builder := astmodel.TypeVisitorBuilder{}
-	builder.VisitEnumType = func(this *astmodel.TypeVisitor, it *astmodel.EnumType, ctx interface{}) (astmodel.Type, error) {
-		hint := ctx.(nameHint)
-
-		enumName := hint.AsTypeName(def.Name().PackageReference)
+	builder := astmodel.TypeVisitorBuilder[nameHint]{}
+	builder.VisitEnumType = func(this *astmodel.TypeVisitor[nameHint], it *astmodel.EnumType, ctx nameHint) (astmodel.Type, error) {
+		enumName := ctx.AsTypeName(def.Name().InternalPackageReference())
 		namedEnum := astmodel.MakeTypeDefinition(enumName, it)
 		namedEnum = namedEnum.WithDescription(getDescription(enumName)...)
 
@@ -73,26 +72,23 @@ func nameInnerTypes(
 		return namedEnum.Name(), nil
 	}
 
-	builder.VisitValidatedType = func(this *astmodel.TypeVisitor, v *astmodel.ValidatedType, ctx interface{}) (astmodel.Type, error) {
+	builder.VisitValidatedType = func(this *astmodel.TypeVisitor[nameHint], v *astmodel.ValidatedType, ctx nameHint) (astmodel.Type, error) {
 		// a validated type anywhere except directly under a property
 		// must be named so that we can put the validations on it
-		hint := ctx.(nameHint)
-		newElementType, err := this.Visit(v.ElementType(), hint.WithBasePart("Validated"))
+		newElementType, err := this.Visit(v.ElementType(), ctx.WithBasePart("Validated"))
 		if err != nil {
 			return nil, err
 		}
 
-		name := hint.AsTypeName(def.Name().PackageReference)
+		name := ctx.AsTypeName(def.Name().InternalPackageReference())
 		namedType := astmodel.MakeTypeDefinition(name, v.WithType(newElementType))
 		resultTypes = append(resultTypes, namedType)
 		return namedType.Name(), nil
 	}
 
-	builder.VisitFlaggedType = func(this *astmodel.TypeVisitor, it *astmodel.FlaggedType, ctx interface{}) (astmodel.Type, error) {
+	builder.VisitFlaggedType = func(this *astmodel.TypeVisitor[nameHint], it *astmodel.FlaggedType, ctx nameHint) (astmodel.Type, error) {
 		// Because we're returning type names here, we need to look up the name returned by visit and wrap that with the correct flags
-		hint := ctx.(nameHint)
-
-		name, err := this.Visit(it.Element(), hint)
+		name, err := this.Visit(it.Element(), ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -116,15 +112,13 @@ func nameInnerTypes(
 		return name, nil
 	}
 
-	builder.VisitObjectType = func(this *astmodel.TypeVisitor, it *astmodel.ObjectType, ctx interface{}) (astmodel.Type, error) {
-		hint := ctx.(nameHint)
-
+	builder.VisitObjectType = func(this *astmodel.TypeVisitor[nameHint], it *astmodel.ObjectType, ctx nameHint) (astmodel.Type, error) {
 		var errs []error
 		var props []*astmodel.PropertyDefinition
 		// first map the inner types:
 		it.Properties().ForEach(func(prop *astmodel.PropertyDefinition) {
 			propType := prop.PropertyType()
-			propHint := hint.WithBasePart(string(prop.PropertyName()))
+			propHint := ctx.WithBasePart(string(prop.PropertyName()))
 			if validated, ok := propType.(*astmodel.ValidatedType); ok {
 				// handle validated types in properties specially,
 				// they don't need to be named, so skip directly to element type
@@ -148,7 +142,7 @@ func nameInnerTypes(
 			return nil, kerrors.NewAggregate(errs)
 		}
 
-		objectName := hint.AsTypeName(def.Name().PackageReference)
+		objectName := ctx.AsTypeName(def.Name().InternalPackageReference())
 
 		namedObjectType := astmodel.MakeTypeDefinition(objectName, it.WithProperties(props...))
 		namedObjectType = namedObjectType.WithDescription(getDescription(objectName)...)
@@ -158,23 +152,21 @@ func nameInnerTypes(
 		return namedObjectType.Name(), nil
 	}
 
-	builder.VisitResourceType = func(this *astmodel.TypeVisitor, it *astmodel.ResourceType, ctx interface{}) (astmodel.Type, error) {
-		hint := ctx.(nameHint)
-
-		spec, err := this.Visit(it.SpecType(), hint.WithSuffixPart(astmodel.SpecSuffix))
+	builder.VisitResourceType = func(this *astmodel.TypeVisitor[nameHint], it *astmodel.ResourceType, ctx nameHint) (astmodel.Type, error) {
+		spec, err := this.Visit(it.SpecType(), ctx.WithSuffixPart(astmodel.SpecSuffix))
 		if err != nil {
-			return nil, errors.Wrapf(err, "failed to name spec type %s", it.SpecType())
+			return nil, eris.Wrapf(err, "failed to name spec type %s", it.SpecType())
 		}
 
 		var status astmodel.Type
 		if it.StatusType() != nil {
-			status, err = this.Visit(it.StatusType(), hint.WithSuffixPart(astmodel.StatusSuffix))
+			status, err = this.Visit(it.StatusType(), ctx.WithSuffixPart(astmodel.StatusSuffix))
 			if err != nil {
-				return nil, errors.Wrapf(err, "failed to name status type %s", it.StatusType())
+				return nil, eris.Wrapf(err, "failed to name status type %s", it.StatusType())
 			}
 		}
 
-		resourceName := hint.AsTypeName(def.Name().PackageReference)
+		resourceName := ctx.AsTypeName(def.Name().InternalPackageReference())
 
 		it = it.WithSpec(spec).WithStatus(status)
 		resource := astmodel.MakeTypeDefinition(resourceName, it).WithDescription(getDescription(resourceName)...)
@@ -187,7 +179,7 @@ func nameInnerTypes(
 
 	_, err := visitor.Visit(def.Type(), newNameHint(def.Name()))
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to name inner types of %s", def.Name())
+		return nil, eris.Wrapf(err, "failed to name inner types of %s", def.Name())
 	}
 
 	return resultTypes, nil
@@ -201,11 +193,9 @@ type nameHint struct {
 var suffixesToFloat = []string{
 	astmodel.SpecSuffix,
 	astmodel.StatusSuffix,
-	astmodel.ARMSuffix,
 }
 
 func newNameHint(name astmodel.TypeName) nameHint {
-
 	baseName := name.Name()
 	var suffixes []string
 	done := false
@@ -239,7 +229,6 @@ func (n nameHint) WithBasePart(part string) nameHint {
 }
 
 func (n nameHint) WithSuffixPart(suffix string) nameHint {
-
 	newSuffix := strings.TrimPrefix(suffix, "_")
 	if n.suffix != "" {
 		newSuffix = n.suffix + "_" + newSuffix
@@ -259,9 +248,9 @@ func (n nameHint) String() string {
 	return n.baseName
 }
 
-func (n nameHint) AsTypeName(ref astmodel.PackageReference) astmodel.TypeName {
+func (n nameHint) AsTypeName(ref astmodel.InternalPackageReference) astmodel.InternalTypeName {
 	if n.suffix != "" {
-		return astmodel.MakeTypeName(ref, n.baseName+"_"+n.suffix)
+		return astmodel.MakeInternalTypeName(ref, n.baseName+"_"+n.suffix)
 	}
-	return astmodel.MakeTypeName(ref, n.baseName)
+	return astmodel.MakeInternalTypeName(ref, n.baseName)
 }

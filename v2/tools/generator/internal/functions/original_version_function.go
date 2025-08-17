@@ -7,6 +7,7 @@ package functions
 
 import (
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
@@ -50,17 +51,23 @@ func (o *OriginalVersionFunction) References() astmodel.TypeNameSet {
 
 // AsFunc returns the generated code for the OriginalVersion() function
 func (o *OriginalVersionFunction) AsFunc(
-	generationContext *astmodel.CodeGenerationContext, receiver astmodel.TypeName) *dst.FuncDecl {
+	codeGenerationContext *astmodel.CodeGenerationContext,
+	receiver astmodel.InternalTypeName,
+) (*dst.FuncDecl, error) {
 	groupVersionPackageGlobal := dst.NewIdent("GroupVersion")
 
 	receiverName := o.idFactory.CreateReceiver(receiver.Name())
+	receiverTypeExpr, err := receiver.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrapf(err, "creating type expression for %s", receiver)
+	}
 
 	returnVersion := astbuilder.Returns(
 		astbuilder.Selector(groupVersionPackageGlobal, "Version"))
 
 	funcDetails := &astbuilder.FuncDetails{
 		ReceiverIdent: receiverName,
-		ReceiverType:  astbuilder.Dereference(receiver.AsType(generationContext)),
+		ReceiverType:  astbuilder.PointerTo(receiverTypeExpr),
 		Name:          o.Name(),
 		Body:          astbuilder.Statements(returnVersion),
 	}
@@ -68,7 +75,7 @@ func (o *OriginalVersionFunction) AsFunc(
 	funcDetails.AddComments("returns the original API version used to create the resource.")
 	funcDetails.AddReturn(dst.NewIdent("string"))
 
-	return funcDetails.DefineFunc()
+	return funcDetails.DefineFunc(), nil
 }
 
 // Equals returns true if the passed function is equal to us, or false otherwise

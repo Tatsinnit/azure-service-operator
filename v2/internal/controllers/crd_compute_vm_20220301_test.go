@@ -8,13 +8,13 @@ package controllers_test
 import (
 	"testing"
 
-	"github.com/Azure/go-autorest/autorest/to"
 	. "github.com/onsi/gomega"
 
-	compute2022 "github.com/Azure/azure-service-operator/v2/api/compute/v1beta20220301"
-	network "github.com/Azure/azure-service-operator/v2/api/network/v1beta20201101"
-	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
+	compute2022 "github.com/Azure/azure-service-operator/v2/api/compute/v1api20220301"
+	network "github.com/Azure/azure-service-operator/v2/api/network/v1api20201101"
+	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1api20200601"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
+	"github.com/Azure/azure-service-operator/v2/internal/util/to"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
 
@@ -25,7 +25,7 @@ func newVirtualMachine20220301(
 	secretRef genruntime.SecretReference,
 ) *compute2022.VirtualMachine {
 	adminUsername := "bloom"
-	size := compute2022.HardwareProfile_VmSize_Standard_D1_V2
+	size := "Standard_D1_v2"
 
 	return &compute2022.VirtualMachine{
 		ObjectMeta: tc.MakeObjectMeta("vm"),
@@ -40,14 +40,14 @@ func newVirtualMachine20220301(
 				// Specifying AdminPassword here rather than SSH Key to ensure that handling and injection
 				// of secrets works.
 				AdminPassword: &secretRef,
-				ComputerName:  to.StringPtr("poppy"),
+				ComputerName:  to.Ptr("poppy"),
 			},
 			StorageProfile: &compute2022.StorageProfile{
 				ImageReference: &compute2022.ImageReference{
-					Offer:     to.StringPtr("UbuntuServer"),
-					Publisher: to.StringPtr("Canonical"),
-					Sku:       to.StringPtr("18.04-LTS"),
-					Version:   to.StringPtr("latest"),
+					Offer:     to.Ptr("UbuntuServer"),
+					Publisher: to.Ptr("Canonical"),
+					Sku:       to.Ptr("18.04-LTS"),
+					Version:   to.Ptr("latest"),
 				},
 			},
 			NetworkProfile: &compute2022.NetworkProfile{
@@ -72,7 +72,7 @@ func Test_Compute_VM_20220301_CRUD(t *testing.T) {
 	// https://github.com/Azure/azure-service-operator/issues/1944
 	tc.CreateResourceAndWait(vnet)
 	tc.CreateResourcesAndWait(subnet, networkInterface)
-	secret := createVMPasswordSecretAndRef(tc)
+	secret := createPasswordSecret("vmsecret", "password", tc)
 	vm := newVirtualMachine20220301(tc, rg, networkInterface, secret)
 
 	tc.CreateResourceAndWait(vm)
@@ -83,7 +83,7 @@ func Test_Compute_VM_20220301_CRUD(t *testing.T) {
 	old := vm.DeepCopy()
 	vm.Spec.DiagnosticsProfile = &compute2022.DiagnosticsProfile{
 		BootDiagnostics: &compute2022.BootDiagnostics{
-			Enabled: to.BoolPtr(true),
+			Enabled: to.Ptr(true),
 		},
 	}
 
@@ -93,11 +93,44 @@ func Test_Compute_VM_20220301_CRUD(t *testing.T) {
 	tc.Expect(vm.Status.DiagnosticsProfile.BootDiagnostics.Enabled).ToNot(BeNil())
 	tc.Expect(*vm.Status.DiagnosticsProfile.BootDiagnostics.Enabled).To(BeTrue())
 
+	tc.RunParallelSubtests(
+		testcommon.Subtest{
+			Name: "VM_Extension_20220301_CRUD",
+			Test: func(tc *testcommon.KubePerTestContext) {
+				VM_Extension_20220301_CRUD(tc, testcommon.AsOwner(vm))
+			},
+		},
+	)
+
 	// Delete VM.
 	tc.DeleteResourceAndWait(vm)
 
 	// Ensure that the resource was really deleted in Azure
-	exists, retryAfter, err := tc.AzureClient.HeadByID(tc.Ctx, armId, string(compute2022.APIVersion_Value))
+	exists, retryAfter, err := tc.AzureClient.CheckExistenceWithGetByID(tc.Ctx, armId, string(compute2022.APIVersion_Value))
+	tc.Expect(err).ToNot(HaveOccurred())
+	tc.Expect(retryAfter).To(BeZero())
+	tc.Expect(exists).To(BeFalse())
+}
+
+func VM_Extension_20220301_CRUD(tc *testcommon.KubePerTestContext, vmOwnerRef *genruntime.KnownResourceReference) {
+	extension := &compute2022.VirtualMachinesExtension{
+		ObjectMeta: tc.MakeObjectMetaWithName("mycustomextension"),
+		Spec: compute2022.VirtualMachinesExtension_Spec{
+			Owner:              vmOwnerRef,
+			Location:           tc.AzureRegion,
+			Publisher:          to.Ptr("Microsoft.ManagedServices"),
+			Type:               to.Ptr("ApplicationHealthLinux"),
+			TypeHandlerVersion: to.Ptr("1.0"),
+		},
+	}
+
+	tc.CreateResourceAndWait(extension)
+	tc.Expect(extension.Status.Id).ToNot(BeNil())
+	armId := *extension.Status.Id
+
+	tc.DeleteResourceAndWait(extension)
+
+	exists, retryAfter, err := tc.AzureClient.CheckExistenceWithGetByID(tc.Ctx, armId, string(compute2022.APIVersion_Value))
 	tc.Expect(err).ToNot(HaveOccurred())
 	tc.Expect(retryAfter).To(BeZero())
 	tc.Expect(exists).To(BeFalse())

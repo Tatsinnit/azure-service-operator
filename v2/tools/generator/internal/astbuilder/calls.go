@@ -6,6 +6,8 @@
 package astbuilder
 
 import (
+	"go/token"
+
 	"github.com/dave/dst"
 )
 
@@ -33,10 +35,15 @@ func CallQualifiedFunc(qualifier string, funcName string, arguments ...dst.Expr)
 //
 // <expr>.<funcName>(arguments...)
 func CallExpr(expr dst.Expr, funcName string, arguments ...dst.Expr) *dst.CallExpr {
-	var receiver dst.Expr = expr
+	receiver := expr
 	if star, ok := expr.(*dst.StarExpr); ok {
-		// We don't need to dereference the expression - even value methods are available from pointer receivers
+		// We don't need to dereference the expression - value methods are available from pointer receivers
 		receiver = star.X
+	}
+
+	if unary, ok := expr.(*dst.UnaryExpr); ok && unary.Op == token.AND {
+		// We don't need to take the address of the expression - value methods are available from pointer receivers
+		receiver = unary.X
 	}
 
 	return createCallExpr(
@@ -53,7 +60,6 @@ func createCallExpr(expr dst.Expr, arguments ...dst.Expr) *dst.CallExpr {
 	for _, e := range arguments {
 		if _, ok := e.(*dst.CallExpr); ok {
 			nestedCalls++
-			break
 		}
 	}
 
@@ -75,35 +81,35 @@ func createCallExpr(expr dst.Expr, arguments ...dst.Expr) *dst.CallExpr {
 	return result
 }
 
-// InvokeFunc creates a statement to invoke a function with specified arguments
+// CallFuncAsStmt creates a statement to invoke a function with specified arguments
 //
 // <funcName>(arguments...)
 //
 // If you want to use the result of the function call as a value, use CallFunc() instead
-func InvokeFunc(funcName string, arguments ...dst.Expr) dst.Stmt {
+func CallFuncAsStmt(funcName string, arguments ...dst.Expr) dst.Stmt {
 	return &dst.ExprStmt{
 		X: CallFunc(funcName, arguments...),
 	}
 }
 
-// InvokeQualifiedFunc creates a statement to invoke a qualified function with specified
+// CallQualifiedFuncAsStmt creates a statement to invoke a qualified function with specified
 // arguments
 //
 // <qualifier>.<funcName>(arguments...)
 //
 // If you want to use the result of the function call as a value, use CallQualifiedFunc() instead
-func InvokeQualifiedFunc(qualifier string, funcName string, arguments ...dst.Expr) dst.Stmt {
+func CallQualifiedFuncAsStmt(qualifier string, funcName string, arguments ...dst.Expr) dst.Stmt {
 	return &dst.ExprStmt{
 		X: CallQualifiedFunc(qualifier, funcName, arguments...),
 	}
 }
 
-// InvokeExpr creates a statement to invoke the named function with the specified arguments
+// CallExprAsStmt creates a statement to invoke the named function with the specified arguments
 //
 // <expr>.<funcName>(arguments...)
 //
 // If you want to use the result of the function call as a value, use CallExpr() instead
-func InvokeExpr(expr dst.Expr, funcName string, arguments ...dst.Expr) dst.Stmt {
+func CallExprAsStmt(expr dst.Expr, funcName string, arguments ...dst.Expr) dst.Stmt {
 	return &dst.ExprStmt{
 		X: CallExpr(expr, funcName, arguments...),
 	}

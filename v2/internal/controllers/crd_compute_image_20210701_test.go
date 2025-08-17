@@ -8,12 +8,12 @@ package controllers_test
 import (
 	"testing"
 
-	"github.com/Azure/go-autorest/autorest/to"
 	. "github.com/onsi/gomega"
 
-	compute2020 "github.com/Azure/azure-service-operator/v2/api/compute/v1beta20200930"
-	compute2021 "github.com/Azure/azure-service-operator/v2/api/compute/v1beta20210701"
+	compute2020 "github.com/Azure/azure-service-operator/v2/api/compute/v1api20200930"
+	compute2021 "github.com/Azure/azure-service-operator/v2/api/compute/v1api20210701"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
+	"github.com/Azure/azure-service-operator/v2/internal/util/to"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
 
@@ -22,10 +22,10 @@ func Test_Compute_Image_20210701_CRUD(t *testing.T) {
 
 	tc := globalTestContext.ForTest(t)
 
-	tc.LogSection("Create Resource Group")
+	tc.LogSectionf("Create Resource Group")
 	rg := tc.CreateTestResourceGroupAndWait()
 
-	tc.LogSection("Create Snapshot")
+	tc.LogSectionf("Create Snapshot")
 	createOption := compute2020.CreationData_CreateOption_Empty
 	snapshot := &compute2020.Snapshot{
 		ObjectMeta: tc.MakeObjectMeta("snapshot"),
@@ -33,7 +33,7 @@ func Test_Compute_Image_20210701_CRUD(t *testing.T) {
 			CreationData: &compute2020.CreationData{
 				CreateOption: &createOption,
 			},
-			DiskSizeGB: to.IntPtr(32),
+			DiskSizeGB: to.Ptr(32),
 			Location:   tc.AzureRegion,
 			Owner:      testcommon.AsOwner(rg),
 		},
@@ -43,7 +43,7 @@ func Test_Compute_Image_20210701_CRUD(t *testing.T) {
 	tc.Expect(snapshot.Status.Id).ToNot(BeNil())
 	snapshotARMId := *snapshot.Status.Id
 
-	tc.LogSection("Create Image")
+	tc.LogSectionf("Create Image")
 	v2 := compute2021.HyperVGenerationType_V2
 	linuxOS := compute2021.ImageOSDisk_OsType_Linux
 	linuxOSState := compute2021.ImageOSDisk_OsState_Generalized
@@ -55,7 +55,7 @@ func Test_Compute_Image_20210701_CRUD(t *testing.T) {
 			Owner:            testcommon.AsOwner(rg),
 			StorageProfile: &compute2021.ImageStorageProfile{
 				OsDisk: &compute2021.ImageOSDisk{
-					DiskSizeGB: to.IntPtr(32),
+					DiskSizeGB: to.Ptr(32),
 					OsType:     &linuxOS,
 					OsState:    &linuxOSState,
 					Snapshot: &compute2021.SubResource{
@@ -77,12 +77,12 @@ func Test_Compute_Image_20210701_CRUD(t *testing.T) {
 	tc.Expect(string(*image.Status.StorageProfile.OsDisk.OsState)).To(Equal(string(*image.Spec.StorageProfile.OsDisk.OsState)))
 	imageARMId := *image.Status.Id
 
-	tc.LogSection("Clean up")
+	tc.LogSectionf("Clean up")
 	// Delete image.
 	tc.DeleteResourceAndWait(image)
 
 	// Ensure that the resource was really deleted in Azure
-	exists, retryAfter, err := tc.AzureClient.HeadByID(tc.Ctx, imageARMId, string(compute2021.APIVersion_Value))
+	exists, retryAfter, err := tc.AzureClient.CheckExistenceWithGetByID(tc.Ctx, imageARMId, string(compute2021.APIVersion_Value))
 	tc.Expect(err).ToNot(HaveOccurred())
 	tc.Expect(retryAfter).To(BeZero())
 	tc.Expect(exists).To(BeFalse())

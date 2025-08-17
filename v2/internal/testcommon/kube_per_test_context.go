@@ -6,7 +6,6 @@ Licensed under the MIT license.
 package testcommon
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"os"
@@ -17,10 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dnaeon/go-vcr/recorder"
 	"github.com/onsi/gomega"
 	"github.com/onsi/gomega/format"
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,9 +32,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/yaml"
 
-	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
+	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1api20200601"
 	"github.com/Azure/azure-service-operator/v2/internal/config"
 	"github.com/Azure/azure-service-operator/v2/internal/controllers"
+	"github.com/Azure/azure-service-operator/v2/internal/testcommon/matchers"
+	"github.com/Azure/azure-service-operator/v2/pkg/common/annotations"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
 )
@@ -49,12 +49,13 @@ type KubePerTestContext struct {
 	G          gomega.Gomega
 	Verify     *Verify
 	Match      *KubeMatcher
+	MatchAzure *matchers.Azure
 	scheme     *runtime.Scheme
 
 	tracker *ResourceTracker
 }
 
-func (tc KubePerTestContext) CreateTestNamespace(namespaceName string) error {
+func (tc *KubePerTestContext) CreateTestNamespace(namespaceName string) error {
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: namespaceName,
@@ -65,28 +66,38 @@ func (tc KubePerTestContext) CreateTestNamespace(namespaceName string) error {
 	})
 
 	if err != nil && !apierrors.IsAlreadyExists(err) {
-		return errors.Wrapf(err, "creating namespace")
+		return eris.Wrapf(err, "creating namespace")
 	}
 
 	return nil
 }
 
-func (tc KubePerTestContext) createTestNamespace() error {
+func (tc *KubePerTestContext) createTestNamespace() error {
 	return tc.CreateTestNamespace(tc.Namespace)
 }
 
-func (tc KubePerTestContext) MakeObjectMeta(prefix string) ctrl.ObjectMeta {
+func (tc *KubePerTestContext) MakeObjectMeta(prefix string) ctrl.ObjectMeta {
 	return tc.MakeObjectMetaWithName(tc.Namer.GenerateName(prefix))
 }
 
-func (tc KubePerTestContext) MakeObjectMetaWithName(name string) ctrl.ObjectMeta {
+func (tc *KubePerTestContext) MakeObjectMetaWithName(name string) ctrl.ObjectMeta {
 	return ctrl.ObjectMeta{
 		Name:      name,
 		Namespace: tc.Namespace,
 	}
 }
 
-func (tc KubePerTestContext) MakeReferenceFromResource(resource client.Object) *genruntime.ResourceReference {
+func (tc *KubePerTestContext) MakeObjectMetaWithNameAndCredentialFrom(name string, credentialFrom string) ctrl.ObjectMeta {
+	return ctrl.ObjectMeta{
+		Name:      name,
+		Namespace: tc.Namespace,
+		Annotations: map[string]string{
+			annotations.PerResourceSecret: credentialFrom,
+		},
+	}
+}
+
+func (tc *KubePerTestContext) MakeReferenceFromResource(resource client.Object) *genruntime.ResourceReference {
 	gvk, err := apiutil.GVKForObject(resource, tc.scheme)
 	if err != nil {
 		tc.T.Fatal(err)
@@ -99,10 +110,10 @@ func (tc KubePerTestContext) MakeReferenceFromResource(resource client.Object) *
 	}
 }
 
-func (tc KubePerTestContext) NewTestResourceGroup() *resources.ResourceGroup {
+func (tc *KubePerTestContext) NewTestResourceGroup() *resources.ResourceGroup {
 	return &resources.ResourceGroup{
 		ObjectMeta: tc.MakeObjectMeta("rg"),
-		Spec: resources.ResourceGroupSpec{
+		Spec: resources.ResourceGroup_Spec{
 			Location: tc.AzureRegion,
 			// This tag is used for cleanup optimization
 			Tags: CreateTestResourceGroupDefaultTags(),
@@ -128,6 +139,9 @@ func ReadFromEnvironmentForTest() (config.Values, error) {
 
 	// Test configs never want SyncPeriod set as it introduces jitter
 	cfg.SyncPeriod = nil
+	// Simulate pod namespace being set, as we're not running in a pod context so we don't have this env variable
+	// injected automatically
+	cfg.PodNamespace = "azureserviceoperator-system"
 
 	return cfg, err
 }
@@ -168,6 +182,7 @@ func (ctx KubeGlobalContext) forTestWithConfig(t *testing.T, cfg config.Values, 
 
 	verify := NewVerify(kubeClient)
 	match := NewKubeMatcher(verify, baseCtx.Ctx)
+	matchAzure := matchers.NewAzure(baseCtx.Ctx, perTestContext.AzureClient)
 
 	format.MaxLength = 0 // Disable output truncation
 
@@ -177,6 +192,7 @@ func (ctx KubeGlobalContext) forTestWithConfig(t *testing.T, cfg config.Values, 
 		kubeClient:          kubeClient,
 		Verify:              verify,
 		Match:               match,
+		MatchAzure:          matchAzure,
 		scheme:              scheme,
 		G:                   gomega.NewWithT(t),
 		tracker:             &ResourceTracker{},
@@ -209,35 +225,6 @@ const (
 	WaitForCreation WaitCondition = true
 	DoNotWait       WaitCondition = false
 )
-
-// CreateResourceGroupAndWait creates the specified resource group, registers it to be deleted when the
-// context is cleaned up, and waits for it to finish being created.
-func (tc *KubePerTestContext) CreateResourceGroupAndWait(rg *resources.ResourceGroup) *resources.ResourceGroup {
-	gen := rg.GetGeneration()
-	createdResourceGroup, err := tc.CreateResourceGroup(rg)
-	tc.Expect(err).ToNot(gomega.HaveOccurred())
-	tc.Eventually(createdResourceGroup).Should(tc.Match.BeProvisioned(gen))
-	return createdResourceGroup
-}
-
-// CreateResourceGroup creates a new resource group and registers it
-// to be deleted up when the test context is cleaned up.
-func (tc *KubePerTestContext) CreateResourceGroup(rg *resources.ResourceGroup) (*resources.ResourceGroup, error) {
-	ctx := context.Background()
-
-	tc.T.Logf("Creating test resource group %q", rg.Name)
-	err := tc.kubeClient.Create(ctx, rg)
-	if err != nil {
-		return nil, errors.Wrapf(err, "creating resource group")
-	}
-
-	// register the RG for cleanup
-	// important to do this before waiting for it, so that
-	// we delete it even if we time out
-	tc.registerCleanup(rg)
-
-	return rg, nil
-}
 
 // registerCleanup registers the resource for cleanup at the end of the test. We must do this for every resource
 // for two reasons:
@@ -286,7 +273,7 @@ var OperationTimeoutReplaying = 2 * time.Minute
 var OperationTimeoutRecording = 30 * time.Minute
 
 func (tc *KubePerTestContext) DefaultOperationTimeout() time.Duration {
-	if tc.AzureClientRecorder.Mode() == recorder.ModeReplaying {
+	if tc.AzureClientRecorder.IsReplaying() {
 		return OperationTimeoutReplaying
 	}
 
@@ -306,7 +293,7 @@ var PollingIntervalRecording = 5 * time.Second
 
 // PollingInterval returns the polling interval to use for Gomega Eventually
 func (tc *KubePerTestContext) PollingInterval() time.Duration {
-	if tc.AzureClientRecorder.Mode() == recorder.ModeReplaying {
+	if tc.AzureClientRecorder.IsReplaying() {
 		return PollingIntervalReplaying
 	}
 
@@ -351,19 +338,33 @@ func (tc *KubePerTestContext) Eventually(actual interface{}, intervals ...interf
 	return tc.G.Eventually(actual, tc.OperationTimeout(), tc.PollingInterval())
 }
 
-func (tc *KubePerTestContext) ExpectResourceIsDeletedInAzure(armId string, apiVersion string) {
+func (tc *KubePerTestContext) ExpectResourceIsDeletedInAzure(armID string, apiVersion string) {
 	tc.Eventually(func() (bool, time.Duration, error) {
-		return tc.AzureClient.HeadByID(tc.Ctx, armId, apiVersion)
+		return tc.AzureClient.CheckExistenceWithGetByID(tc.Ctx, armID, apiVersion)
 	}).Should(gomega.BeFalse())
 }
 
 func (tc *KubePerTestContext) CreateTestResourceGroupAndWait() *resources.ResourceGroup {
-	return tc.CreateResourceGroupAndWait(tc.NewTestResourceGroup())
+	rg := tc.NewTestResourceGroup()
+	tc.CreateResourceAndWait(rg)
+
+	return rg
 }
 
 // CreateResource creates a resource and registers it for cleanup. It does not wait for the resource
 // to be created, use CreateResourceAndWait for that
 func (tc *KubePerTestContext) CreateResource(obj client.Object) {
+	if arm, ok := obj.(genruntime.ARMMetaObject); ok {
+		tc.LogSubsectionf(
+			"Creating %s resource %s",
+			arm.GetType(),
+			obj.GetName())
+	} else {
+		tc.LogSubsectionf(
+			"Creating resource %s",
+			obj.GetName())
+	}
+
 	tc.CreateResourceUntracked(obj)
 	tc.registerCleanup(obj)
 }
@@ -389,8 +390,14 @@ func (tc *KubePerTestContext) CreateResourceExpectRequestFailure(obj client.Obje
 // change into the Provisioned state.
 func (tc *KubePerTestContext) CreateResourceAndWait(obj client.Object) {
 	tc.T.Helper()
+
 	gen := obj.GetGeneration()
 	tc.CreateResource(obj)
+	// Only wait for ASO objects
+	// TODO: Consider making tc.Match.BeProvisioned(0) work for non-ASO objects with a Ready condition too?
+	if _, ok := obj.(genruntime.MetaObject); !ok {
+		return
+	}
 	tc.Eventually(obj).Should(tc.Match.BeProvisioned(gen))
 }
 
@@ -400,18 +407,38 @@ func (tc *KubePerTestContext) CreateResourceAndWaitWithoutCleanup(obj client.Obj
 	tc.T.Helper()
 	gen := obj.GetGeneration()
 	tc.CreateResourceUntracked(obj)
+	// Only wait for ASO objects
+	if _, ok := obj.(genruntime.MetaObject); !ok {
+		return
+	}
 	tc.Eventually(obj).Should(tc.Match.BeProvisioned(gen))
+}
+
+func (tc *KubePerTestContext) CreateResourcesAndWaitWithoutCleanup(objs ...client.Object) {
+	for _, obj := range objs {
+		tc.CreateResourceAndWaitWithoutCleanup(obj)
+	}
 }
 
 // CreateResourcesAndWait creates the resources in K8s and waits for them to
 // change into the Provisioned state.
 func (tc *KubePerTestContext) CreateResourcesAndWait(objs ...client.Object) {
 	tc.T.Helper()
+
+	tc.LogSubsectionf(
+		"Creating %d resources",
+		len(objs))
+
 	for _, obj := range objs {
 		tc.CreateResource(obj)
 	}
 
 	for _, obj := range objs {
+		// Only wait for ASO objects
+		// TODO: Consider making tc.Match.BeProvisioned(0) work for non-ASO objects with a Ready condition too?
+		if _, ok := obj.(genruntime.MetaObject); !ok {
+			continue
+		}
 		// We can pass 0 for originalGeneration here because we're creating the resource so by definition it doesn't
 		// exist prior to this.
 		tc.Eventually(obj).Should(tc.Match.BeProvisioned(0))
@@ -423,11 +450,11 @@ func (tc *KubePerTestContext) CreateResourcesAndWait(objs ...client.Object) {
 func (tc *KubePerTestContext) CreateResourceAndWaitForState(
 	obj client.Object,
 	status metav1.ConditionStatus,
-	severity conditions.ConditionSeverity) {
-
+	severity conditions.ConditionSeverity,
+) {
 	tc.T.Helper()
 	tc.CreateResource(obj)
-	tc.Eventually(obj).Should(tc.Match.BeInState(status, severity))
+	tc.Eventually(obj).Should(tc.Match.BeInState(status, severity, 0))
 }
 
 // CheckIfResourceExists tries to get the current state of the resource from K8s (not from Azure),
@@ -451,6 +478,43 @@ func (tc *KubePerTestContext) PatchResourceAndWait(old client.Object, new client
 	gen := old.GetGeneration()
 	tc.Patch(old, new)
 	tc.Eventually(new).Should(tc.Match.BeProvisioned(gen))
+}
+
+// PatchResourceAndWaitForState patches the resource in K8s and waits for the Ready condition to change into the specified
+// state
+func (tc *KubePerTestContext) PatchResourceAndWaitForState(
+	old client.Object,
+	new client.Object,
+	status metav1.ConditionStatus,
+	severity conditions.ConditionSeverity,
+) {
+	gen := old.GetGeneration()
+
+	tc.T.Helper()
+	tc.Patch(old, new)
+	tc.Eventually(new).Should(tc.Match.BeInState(status, severity, gen))
+}
+
+func (tc *KubePerTestContext) CreateSimpleSecret(
+	name string,
+	key string,
+	secretData string,
+) genruntime.SecretReference {
+	secret := &corev1.Secret{
+		ObjectMeta: tc.MakeObjectMeta(name),
+		StringData: map[string]string{
+			key: secretData,
+		},
+	}
+
+	tc.CreateResource(secret)
+
+	secretRef := genruntime.SecretReference{
+		Name: secret.Name,
+		Key:  key,
+	}
+
+	return secretRef
 }
 
 // GetResource retrieves the current state of the resource from K8s (not from Azure).
@@ -493,6 +557,9 @@ func (tc *KubePerTestContext) PatchAndExpectError(old client.Object, new client.
 // DeleteResourceAndWait deletes the given resource in K8s and waits for
 // it to update to the Deleted state.
 func (tc *KubePerTestContext) DeleteResourceAndWait(obj client.Object) {
+	tc.LogSubsectionf(
+		"Deleting resource %s",
+		obj.GetName())
 	tc.DeleteResource(obj)
 	tc.Eventually(obj).Should(tc.Match.BeDeleted())
 }
@@ -552,10 +619,19 @@ func (tc *KubePerTestContext) ExpectResourceDoesNotExist(key types.NamespacedNam
 }
 
 // LogSection creates a distinctive header in the log to aid scanning
-func (tc *KubePerTestContext) LogSection(section string) {
-	line := strings.Repeat("=", 50)
+func (tc *KubePerTestContext) LogSectionf(section string, args ...any) {
+	tc.logHeader("=", fmt.Sprintf(section, args...))
+}
+
+// LogSection creates a distinctive header in the log to aid scanning
+func (tc *KubePerTestContext) LogSubsectionf(subsection string, args ...any) {
+	tc.logHeader("-", fmt.Sprintf(subsection, args...))
+}
+
+func (tc *KubePerTestContext) logHeader(lineType string, header string) {
+	line := strings.Repeat(lineType, len(header))
 	tc.T.Log(line)
-	tc.T.Log(section)
+	tc.T.Log(header)
 	tc.T.Log(line)
 }
 
@@ -651,9 +727,12 @@ type Subtest struct {
 func (tc *KubePerTestContext) RunSubtests(tests ...Subtest) {
 	for _, test := range tests {
 		test := test
-		tc.T.Run(test.Name, func(t *testing.T) {
+		passed := tc.T.Run(test.Name, func(t *testing.T) {
 			test.Test(tc.Subtest(t))
 		})
+		if !passed {
+			tc.T.Fatalf("subtest %s failed", test.Name)
+		}
 	}
 }
 
@@ -666,15 +745,22 @@ func (tc *KubePerTestContext) RunParallelSubtests(tests ...Subtest) {
 	// so "subtests" will run and complete, then all the subtests will run
 	// in parallel, and then "subtests" will finish. ¯\_(ツ)_/¯
 	// See: https://blog.golang.org/subtests#TOC_7.2.
+	allPassed := true
 	tc.T.Run("subtests", func(t *testing.T) {
 		for _, test := range tests {
 			test := test
-			t.Run(test.Name, func(t *testing.T) {
+			passed := t.Run(test.Name, func(t *testing.T) {
 				t.Parallel()
 				test.Test(tc.Subtest(t))
 			})
+
+			allPassed = allPassed && passed
 		}
 	})
+
+	if !allPassed {
+		tc.T.Fatalf("one or more subtests failed")
+	}
 }
 
 func (tc *KubePerTestContext) AsExtensionOwner(obj client.Object) *genruntime.ArbitraryOwnerReference {
@@ -710,7 +796,13 @@ func (tc *KubePerTestContext) KubeClient() client.Client {
 func (tc *KubePerTestContext) ExportAsSample(resource client.Object) {
 	tc.T.Helper()
 
-	filename := fmt.Sprintf("%s.yaml", tc.T.Name())
+	tc.ExportAsSampleNamed(resource, tc.T.Name())
+}
+
+func (tc *KubePerTestContext) ExportAsSampleNamed(resource client.Object, name string) {
+	tc.T.Helper()
+
+	filename := fmt.Sprintf("%s.yaml", name)
 	filepath := path.Join(os.TempDir(), filename)
 
 	rsrc := resource.DeepCopyObject()
@@ -725,7 +817,6 @@ func (tc *KubePerTestContext) ExportAsSample(resource client.Object) {
 }
 
 func (tc *KubePerTestContext) cleanSample(resource any) {
-
 	if kr, ok := resource.(genruntime.KubernetesResource); ok {
 		// Remove Status
 		emptyStatus := kr.NewEmptyStatus()
@@ -753,17 +844,17 @@ func (tc *KubePerTestContext) exportAsYAML(resource runtime.Object, filePath str
 
 	content, err := yaml.Marshal(resource)
 	if err != nil {
-		return errors.Wrap(err, "failed to marshal to yaml")
+		return eris.Wrap(err, "failed to marshal to yaml")
 	}
 
 	folder := filepath.Dir(filePath)
 	if err = os.MkdirAll(folder, os.ModePerm); err != nil {
-		return errors.Wrapf(err, "couldn't create directory path to %s", filePath)
+		return eris.Wrapf(err, "couldn't create directory path to %s", filePath)
 	}
 
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		return errors.Wrapf(err, "failed to open file %s", filePath)
+		return eris.Wrapf(err, "failed to open file %s", filePath)
 	}
 
 	defer file.Close()
@@ -771,7 +862,7 @@ func (tc *KubePerTestContext) exportAsYAML(resource runtime.Object, filePath str
 	clean := sanitiseSample(string(content))
 	_, err = file.WriteString(clean)
 	if err != nil {
-		return errors.Wrapf(err, "failed to write yaml to file %s", filePath)
+		return eris.Wrapf(err, "failed to write yaml to file %s", filePath)
 	}
 
 	return nil

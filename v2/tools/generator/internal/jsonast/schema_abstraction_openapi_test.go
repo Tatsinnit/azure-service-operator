@@ -10,8 +10,10 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/go-openapi/spec"
 	. "github.com/onsi/gomega"
+
+	"github.com/go-logr/logr"
+	"github.com/go-openapi/spec"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/test"
@@ -48,11 +50,18 @@ func Test_CanExtractTypeNameFromSameFile(t *testing.T) {
 		},
 	}
 
-	wrappedSchema := MakeOpenAPISchema("name", schema, schemaPath, schemaPackage, astmodel.NewIdentifierFactory(), loader)
+	wrappedSchema := MakeOpenAPISchema(
+		"name",
+		schema,
+		schemaPath,
+		schemaPackage,
+		astmodel.NewIdentifierFactory(),
+		loader,
+		logr.Discard())
 
 	typeName, err := wrappedSchema.refTypeName()
 	g.Expect(err).ToNot(HaveOccurred())
-	g.Expect(typeName).To(Equal(astmodel.MakeTypeName(schemaPackage, "TheDefinition")))
+	g.Expect(typeName).To(Equal(astmodel.MakeInternalTypeName(schemaPackage, "TheDefinition")))
 }
 
 func Test_CanExtractTypeNameFromDifferentFile_AndInheritPackage(t *testing.T) {
@@ -91,11 +100,18 @@ func Test_CanExtractTypeNameFromDifferentFile_AndInheritPackage(t *testing.T) {
 		},
 	}
 
-	wrappedSchema := MakeOpenAPISchema("name", schema, schemaPath, schemaPackage, astmodel.NewIdentifierFactory(), loader)
+	wrappedSchema := MakeOpenAPISchema(
+		"name",
+		schema,
+		schemaPath,
+		schemaPackage,
+		astmodel.NewIdentifierFactory(),
+		loader,
+		logr.Discard())
 
 	typeName, err := wrappedSchema.refTypeName()
 	g.Expect(err).ToNot(HaveOccurred())
-	g.Expect(typeName).To(Equal(astmodel.MakeTypeName(schemaPackage, "ExternalDefinition")))
+	g.Expect(typeName).To(Equal(astmodel.MakeInternalTypeName(schemaPackage, "ExternalDefinition")))
 }
 
 func Test_CanExtractTypeNameFromDifferentFile_AndUsePresetPackage(t *testing.T) {
@@ -136,11 +152,18 @@ func Test_CanExtractTypeNameFromDifferentFile_AndUsePresetPackage(t *testing.T) 
 		},
 	}
 
-	wrappedSchema := MakeOpenAPISchema("name", schema, schemaPath, schemaPackage, astmodel.NewIdentifierFactory(), loader)
+	wrappedSchema := MakeOpenAPISchema(
+		"name",
+		schema,
+		schemaPath,
+		schemaPackage,
+		astmodel.NewIdentifierFactory(),
+		loader,
+		logr.Discard())
 
 	typeName, err := wrappedSchema.refTypeName()
 	g.Expect(err).ToNot(HaveOccurred())
-	g.Expect(typeName).To(Equal(astmodel.MakeTypeName(externalPackage, "ExternalDefinition")))
+	g.Expect(typeName).To(Equal(astmodel.MakeInternalTypeName(externalPackage, "ExternalDefinition")))
 }
 
 func Test_GeneratingCollidingTypeNamesReturnsError(t *testing.T) {
@@ -179,7 +202,14 @@ func Test_GeneratingCollidingTypeNamesReturnsError(t *testing.T) {
 		},
 	}
 
-	wrappedSchema := MakeOpenAPISchema("name", schema, schemaPath, schemaPackage, astmodel.NewIdentifierFactory(), loader)
+	wrappedSchema := MakeOpenAPISchema(
+		"name",
+		schema,
+		schemaPath,
+		schemaPackage,
+		astmodel.NewIdentifierFactory(),
+		loader,
+		logr.Discard())
 
 	_, err := wrappedSchema.refTypeName()
 	g.Expect(err).To(HaveOccurred())
@@ -241,7 +271,14 @@ func Test_GeneratingCollidingTypeNamesWithSiblingFilesReturnsError(t *testing.T)
 		},
 	}
 
-	wrappedSchema := MakeOpenAPISchema("name", schema, schemaPath, schemaPackage, astmodel.NewIdentifierFactory(), loader)
+	wrappedSchema := MakeOpenAPISchema(
+		"name",
+		schema,
+		schemaPath,
+		schemaPackage,
+		astmodel.NewIdentifierFactory(),
+		loader,
+		logr.Discard())
 
 	_, err := wrappedSchema.refTypeName()
 	g.Expect(err).To(HaveOccurred())

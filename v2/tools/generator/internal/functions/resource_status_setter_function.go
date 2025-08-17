@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
@@ -27,8 +28,8 @@ var _ astmodel.Function = &ResourceStatusSetterFunction{}
 // idFactory is an IdentifierFactory for creating local variable names
 func NewResourceStatusSetterFunction(
 	resource *astmodel.ResourceType,
-	idFactory astmodel.IdentifierFactory) *ResourceStatusSetterFunction {
-
+	idFactory astmodel.IdentifierFactory,
+) *ResourceStatusSetterFunction {
 	statusTypeName, ok := astmodel.AsTypeName(resource.StatusType())
 	if !ok {
 		panic(fmt.Sprintf("expected Status to be a TypeName but found %T", resource.StatusType()))
@@ -47,7 +48,7 @@ func (fn ResourceStatusSetterFunction) Name() string {
 
 // RequiredPackageReferences returns the set of package references required by this function
 func (fn ResourceStatusSetterFunction) RequiredPackageReferences() *astmodel.PackageReferenceSet {
-	return astmodel.NewPackageReferenceSet(astmodel.GitHubErrorsReference, astmodel.GenRuntimeReference)
+	return astmodel.NewPackageReferenceSet(astmodel.ErisReference, astmodel.GenRuntimeReference)
 }
 
 // References returns the set of other types required by this function
@@ -56,13 +57,20 @@ func (fn ResourceStatusSetterFunction) References() astmodel.TypeNameSet {
 }
 
 // AsFunc generates the required function declaration
-func (fn ResourceStatusSetterFunction) AsFunc(genContext *astmodel.CodeGenerationContext, receiver astmodel.TypeName) *dst.FuncDecl {
+func (fn ResourceStatusSetterFunction) AsFunc(
+	codeGenerationContext *astmodel.CodeGenerationContext,
+	receiver astmodel.InternalTypeName,
+) (*dst.FuncDecl, error) {
 	receiverIdent := fn.idFactory.CreateReceiver(receiver.Name())
 	receiverType := astmodel.NewOptionalType(receiver)
+	receiverTypeExpr, err := receiverType.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating receiver type expression")
+	}
 
 	statusLocal := "st"
 	statusParameter := "status"
-	errorsPackage := genContext.MustGetImportedPackageName(astmodel.GitHubErrorsReference)
+	errorsPackage := codeGenerationContext.MustGetImportedPackageName(astmodel.ErisReference)
 
 	// <receiver>.Status = st
 	assignFromStatus := astbuilder.SimpleAssignment(
@@ -74,7 +82,7 @@ func (fn ResourceStatusSetterFunction) AsFunc(genContext *astmodel.CodeGeneratio
 	// }
 	simplePath := astbuilder.IfType(
 		dst.NewIdent(statusParameter),
-		astbuilder.Dereference(dst.NewIdent(fn.nameOfStatusType)),
+		astbuilder.PointerTo(dst.NewIdent(fn.nameOfStatusType)),
 		statusLocal,
 		assignFromStatus, astbuilder.Returns(astbuilder.Nil()))
 	astbuilder.AddComment(&simplePath.Decorations().Start, "// If we have exactly the right type of status, assign it")
@@ -110,7 +118,7 @@ func (fn ResourceStatusSetterFunction) AsFunc(genContext *astmodel.CodeGeneratio
 
 	builder := &astbuilder.FuncDetails{
 		ReceiverIdent: receiverIdent,
-		ReceiverType:  receiverType.AsType(genContext),
+		ReceiverType:  receiverTypeExpr,
 		Name:          "SetStatus",
 		Body: astbuilder.Statements(
 			simplePath,
@@ -121,12 +129,23 @@ func (fn ResourceStatusSetterFunction) AsFunc(genContext *astmodel.CodeGeneratio
 			returnNil),
 	}
 
-	builder.AddParameter(statusParameter, astmodel.ConvertibleStatusInterfaceType.AsType(genContext))
-	builder.AddReturn(astmodel.ErrorType.AsType(genContext))
+	convertibleStatusInterfaceTypeExpr, err := astmodel.ConvertibleStatusInterfaceType.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating convertible status interface type expression")
+	}
+
+	builder.AddParameter(statusParameter, convertibleStatusInterfaceTypeExpr)
+
+	errorTypeExpr, err := astmodel.ErrorType.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating error type expression")
+	}
+
+	builder.AddReturn(errorTypeExpr)
 
 	builder.AddComments("sets the status of this resource")
 
-	return builder.DefineFunc()
+	return builder.DefineFunc(), nil
 }
 
 // Equals returns true if the passed function is equal

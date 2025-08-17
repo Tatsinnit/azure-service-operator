@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
@@ -43,17 +43,12 @@ func RemoveStatusValidations() *Stage {
 				return nil, err
 			}
 
-			/* TODO(donotmerge)
 			err = errorIfSpecStatusOverlap(result, state.Definitions())
 			if err != nil {
 				return nil, err
 			}
-			*/
 
-			remaining := state.Definitions().Except(result)
-			result.AddTypes(remaining)
-
-			return state.WithDefinitions(result), nil
+			return state.WithOverlaidDefinitions(result), nil
 		})
 }
 
@@ -62,7 +57,7 @@ func removeStatusTypeValidations(definitions astmodel.TypeDefinitionSet) (astmod
 
 	walker := astmodel.NewTypeWalker(
 		definitions,
-		astmodel.TypeVisitorBuilder{
+		astmodel.TypeVisitorBuilder[any]{
 			VisitEnumType:      removeEnumValidations,
 			VisitValidatedType: removeValidatedType,
 			VisitObjectType:    removeKubebuilderRequired,
@@ -74,7 +69,7 @@ func removeStatusTypeValidations(definitions astmodel.TypeDefinitionSet) (astmod
 	for _, def := range statusDefinitions {
 		updatedTypes, err := walker.Walk(def)
 		if err != nil {
-			errs = append(errs, errors.Wrapf(err, "failed walking definitions"))
+			errs = append(errs, eris.Wrapf(err, "failed walking definitions"))
 		}
 
 		err = result.AddTypesAllowDuplicates(updatedTypes)
@@ -97,11 +92,10 @@ type overlapError struct {
 	statusRefs []astmodel.TypeName
 }
 
-// TODO: Remove nolint below
-func errorIfSpecStatusOverlap(statusDefinitions astmodel.TypeDefinitionSet, definitions astmodel.TypeDefinitionSet) error { // nolint:deadcode
+func errorIfSpecStatusOverlap(statusDefinitions astmodel.TypeDefinitionSet, definitions astmodel.TypeDefinitionSet) error {
 	allSpecTypes, err := astmodel.FindSpecConnectedDefinitions(definitions)
 	if err != nil {
-		return errors.Wrap(err, "couldn't find all spec definitions")
+		return eris.Wrap(err, "couldn't find all spec definitions")
 	}
 
 	// Verify that the set of spec definitions and the set of modified status definitions is totally disjoint
@@ -142,23 +136,23 @@ func errorIfSpecStatusOverlap(statusDefinitions astmodel.TypeDefinitionSet, defi
 			}
 		}
 
-		return errors.Errorf(result.String())
+		return eris.New(result.String())
 	}
 
 	return nil
 }
 
 // removeValidatedType returns the validated types element. This assumes that there aren't deeply nested validations.
-func removeValidatedType(this *astmodel.TypeVisitor, vt *astmodel.ValidatedType, _ interface{}) (astmodel.Type, error) {
+func removeValidatedType(this *astmodel.TypeVisitor[any], vt *astmodel.ValidatedType, _ any) (astmodel.Type, error) {
 	return vt.ElementType(), nil
 }
 
-func removeEnumValidations(this *astmodel.TypeVisitor, et *astmodel.EnumType, _ interface{}) (astmodel.Type, error) {
+func removeEnumValidations(this *astmodel.TypeVisitor[any], et *astmodel.EnumType, _ any) (astmodel.Type, error) {
 	return et.WithoutValidation(), nil
 }
 
 // removeKubebuilderRequired removes kubebuilder:validation:Required from all properties
-func removeKubebuilderRequired(this *astmodel.TypeVisitor, ot *astmodel.ObjectType, ctx interface{}) (astmodel.Type, error) {
+func removeKubebuilderRequired(this *astmodel.TypeVisitor[any], ot *astmodel.ObjectType, ctx any) (astmodel.Type, error) {
 	ot.Properties().ForEach(func(prop *astmodel.PropertyDefinition) {
 		ot = ot.WithProperty(prop.MakeOptional())
 	})

@@ -14,7 +14,8 @@ import (
 
 // Type represents something that is a Go type
 type Type interface {
-	// RequiredPackageReferences returns a set of packages imports required by this type
+	// RequiredPackageReferences returns a set of packages imports required by this type.
+	// The set should *not* include the package in which the type is defined.
 	RequiredPackageReferences() *PackageReferenceSet
 
 	// References returns the names of all types that this type
@@ -22,12 +23,13 @@ type Type interface {
 	// Person.
 	References() TypeNameSet
 
-	// AsType renders as a Go abstract syntax tree for a type
-	// (yes this says dst.Expr but that is what the Go 'dst' package uses for types)
-	AsType(codeGenerationContext *CodeGenerationContext) dst.Expr
+	// AsTypeExpr renders as the Go abstract syntax tree to reference this type
+	// (Yes, this returns dst.Expr but that is what the Go 'dst' package uses
+	// for type references).
+	AsTypeExpr(codeGenerationContext *CodeGenerationContext) (dst.Expr, error)
 
 	// AsDeclarations renders as a Go abstract syntax tree for a declaration
-	AsDeclarations(codeGenerationContext *CodeGenerationContext, declContext DeclarationContext) []dst.Decl
+	AsDeclarations(codeGenerationContext *CodeGenerationContext, declContext DeclarationContext) ([]dst.Decl, error)
 
 	// AsZero renders an expression for the "zero" value of the type
 	// definitions allows TypeName to resolve to the underlying type
@@ -37,19 +39,19 @@ type Type interface {
 	// Equals returns true if the passed type is the same as this one, false otherwise
 	Equals(t Type, overrides EqualityOverrides) bool
 
-	// Make sure all TypeDefinitionSet have a printable version for debugging/user info.
+	// Stringer ensures all Type implementations have a printable version for debugging/user info.
 	// This doesn't need to be a full representation of the type.
 	fmt.Stringer
 
-	// WriteDebugDescription adds a description of the current type to the passed builder
-	// builder receives the full description, including nested types
-	// definitions is a dictionary for resolving named types
-	WriteDebugDescription(builder *strings.Builder, currentPackage PackageReference)
+	// WriteDebugDescription adds a description of the current type to the passed builder.
+	// builder receives the full description, including nested types.
+	// definitions is a dictionary for resolving named types.
+	WriteDebugDescription(builder *strings.Builder, currentPackage InternalPackageReference)
 }
 
 type EqualityOverrides struct {
-	TypeName   func(left TypeName, right TypeName) bool
-	ObjectType func(left *ObjectType, right *ObjectType) bool
+	InternalTypeName func(left InternalTypeName, right InternalTypeName) bool
+	ObjectType       func(left *ObjectType, right *ObjectType) bool
 }
 
 // IgnoringErrors returns the type stripped of any ErroredType wrapper
@@ -63,13 +65,13 @@ func IgnoringErrors(t Type) Type {
 
 // DeclarationContext represents some metadata about a specific declaration
 type DeclarationContext struct {
-	Name        TypeName
+	Name        InternalTypeName
 	Description []string
 	Validations []KubeBuilderValidation
 }
 
 // TypeEquals decides if the types are the same and handles the `nil` case
-// overrides can be passed to combe
+// overrides can be passed to customize the equality check.
 func TypeEquals(left, right Type, overrides ...EqualityOverrides) bool {
 	if left == nil {
 		return right == nil
@@ -87,14 +89,14 @@ func TypeEquals(left, right Type, overrides ...EqualityOverrides) bool {
 	return left.Equals(right, override)
 }
 
-func DebugDescription(t Type, pkgs ...PackageReference) string {
-	var currentPackage PackageReference
+func DebugDescription(t Type, pkgs ...InternalPackageReference) string {
+	var currentPackage InternalPackageReference
 	if len(pkgs) > 0 {
 		// If we're passed a package, use that as the current package
 		currentPackage = pkgs[0]
-	} else if tn, ok := AsTypeName(t); ok {
+	} else if tn, ok := AsInternalTypeName(t); ok {
 		// Otherwise, If we're given a TypeName, use it's package as "current" to simplify what we write
-		currentPackage = tn.PackageReference
+		currentPackage = tn.InternalPackageReference()
 	}
 
 	var builder strings.Builder

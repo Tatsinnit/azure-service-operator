@@ -7,10 +7,9 @@ package config
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
@@ -24,6 +23,7 @@ type TypeMatcher struct {
 	Because string
 	// MatchRequired indicates if an error will be raised if this TypeMatcher doesn't match at least one type.
 	// The default is true.
+	// Don't access directly, use the MustMatch() method instead.
 	MatchRequired *bool `yaml:"matchRequired,omitempty"`
 
 	// matchedAnything is true if TypeMatcher matched anything
@@ -32,28 +32,12 @@ type TypeMatcher struct {
 
 var _ fmt.Stringer = &TypeMatcher{}
 
-// Initialize initializes the type matcher
-func (t *TypeMatcher) Initialize() error {
-	// Default MatchRequired
-	if t.MatchRequired == nil {
-		temp := true
-		t.MatchRequired = &temp
-	}
-
-	return nil
-}
-
 // AppliesToType indicates whether this filter should be applied to the supplied type definition
-func (t *TypeMatcher) AppliesToType(typeName astmodel.TypeName) bool {
-	group, version, ok := typeName.PackageReference.TryGroupVersion()
-	if !ok {
-		// Never match external references
-		return false
-	}
-
-	result := t.Group.Matches(group) &&
-		t.Version.Matches(version) &&
-		t.Name.Matches(typeName.Name())
+func (t *TypeMatcher) AppliesToType(typeName astmodel.InternalTypeName) bool {
+	group, version := typeName.InternalPackageReference().GroupVersion()
+	result := t.Group.Matches(group).Matched &&
+		t.Version.Matches(version).Matched &&
+		t.Name.Matches(typeName.Name()).Matched
 
 	// Track this match, so we can later report if we didn't match anything
 	if result {
@@ -65,7 +49,7 @@ func (t *TypeMatcher) AppliesToType(typeName astmodel.TypeName) bool {
 
 // RequiredTypesWereMatched returns an error if no matches were made
 func (t *TypeMatcher) RequiredTypesWereMatched() error {
-	if *t.MatchRequired {
+	if t.MustMatch() {
 		return t.WasMatched()
 	}
 
@@ -80,28 +64,28 @@ func (t *TypeMatcher) WasMatched() error {
 	}
 
 	if err := t.Group.WasMatched(); err != nil {
-		return errors.Wrapf(
+		return eris.Wrapf(
 			err,
 			"type matcher [%s] matched no types; every group was excluded",
 			t.String())
 	}
 
 	if err := t.Version.WasMatched(); err != nil {
-		return errors.Wrapf(
+		return eris.Wrapf(
 			err,
 			"type matcher [%s] matched no types; groups matched, but every version was excluded",
 			t.String())
 	}
 
 	if err := t.Name.WasMatched(); err != nil {
-		return errors.Wrapf(
+		return eris.Wrapf(
 			err,
 			"type matcher [%s] matched no types; groups and versions matched, but every type was excluded",
 			t.String())
 	}
 
 	// Don't expect this case to ever be used, but be informative anyway
-	return errors.Errorf("Type matcher [%s] matched no types", t.String())
+	return eris.Errorf("Type matcher [%s] matched no types", t.String())
 }
 
 // String returns a description of this filter
@@ -130,26 +114,10 @@ func (t *TypeMatcher) String() string {
 	return result.String()
 }
 
-// createGlobbingRegex creates a regex that does globbing of names
-// * and ? have their usual (DOS style) meanings as wildcards
-// Multiple wildcards can be separated with semicolons
-func createGlobbingRegex(globbing string) *regexp.Regexp {
-	if globbing == "" {
-		// nil here as "" is fast-tracked elsewhere
-		return nil
+func (t *TypeMatcher) MustMatch() bool {
+	if t.MatchRequired != nil {
+		return *t.MatchRequired
 	}
 
-	globs := strings.Split(globbing, ";")
-	regexes := make([]string, 0, len(globs))
-	for _, glob := range globs {
-		g := regexp.QuoteMeta(glob)
-		g = strings.ReplaceAll(g, "\\*", ".*")
-		g = strings.ReplaceAll(g, "\\?", ".")
-		g = "(^" + g + "$)"
-		regexes = append(regexes, g)
-	}
-
-	// (?i) forces case-insensitive matches
-	regex := "(?i)" + strings.Join(regexes, "|")
-	return regexp.MustCompile(regex)
+	return true
 }

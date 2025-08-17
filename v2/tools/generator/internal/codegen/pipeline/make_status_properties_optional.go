@@ -9,7 +9,6 @@ import (
 	"context"
 
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
-	"k8s.io/klog/v2"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
@@ -45,16 +44,13 @@ func MakeStatusPropertiesOptional() *Stage {
 				return nil, err
 			}
 
-			remaining := state.Definitions().Except(result)
-			result.AddTypes(remaining)
-
-			return state.WithDefinitions(result), nil
+			return state.WithOverlaidDefinitions(result), nil
 		})
 }
 
 // makeStatusPropertiesOptional makes all properties optional on top level Status types
 func makeStatusPropertiesOptional(statusDef astmodel.TypeDefinition) (astmodel.Type, error) {
-	visitor := astmodel.TypeVisitorBuilder{
+	visitor := astmodel.TypeVisitorBuilder[any]{
 		VisitObjectType: makeObjectPropertiesOptional,
 	}.Build()
 
@@ -62,12 +58,12 @@ func makeStatusPropertiesOptional(statusDef astmodel.TypeDefinition) (astmodel.T
 }
 
 // makeObjectPropertiesOptional makes properties optional for the object
-func makeObjectPropertiesOptional(this *astmodel.TypeVisitor, ot *astmodel.ObjectType, ctx interface{}) (astmodel.Type, error) {
-	typeName := ctx.(astmodel.TypeName)
+func makeObjectPropertiesOptional(
+	this *astmodel.TypeVisitor[any],
+	ot *astmodel.ObjectType,
+	ctx any,
+) (astmodel.Type, error) {
 	ot.Properties().ForEach(func(property *astmodel.PropertyDefinition) {
-		if property.IsRequired() {
-			klog.V(4).Infof("\"%s.%s\" was required, changing it to optional", typeName.String(), property.PropertyName())
-		}
 		ot = ot.WithProperty(property.MakeOptional().MakeTypeOptional())
 	})
 

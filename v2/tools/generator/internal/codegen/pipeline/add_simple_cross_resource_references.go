@@ -8,7 +8,7 @@ package pipeline
 import (
 	"context"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 )
 
 // TransformCrossResourceReferencesToStringStageID is the unique identifier for this pipeline stage
@@ -20,10 +20,9 @@ func TransformCrossResourceReferencesToString() *Stage {
 		TransformCrossResourceReferencesToStringStageID,
 		"Replace cross-resource references with string",
 		func(ctx context.Context, state *State) (*State, error) {
-
 			updatedDefs, err := stripARMIDPrimitiveTypes(state.Definitions())
 			if err != nil {
-				return nil, errors.Wrap(err, "failed to strip ARM ID primitive types")
+				return nil, eris.Wrap(err, "failed to strip ARM ID primitive types")
 			}
 
 			return state.WithDefinitions(updatedDefs), nil

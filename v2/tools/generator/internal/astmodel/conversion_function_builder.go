@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 )
@@ -25,6 +26,13 @@ type ConversionParameters struct {
 	ConversionContext []Type
 	AssignmentHandler func(destination, source dst.Expr) dst.Stmt
 	Locals            *KnownLocalsSet
+
+	// SourceProperty is the source property for this conversion. Note that for recursive conversions this still refers
+	// to the source property that the conversion chain will ultimately be sourced from
+	SourceProperty *PropertyDefinition
+	// DestinationProperty is the destination property for this conversion. Note that for recursive conversions this still refers
+	// to the destination property that the conversion chain will ultimately be assigned to
+	DestinationProperty *PropertyDefinition
 }
 
 // GetSource gets the Source field.
@@ -112,23 +120,30 @@ func (params ConversionParameters) copy() ConversionParameters {
 	return result
 }
 
-type ConversionHandler func(builder *ConversionFunctionBuilder, params ConversionParameters) []dst.Stmt
+type ConversionHandler func(builder *ConversionFunctionBuilder, params ConversionParameters) ([]dst.Stmt, error)
 
 // TODO: There feels like overlap between this and the Storage Conversion Factories? Need further thinking to combine them?
+
 // ConversionFunctionBuilder is used to build a function converting between two similar types.
 // It has a set of built-in conversions and can be configured with additional conversions.
 type ConversionFunctionBuilder struct {
 	// TODO: Better way to let you fuss with this? How can you pick out what I've already put in here to overwrite it?
 	conversions []ConversionHandler
 
-	IdFactory             IdentifierFactory
+	IDFactory             IdentifierFactory
 	CodeGenerationContext *CodeGenerationContext
+
+	// SupportExplicitEmptyCollectionsSerializationMode signals that collections can be initialized to a size 0 collection, rather than an empty collection
+	SupportExplicitEmptyCollectionsSerializationMode bool
 }
 
 // NewConversionFunctionBuilder creates a new ConversionFunctionBuilder with the default conversions already added.
-func NewConversionFunctionBuilder(idFactory IdentifierFactory, codeGenerationContext *CodeGenerationContext) *ConversionFunctionBuilder {
+func NewConversionFunctionBuilder(
+	idFactory IdentifierFactory,
+	codeGenerationContext *CodeGenerationContext,
+) *ConversionFunctionBuilder {
 	return &ConversionFunctionBuilder{
-		IdFactory:             idFactory,
+		IDFactory:             idFactory,
 		CodeGenerationContext: codeGenerationContext,
 		conversions: []ConversionHandler{
 			// Complex wrapper types checked first
@@ -142,10 +157,25 @@ func NewConversionFunctionBuilder(idFactory IdentifierFactory, codeGenerationCon
 			IdentityAssignPrimitiveType,
 			AssignToOptional,
 			AssignFromOptional,
+			AssignToAliasOfPrimitive,
+			AssignFromAliasOfPrimitive,
+			AssignToAliasOfCollection,
+			AssignFromAliasOfCollection,
+			AssignToEnum,
+			AssignFromEnum,
 			IdentityDeepCopyJSON,
 			IdentityAssignTypeName,
 		},
 	}
+}
+
+func (builder *ConversionFunctionBuilder) WithSupportExplicitEmptyCollectionsSerializationMode() *ConversionFunctionBuilder {
+	builder.SupportExplicitEmptyCollectionsSerializationMode = true
+	return builder
+}
+
+func (builder *ConversionFunctionBuilder) ShouldInitializeCollectionToEmpty(prop *PropertyDefinition) bool {
+	return prop.HasTagValue(SerializationType, SerializationTypeExplicitEmptyCollection)
 }
 
 // AddConversionHandlers adds the specified conversion handlers to the end of the conversion list.
@@ -159,11 +189,15 @@ func (builder *ConversionFunctionBuilder) PrependConversionHandlers(conversionHa
 }
 
 // BuildConversion creates a conversion between the source and destination defined by params.
-func (builder *ConversionFunctionBuilder) BuildConversion(params ConversionParameters) []dst.Stmt {
+func (builder *ConversionFunctionBuilder) BuildConversion(params ConversionParameters) ([]dst.Stmt, error) {
 	for _, conversion := range builder.conversions {
-		result := conversion(builder, params)
+		result, err := conversion(builder, params)
+		if err != nil {
+			return nil, err
+		}
+
 		if len(result) > 0 {
-			return result
+			return result, nil
 		}
 	}
 
@@ -181,44 +215,52 @@ func (builder *ConversionFunctionBuilder) BuildConversion(params ConversionParam
 //		<code for producing result from destinationType.Element()>
 //		<destination> = &<result>
 //	}
-func IdentityConvertComplexOptionalProperty(builder *ConversionFunctionBuilder, params ConversionParameters) []dst.Stmt {
+func IdentityConvertComplexOptionalProperty(
+	builder *ConversionFunctionBuilder,
+	params ConversionParameters,
+) ([]dst.Stmt, error) {
 	destinationType, ok := params.DestinationType.(*OptionalType)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	sourceType, ok := params.SourceType.(*OptionalType)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	locals := params.Locals.Clone()
 	tempVarIdent := locals.CreateLocal(params.NameHint)
 
-	innerStatements := builder.BuildConversion(
+	conversion, err := builder.BuildConversion(
 		ConversionParameters{
-			Source:            astbuilder.Dereference(params.GetSource()),
-			SourceType:        sourceType.Element(),
-			Destination:       dst.NewIdent(tempVarIdent),
-			DestinationType:   destinationType.Element(),
-			NameHint:          params.NameHint,
-			ConversionContext: append(params.ConversionContext, destinationType),
-			AssignmentHandler: AssignmentHandlerDefine,
-			Locals:            locals,
+			Source:              astbuilder.Dereference(params.GetSource()),
+			SourceType:          sourceType.Element(),
+			Destination:         dst.NewIdent(tempVarIdent),
+			DestinationType:     destinationType.Element(),
+			NameHint:            params.NameHint,
+			ConversionContext:   append(params.ConversionContext, destinationType),
+			AssignmentHandler:   AssignmentHandlerDefine,
+			Locals:              locals,
+			SourceProperty:      params.SourceProperty,
+			DestinationProperty: params.DestinationProperty,
 		})
+	if err != nil {
+		return nil, eris.Wrap(err, "unable to build conversion for optional element")
+	}
 
 	// Tack on the final assignment
-	innerStatements = append(
-		innerStatements,
+	conversion = append(
+		conversion,
 		astbuilder.SimpleAssignment(
 			params.GetDestination(),
 			astbuilder.AddrOf(dst.NewIdent(tempVarIdent))))
 
 	result := astbuilder.IfNotNil(
 		params.GetSource(),
-		innerStatements...)
+		conversion...)
 
-	return astbuilder.Statements(result)
+	return astbuilder.Statements(result), nil
 }
 
 // IdentityConvertComplexArrayProperty handles conversion for array properties with complex elements
@@ -228,15 +270,18 @@ func IdentityConvertComplexOptionalProperty(builder *ConversionFunctionBuilder, 
 //		<code for producing result from destinationType.Element()>
 //		<destination> = append(<destination>, <result>)
 //	}
-func IdentityConvertComplexArrayProperty(builder *ConversionFunctionBuilder, params ConversionParameters) []dst.Stmt {
+func IdentityConvertComplexArrayProperty(
+	builder *ConversionFunctionBuilder,
+	params ConversionParameters,
+) ([]dst.Stmt, error) {
 	destinationType, ok := params.DestinationType.(*ArrayType)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	sourceType, ok := params.SourceType.(*ArrayType)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	var results []dst.Stmt
@@ -253,12 +298,34 @@ func IdentityConvertComplexArrayProperty(builder *ConversionFunctionBuilder, par
 		// TODO: The suffix here should maybe be configurable on the function builder?
 		innerDestinationIdent := locals.CreateLocal(params.NameHint, "Temp")
 		destination = dst.NewIdent(innerDestinationIdent)
+		destinationTypeExpr, err := destinationType.AsTypeExpr(builder.CodeGenerationContext)
+		if err != nil {
+			return nil, eris.Wrap(err, "creating destination type expression")
+		}
+
 		results = append(
 			results,
 			astbuilder.LocalVariableDeclaration(
 				innerDestinationIdent,
-				destinationType.AsType(builder.CodeGenerationContext),
+				destinationTypeExpr,
 				""))
+	}
+
+	conversion, err := builder.BuildConversion(
+		ConversionParameters{
+			Source:              dst.NewIdent(itemIdent),
+			SourceType:          sourceType.Element(),
+			Destination:         dst.Clone(destination).(dst.Expr),
+			DestinationType:     destinationType.Element(),
+			NameHint:            itemIdent,
+			ConversionContext:   append(params.ConversionContext, destinationType),
+			AssignmentHandler:   astbuilder.AppendItemToSlice,
+			Locals:              locals,
+			SourceProperty:      params.SourceProperty,
+			DestinationProperty: params.DestinationProperty,
+		})
+	if err != nil {
+		return nil, eris.Wrap(err, "unable to build conversion for array element")
 	}
 
 	result := &dst.RangeStmt{
@@ -266,19 +333,7 @@ func IdentityConvertComplexArrayProperty(builder *ConversionFunctionBuilder, par
 		Value: dst.NewIdent(itemIdent),
 		X:     params.GetSource(),
 		Tok:   token.DEFINE,
-		Body: &dst.BlockStmt{
-			List: builder.BuildConversion(
-				ConversionParameters{
-					Source:            dst.NewIdent(itemIdent),
-					SourceType:        sourceType.Element(),
-					Destination:       dst.Clone(destination).(dst.Expr),
-					DestinationType:   destinationType.Element(),
-					NameHint:          itemIdent,
-					ConversionContext: append(params.ConversionContext, destinationType),
-					AssignmentHandler: astbuilder.AppendItemToSlice,
-					Locals:            locals,
-				}),
-		},
+		Body:  astbuilder.StatementBlock(conversion...),
 	}
 	results = append(results, result)
 
@@ -289,7 +344,28 @@ func IdentityConvertComplexArrayProperty(builder *ConversionFunctionBuilder, par
 		results = append(results, params.AssignmentHandler(params.GetDestination(), dst.Clone(destination).(dst.Expr)))
 	}
 
-	return results
+	// If we must forcibly construct empty collections, check if the destination is nil and if so, construct an empty collection
+	// This only applies for top-level collections (we don't forcibly construct nested collections)
+	if depth == 0 && builder.ShouldInitializeCollectionToEmpty(params.SourceProperty) {
+		destinationTypeExpr, err := destinationType.Element().AsTypeExpr(builder.CodeGenerationContext)
+		if err != nil {
+			return nil, eris.Wrap(err, "creating destination type expression")
+		}
+
+		emptySlice := astbuilder.SliceLiteral(destinationTypeExpr)
+		assignEmpty := astbuilder.SimpleAssignment(params.GetDestination(), emptySlice)
+		astbuilder.AddComment(
+			&assignEmpty.Decs.Start,
+			"// Set property to empty map, as this resource is set to serialize all collections explicitly")
+		assignEmpty.Decs.Before = dst.NewLine
+
+		ifNil := astbuilder.IfNil(
+			params.GetDestination(),
+			assignEmpty)
+		results = append(results, ifNil)
+	}
+
+	return results, nil
 }
 
 // IdentityConvertComplexMapProperty handles conversion for map properties with complex values.
@@ -303,15 +379,18 @@ func IdentityConvertComplexArrayProperty(builder *ConversionFunctionBuilder, par
 //			<destination>[key] = <result>
 //		}
 //	}
-func IdentityConvertComplexMapProperty(builder *ConversionFunctionBuilder, params ConversionParameters) []dst.Stmt {
+func IdentityConvertComplexMapProperty(
+	builder *ConversionFunctionBuilder,
+	params ConversionParameters,
+) ([]dst.Stmt, error) {
 	destinationType, ok := params.DestinationType.(*MapType)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	sourceType, ok := params.SourceType.(*MapType)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	if _, ok := destinationType.KeyType().(*PrimitiveType); !ok {
@@ -344,38 +423,75 @@ func IdentityConvertComplexMapProperty(builder *ConversionFunctionBuilder, param
 		return astbuilder.InsertMap(lhs, dst.NewIdent(keyIdent), rhs)
 	}
 
-	keyTypeAst := destinationType.KeyType().AsType(builder.CodeGenerationContext)
-	valueTypeAst := destinationType.ValueType().AsType(builder.CodeGenerationContext)
+	keyTypeExpr, err := destinationType.KeyType().AsTypeExpr(builder.CodeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating key type expression")
+	}
+
+	valueTypeExpr, err := destinationType.ValueType().AsTypeExpr(builder.CodeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating value type expression")
+	}
 
 	makeMapStatement := astbuilder.AssignmentStatement(
 		destination,
 		makeMapToken,
-		astbuilder.MakeMapWithCapacity(keyTypeAst, valueTypeAst,
+		astbuilder.MakeMapWithCapacity(keyTypeExpr, valueTypeExpr,
 			astbuilder.CallFunc("len", params.GetSource())))
+
+	conversion, err := builder.BuildConversion(
+		ConversionParameters{
+			Source:              dst.NewIdent(valueIdent),
+			SourceType:          sourceType.ValueType(),
+			Destination:         dst.Clone(destination).(dst.Expr),
+			DestinationType:     destinationType.ValueType(),
+			NameHint:            nameHint,
+			ConversionContext:   append(params.ConversionContext, destinationType),
+			AssignmentHandler:   handler,
+			Locals:              locals,
+			SourceProperty:      params.SourceProperty,
+			DestinationProperty: params.DestinationProperty,
+		})
+	if err != nil {
+		return nil, eris.Wrap(err, "unable to build conversion for map value")
+	}
+
 	rangeStatement := &dst.RangeStmt{
 		Key:   dst.NewIdent(keyIdent),
 		Value: dst.NewIdent(valueIdent),
 		X:     params.GetSource(),
 		Tok:   token.DEFINE,
-		Body: &dst.BlockStmt{
-			List: builder.BuildConversion(
-				ConversionParameters{
-					Source:            dst.NewIdent(valueIdent),
-					SourceType:        sourceType.ValueType(),
-					Destination:       dst.Clone(destination).(dst.Expr),
-					DestinationType:   destinationType.ValueType(),
-					NameHint:          nameHint,
-					ConversionContext: append(params.ConversionContext, destinationType),
-					AssignmentHandler: handler,
-					Locals:            locals,
-				}),
-		},
+		Body:  astbuilder.StatementBlock(conversion...),
 	}
 
-	result := astbuilder.IfNotNil(
-		params.GetSource(),
-		makeMapStatement,
-		rangeStatement)
+	// If we must forcibly construct empty collections, check if the destination is nil and if so, construct an empty collection
+	// This only applies for top-level collections (we don't forcibly construct nested collections)
+	var result *dst.IfStmt
+	if depth == 0 && builder.ShouldInitializeCollectionToEmpty(params.SourceProperty) {
+		emptyMap := astbuilder.MakeMap(keyTypeExpr, valueTypeExpr)
+
+		assignEmpty := astbuilder.SimpleAssignment(params.GetDestination(), emptyMap)
+		astbuilder.AddComment(
+			&assignEmpty.Decs.Start,
+			"// Set property to empty map, as this resource is set to serialize all collections explicitly")
+		assignEmpty.Decs.Before = dst.NewLine
+
+		result = astbuilder.SimpleIfElse(
+			astbuilder.NotNil(params.GetSource()),
+			astbuilder.Statements(
+				makeMapStatement,
+				rangeStatement,
+			),
+			astbuilder.Statements(
+				assignEmpty,
+			),
+		)
+	} else {
+		result = astbuilder.IfNotNil(
+			params.GetSource(),
+			makeMapStatement,
+			rangeStatement)
+	}
 
 	// If we have an assignment handler, we need to make sure to call it. This only happens in the case of nested
 	// maps/arrays, where we need to make sure we generate the map assignment/array append before returning (otherwise
@@ -384,7 +500,7 @@ func IdentityConvertComplexMapProperty(builder *ConversionFunctionBuilder, param
 		result.Body.List = append(result.Body.List, params.AssignmentHandler(params.GetDestination(), dst.Clone(destination).(dst.Expr)))
 	}
 
-	return []dst.Stmt{result}
+	return astbuilder.Statements(result), nil
 }
 
 // IdentityAssignTypeName handles conversion for TypeName's that are the same
@@ -393,42 +509,50 @@ func IdentityConvertComplexMapProperty(builder *ConversionFunctionBuilder, param
 // This function generates code that looks like this:
 //
 //	<destination> <assignmentHandler> <source>
-func IdentityAssignTypeName(_ *ConversionFunctionBuilder, params ConversionParameters) []dst.Stmt {
+func IdentityAssignTypeName(
+	_ *ConversionFunctionBuilder,
+	params ConversionParameters,
+) ([]dst.Stmt, error) {
 	destinationType, ok := params.DestinationType.(TypeName)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	sourceType, ok := params.SourceType.(TypeName)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	// Can only apply basic assignment for typeNames that are the same
 	if !TypeEquals(sourceType, destinationType) {
-		return nil
+		return nil, nil
 	}
 
-	return []dst.Stmt{
-		params.AssignmentHandlerOrDefault()(params.GetDestination(), params.GetSource()),
-	}
+	return astbuilder.Statements(
+		params.AssignmentHandlerOrDefault()(
+			params.GetDestination(),
+			params.GetSource())), nil
 }
 
 // IdentityAssignPrimitiveType just assigns source to destination directly, no conversion needed.
 // This function generates code that looks like this:
 // <destination> <assignmentHandler> <source>
-func IdentityAssignPrimitiveType(_ *ConversionFunctionBuilder, params ConversionParameters) []dst.Stmt {
+func IdentityAssignPrimitiveType(
+	_ *ConversionFunctionBuilder,
+	params ConversionParameters,
+) ([]dst.Stmt, error) {
 	if _, ok := params.DestinationType.(*PrimitiveType); !ok {
-		return nil
+		return nil, nil
 	}
 
 	if _, ok := params.SourceType.(*PrimitiveType); !ok {
-		return nil
+		return nil, nil
 	}
 
-	return []dst.Stmt{
-		params.AssignmentHandlerOrDefault()(params.GetDestination(), params.GetSource()),
-	}
+	return astbuilder.Statements(
+		params.AssignmentHandlerOrDefault()(
+			params.GetDestination(),
+			params.GetSource())), nil
 }
 
 // AssignToOptional assigns address of source to destination.
@@ -438,42 +562,58 @@ func IdentityAssignPrimitiveType(_ *ConversionFunctionBuilder, params Conversion
 // or:
 // <destination>Temp := convert(<source>)
 // <destination> <assignmentHandler> &<destination>Temp
-func AssignToOptional(builder *ConversionFunctionBuilder, params ConversionParameters) []dst.Stmt {
+func AssignToOptional(
+	builder *ConversionFunctionBuilder,
+	params ConversionParameters,
+) ([]dst.Stmt, error) {
 	optDest, ok := params.DestinationType.(*OptionalType)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	if TypeEquals(optDest.Element(), params.SourceType) {
-		return []dst.Stmt{
-			params.AssignmentHandlerOrDefault()(params.GetDestination(), astbuilder.AddrOf(params.GetSource())),
-		}
+		return astbuilder.Statements(
+			params.AssignmentHandlerOrDefault()(
+				params.GetDestination(),
+				astbuilder.AddrOf(params.GetSource()))), nil
 	}
 
 	// a more complex conversion is needed
 	dstType := optDest.Element()
 	tmpLocal := builder.CreateLocal(params.Locals, "temp", params.NameHint)
 
-	conversion := builder.BuildConversion(
+	conversion, err := builder.BuildConversion(
 		ConversionParameters{
-			Source:            params.Source,
-			SourceType:        params.SourceType,
-			Destination:       dst.NewIdent(tmpLocal),
-			DestinationType:   dstType,
-			NameHint:          tmpLocal,
-			ConversionContext: nil,
-			AssignmentHandler: nil,
-			Locals:            params.Locals,
+			Source:              params.Source,
+			SourceType:          params.SourceType,
+			Destination:         dst.NewIdent(tmpLocal),
+			DestinationType:     dstType,
+			NameHint:            tmpLocal,
+			ConversionContext:   nil,
+			AssignmentHandler:   nil,
+			Locals:              params.Locals,
+			SourceProperty:      params.SourceProperty,
+			DestinationProperty: params.DestinationProperty,
 		})
+	if err != nil {
+		return nil, eris.Wrap(err, "unable to build inner conversion to optional")
+	}
 
 	if len(conversion) == 0 {
-		return nil // unable to build inner conversion
+		return nil, nil // unable to build inner conversion
+	}
+
+	destinationTypeExpr, err := dstType.AsTypeExpr(builder.CodeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating destination type expression")
 	}
 
 	return astbuilder.Statements(
-		astbuilder.LocalVariableDeclaration(tmpLocal, dstType.AsType(builder.CodeGenerationContext), ""),
+		astbuilder.LocalVariableDeclaration(tmpLocal, destinationTypeExpr, ""),
 		conversion,
-		params.AssignmentHandlerOrDefault()(params.GetDestination(), astbuilder.AddrOf(dst.NewIdent(tmpLocal))))
+		params.AssignmentHandlerOrDefault()(
+			params.GetDestination(),
+			astbuilder.AddrOf(dst.NewIdent(tmpLocal)))), nil
 }
 
 // AssignFromOptional assigns address of source to destination.
@@ -489,18 +629,20 @@ func AssignToOptional(builder *ConversionFunctionBuilder, params ConversionParam
 //	    <destination>Temp := convert(*<source>)
 //	    <destination> <assignmentHandler> <destination>Temp
 //	}
-func AssignFromOptional(builder *ConversionFunctionBuilder, params ConversionParameters) []dst.Stmt {
+func AssignFromOptional(
+	builder *ConversionFunctionBuilder,
+	params ConversionParameters,
+) ([]dst.Stmt, error) {
 	optSrc, ok := params.SourceType.(*OptionalType)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	if TypeEquals(optSrc.Element(), params.DestinationType) {
-		return []dst.Stmt{
+		return astbuilder.Statements(
 			astbuilder.IfNotNil(params.GetSource(),
 				params.AssignmentHandlerOrDefault()(params.GetDestination(), astbuilder.Dereference(params.GetSource())),
-			),
-		}
+			)), nil
 	}
 
 	// a more complex conversion is needed
@@ -508,39 +650,445 @@ func AssignFromOptional(builder *ConversionFunctionBuilder, params ConversionPar
 	locals := params.Locals.Clone()
 	tmpLocal := builder.CreateLocal(locals, "temp", params.NameHint)
 
-	conversion := builder.BuildConversion(
+	conversion, err := builder.BuildConversion(
 		ConversionParameters{
-			Source:            astbuilder.Dereference(params.GetSource()),
-			SourceType:        srcType,
-			Destination:       dst.NewIdent(tmpLocal),
-			DestinationType:   params.DestinationType,
-			NameHint:          tmpLocal,
-			ConversionContext: nil,
-			AssignmentHandler: nil,
-			Locals:            locals,
+			Source:              astbuilder.Dereference(params.GetSource()),
+			SourceType:          srcType,
+			Destination:         dst.NewIdent(tmpLocal),
+			DestinationType:     params.DestinationType,
+			NameHint:            tmpLocal,
+			ConversionContext:   nil,
+			AssignmentHandler:   nil,
+			Locals:              locals,
+			SourceProperty:      params.SourceProperty,
+			DestinationProperty: params.DestinationProperty,
 		})
+	if err != nil {
+		return nil, eris.Wrap(err, "unable to build inner conversion from optional")
+	}
 
 	if len(conversion) == 0 {
-		return nil // unable to build inner conversion
+		return nil, nil // unable to build inner conversion
 	}
 
 	var result []dst.Stmt
-	result = append(result, astbuilder.LocalVariableDeclaration(tmpLocal, params.DestinationType.AsType(builder.CodeGenerationContext), ""))
+	destinationTypeExpr, err := params.DestinationType.AsTypeExpr(builder.CodeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating destination type expression")
+	}
+
+	result = append(result, astbuilder.LocalVariableDeclaration(tmpLocal, destinationTypeExpr, ""))
 	result = append(result, conversion...)
 	result = append(result, params.AssignmentHandlerOrDefault()(params.GetDestination(), dst.NewIdent(tmpLocal)))
 
-	return []dst.Stmt{
+	return astbuilder.Statements(
 		astbuilder.IfNotNil(
 			params.GetSource(),
-			result...),
+			result...)), nil
+}
+
+// AssignToAliasOfPrimitive assigns a primitive value to an alias of that same type.
+// This function generates code that looks like this:
+//
+// <destination> <assignmentHandler> <destinationType>(<source>)
+func AssignToAliasOfPrimitive(
+	builder *ConversionFunctionBuilder,
+	params ConversionParameters,
+) ([]dst.Stmt, error) {
+	// Source must be a primitive type
+	srcPrim, ok := params.SourceType.(*PrimitiveType)
+	if !ok {
+		return nil, nil
 	}
+
+	// Destination must be an internal type name
+	dstName, ok := params.DestinationType.(InternalTypeName)
+	if !ok {
+		return nil, nil
+	}
+
+	// ... who's definition we know ...
+	dstDef, err := builder.CodeGenerationContext.GetDefinition(dstName)
+	if err != nil {
+		//nolint:nilerr // err is not nil, we defer to a different conversion
+		return nil, nil
+	}
+
+	// ... and it's not optional (hedging against oddities) ...
+	if _, ok = AsOptionalType(dstDef.Type()); ok {
+		return nil, nil
+	}
+
+	// ... and it is a primitive type ...
+	dstPrim, ok := AsPrimitiveType(dstDef.Type())
+	if !ok {
+		return nil, nil
+	}
+
+	// ... and is an alias of the source type ...
+	if !TypeEquals(srcPrim, dstPrim) {
+		return nil, nil
+	}
+
+	return astbuilder.Statements(
+			params.AssignmentHandlerOrDefault()(
+				params.GetDestination(),
+				astbuilder.CallFunc(
+					dstName.Name(),
+					params.GetSource()))),
+		nil
+}
+
+// AssignFromAliasOfPrimitive assigns a primitive value from an alias of that same type.
+// This function generates code that looks like this:
+//
+// <destination> <assignmentHandler> <destinationType>(<source>)
+func AssignFromAliasOfPrimitive(
+	builder *ConversionFunctionBuilder,
+	params ConversionParameters,
+) ([]dst.Stmt, error) {
+	// Source must be an internal type name
+	srcName, ok := params.SourceType.(InternalTypeName)
+	if !ok {
+		return nil, nil
+	}
+
+	// ... who's definition we know ...
+	srcDef, err := builder.CodeGenerationContext.GetDefinition(srcName)
+	if err != nil {
+		//nolint:nilerr // err is not nil, we defer to a different conversion
+		return nil, nil
+	}
+
+	// ... and it's not optional (hedging against oddities) ...
+	if _, ok = AsOptionalType(srcDef.Type()); ok {
+		return nil, nil
+	}
+
+	// ... and it is a primitive type ...
+	srcPrim, ok := AsPrimitiveType(srcDef.Type())
+	if !ok {
+		return nil, nil
+	}
+
+	// Destination must be a primitive type
+	dstPrim, ok := params.DestinationType.(*PrimitiveType)
+	if !ok {
+		return nil, nil
+	}
+
+	// ... and is an alias of the source type ...
+	if !TypeEquals(srcPrim, dstPrim) {
+		return nil, nil
+	}
+
+	return astbuilder.Statements(
+			params.AssignmentHandlerOrDefault()(
+				params.GetDestination(),
+				astbuilder.CallFunc(
+					dstPrim.String(),
+					params.GetSource()))),
+		nil
+}
+
+// AssignToAliasOfCollection assigns an array of values to an alias of that same type.
+// This function generates code that looks like this:
+//
+// <destination> <assignmentHandler> <destinationType>(<source>)
+func AssignToAliasOfCollection(
+	builder *ConversionFunctionBuilder,
+	params ConversionParameters,
+) ([]dst.Stmt, error) {
+	// Source must be an array type or a map type
+	_, srcIsArray := AsArrayType(params.SourceType)
+	_, srcIsMap := AsMapType(params.SourceType)
+	if !srcIsArray && !srcIsMap {
+		return nil, nil
+	}
+
+	// Destination must be an internal type name
+	dstName, ok := params.DestinationType.(InternalTypeName)
+	if !ok {
+		return nil, nil
+	}
+
+	// ... who's definition we know ...
+	dstDef, err := builder.CodeGenerationContext.GetDefinition(dstName)
+	if err != nil {
+		//nolint:nilerr // err is not nil, we defer to a different conversion
+		return nil, nil
+	}
+
+	// ... and it's not optional (hedging against oddities) ...
+	if _, ok = AsOptionalType(dstDef.Type()); ok {
+		return nil, nil
+	}
+
+	// ... and it must also be an array type or a map type (and the same kind as source)
+	dstArray, dstIsArray := AsArrayType(dstDef.Type())
+	dstMap, dstIsMap := AsMapType(dstDef.Type())
+	if dstIsArray != srcIsArray || dstIsMap != srcIsMap {
+		return nil, nil
+	}
+
+	var dstType Type
+	if dstIsArray {
+		dstType = dstArray
+	} else if dstIsMap {
+		dstType = dstMap
+	}
+
+	// ... and we can convert between those array types ...
+	conversion, err := builder.BuildConversion(
+		ConversionParameters{
+			Source:            params.Source,
+			SourceType:        params.SourceType,
+			Destination:       params.Destination,
+			DestinationType:   dstDef.Type(),
+			NameHint:          params.NameHint,
+			ConversionContext: append(params.ConversionContext, dstType),
+			AssignmentHandler: func(lhs dst.Expr, rhs dst.Expr) dst.Stmt {
+				// Use the existing assignment handler, but make sure we cast the rhs to the right type
+				return params.AssignmentHandlerOrDefault()(
+					lhs,
+					astbuilder.CallFunc(
+						dstName.Name(),
+						rhs))
+			},
+			Locals:              params.Locals,
+			SourceProperty:      params.SourceProperty,
+			DestinationProperty: params.DestinationProperty,
+		})
+	if err != nil {
+		return nil, eris.Wrap(err, "unable to build conversion for array element")
+	}
+
+	return astbuilder.Statements(
+			conversion,
+		),
+		nil
+}
+
+// AssignFromAliasOfCollection assigns an array of values from an alias of that same type.
+// This function generates code that looks like this:
+//
+// <destination> <assignmentHandler> <destinationType>(<source>)
+func AssignFromAliasOfCollection(
+	builder *ConversionFunctionBuilder,
+	params ConversionParameters,
+) ([]dst.Stmt, error) {
+	// Source must be an internal type name
+	srcName, ok := params.SourceType.(InternalTypeName)
+	if !ok {
+		return nil, nil
+	}
+
+	// ... who's definition we know ...
+	srcDef, err := builder.CodeGenerationContext.GetDefinition(srcName)
+	if err != nil {
+		//nolint:nilerr // err is not nil, we defer to a different conversion
+		return nil, nil
+	}
+
+	// ... and it's not optional (hedging against oddities) ...
+	if _, ok = AsOptionalType(srcDef.Type()); ok {
+		return nil, nil
+	}
+
+	// ... and it is an array type or a map type ...
+	_, srcIsArray := AsArrayType(srcDef.Type())
+	_, srcIsMap := AsMapType(srcDef.Type())
+	if !srcIsArray && !srcIsMap {
+		return nil, nil
+	}
+
+	// Destination must also be an array type or a map type (and the same kind as source)
+	_, dstIsArray := AsArrayType(params.DestinationType)
+	_, dstIsMap := AsMapType(params.DestinationType)
+	if dstIsArray != srcIsArray || dstIsMap != srcIsMap {
+		return nil, nil
+	}
+
+	// ... and we can convert between those collection types ...
+	conversion, err := builder.BuildConversion(
+		ConversionParameters{
+			Source:            params.Source,
+			SourceType:        srcDef.Type(),
+			Destination:       params.Destination,
+			DestinationType:   params.DestinationType,
+			NameHint:          params.NameHint,
+			ConversionContext: append(params.ConversionContext, params.DestinationType),
+			AssignmentHandler: func(lhs dst.Expr, rhs dst.Expr) dst.Stmt {
+				// Use the existing assignment handler if there is one, but make sure we always assign
+				return params.AssignmentHandlerOrDefault()(
+					lhs,
+					rhs)
+			},
+			Locals:              params.Locals,
+			SourceProperty:      params.SourceProperty,
+			DestinationProperty: params.DestinationProperty,
+		})
+	if err != nil {
+		return nil, eris.Wrap(err, "unable to build conversion for array element")
+	}
+
+	return astbuilder.Statements(
+			conversion,
+		),
+		nil
+}
+
+// AssignToEnum stores a value into an enum type.
+// This function generates code that looks like this:
+// <destination> = <enumType>(<source>)
+func AssignToEnum(
+	builder *ConversionFunctionBuilder,
+	params ConversionParameters,
+) ([]dst.Stmt, error) {
+	// Is the destination a typename of an enum?
+	itn, ok := params.DestinationType.(InternalTypeName)
+	if !ok {
+		// Not a typename
+		return nil, nil
+	}
+
+	def, err := builder.CodeGenerationContext.GetDefinition(itn)
+	if err != nil {
+		// Couldn't the definition, this handler isn't the one we want
+		// (not actually an error)
+		return nil, nil //nolint:nilerr // err is not nil, we defer to a different conversion
+	}
+
+	et, ok := AsEnumType(def.Type())
+	if !ok {
+		// Definition isn't for an enum type,
+		return nil, nil
+	}
+
+	if TypeEquals(et.BaseType(), params.SourceType) {
+		// We can directly cast the source to the destination
+		var cast dst.Expr
+		if builder.CodeGenerationContext.CurrentPackage() == itn.PackageReference() {
+			cast = astbuilder.CallFunc(itn.Name(), params.GetSource())
+		} else {
+			alias := builder.CodeGenerationContext.MustGetImportedPackageName(itn.PackageReference())
+			cast = astbuilder.CallQualifiedFunc(alias, itn.Name(), params.GetSource())
+		}
+
+		return astbuilder.Statements(
+			params.AssignmentHandlerOrDefault()(
+				params.GetDestination(),
+				cast)), nil
+	}
+
+	// a more complex conversion is needed
+	dstType := et.BaseType()
+	tmpLocal := builder.CreateLocal(params.Locals, "temp", params.NameHint)
+
+	conversion, err := builder.BuildConversion(
+		ConversionParameters{
+			Source:              params.Source,
+			SourceType:          params.SourceType,
+			Destination:         dst.NewIdent(tmpLocal),
+			DestinationType:     dstType,
+			NameHint:            tmpLocal,
+			ConversionContext:   nil,
+			AssignmentHandler:   nil,
+			Locals:              params.Locals,
+			SourceProperty:      params.SourceProperty,
+			DestinationProperty: params.DestinationProperty,
+		})
+	if err != nil {
+		return nil, eris.Wrapf(err, "unable to build inner conversion to enum %s", itn.name)
+	}
+
+	if len(conversion) == 0 {
+		// unable to build inner conversion
+		return nil, nil
+	}
+
+	destinationTypeExpr, err := dstType.AsTypeExpr(builder.CodeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating destination type expression")
+	}
+
+	var cast dst.Expr
+	if builder.CodeGenerationContext.CurrentPackage() == itn.PackageReference() {
+		cast = astbuilder.CallFunc(itn.Name(), dst.NewIdent(tmpLocal))
+	} else {
+		alias := builder.CodeGenerationContext.MustGetImportedPackageName(itn.PackageReference())
+		cast = astbuilder.CallQualifiedFunc(alias, itn.Name(), dst.NewIdent(tmpLocal))
+	}
+
+	return astbuilder.Statements(
+		astbuilder.LocalVariableDeclaration(tmpLocal, destinationTypeExpr, ""),
+		conversion,
+		params.AssignmentHandlerOrDefault()(
+			params.GetDestination(),
+			cast)), nil
+}
+
+// AssignFromEnum reads a value from an enum type.
+// This function generates code that looks like this:
+// <destination> = <primitiveType>(<source>)
+func AssignFromEnum(
+	builder *ConversionFunctionBuilder,
+	params ConversionParameters,
+) ([]dst.Stmt, error) {
+	// Is the source a typename of an enum?
+	itn, ok := params.SourceType.(InternalTypeName)
+	if !ok {
+		// Not a typename
+		return nil, nil
+	}
+
+	def, err := builder.CodeGenerationContext.GetDefinition(itn)
+	if err != nil {
+		return nil, nil //nolint:nilerr // err is not nil, we defer to a different conversion
+	}
+
+	et, ok := AsEnumType(def.Type())
+	if !ok {
+		// Definition isn't for an enum type,
+		return nil, nil
+	}
+
+	srcType := et.BaseType()
+	cast := astbuilder.CallFunc(srcType.Name(), params.GetSource())
+
+	conversion, err := builder.BuildConversion(
+		ConversionParameters{
+			Source:              cast,
+			SourceType:          srcType,
+			Destination:         params.Destination,
+			DestinationType:     params.DestinationType,
+			NameHint:            "",
+			ConversionContext:   nil,
+			AssignmentHandler:   nil,
+			Locals:              params.Locals,
+			SourceProperty:      params.SourceProperty,
+			DestinationProperty: params.DestinationProperty,
+		})
+	if err != nil {
+		return nil, eris.Wrapf(err, "unable to build inner conversion to enum %s", itn.name)
+	}
+
+	if len(conversion) == 0 {
+		// unable to build inner conversion
+		return nil, nil
+	}
+
+	return conversion, nil
 }
 
 // IdentityAssignValidatedTypeDestination generates an assignment to the underlying validated type Element
-func IdentityAssignValidatedTypeDestination(builder *ConversionFunctionBuilder, params ConversionParameters) []dst.Stmt {
+func IdentityAssignValidatedTypeDestination(
+	builder *ConversionFunctionBuilder,
+	params ConversionParameters,
+) ([]dst.Stmt, error) {
 	validatedType, ok := params.DestinationType.(*ValidatedType)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	// pass through to underlying type
@@ -549,10 +1097,13 @@ func IdentityAssignValidatedTypeDestination(builder *ConversionFunctionBuilder, 
 }
 
 // IdentityAssignValidatedTypeSource generates an assignment to the underlying validated type Element
-func IdentityAssignValidatedTypeSource(builder *ConversionFunctionBuilder, params ConversionParameters) []dst.Stmt {
+func IdentityAssignValidatedTypeSource(
+	builder *ConversionFunctionBuilder,
+	params ConversionParameters,
+) ([]dst.Stmt, error) {
 	validatedType, ok := params.SourceType.(*ValidatedType)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	// pass through to underlying type
@@ -564,9 +1115,12 @@ func IdentityAssignValidatedTypeSource(builder *ConversionFunctionBuilder, param
 // It generates code that looks like:
 //
 //	<destination> = *<source>.DeepCopy()
-func IdentityDeepCopyJSON(_ *ConversionFunctionBuilder, params ConversionParameters) []dst.Stmt {
+func IdentityDeepCopyJSON(
+	_ *ConversionFunctionBuilder,
+	params ConversionParameters,
+) ([]dst.Stmt, error) {
 	if !TypeEquals(params.DestinationType, JSONType) {
-		return nil
+		return nil, nil
 	}
 
 	newSource := astbuilder.Dereference(
@@ -575,9 +1129,8 @@ func IdentityDeepCopyJSON(_ *ConversionFunctionBuilder, params ConversionParamet
 			Args: []dst.Expr{},
 		})
 
-	return []dst.Stmt{
-		params.AssignmentHandlerOrDefault()(params.GetDestination(), newSource),
-	}
+	return astbuilder.Statements(
+		params.AssignmentHandlerOrDefault()(params.GetDestination(), newSource)), nil
 }
 
 // AssignmentHandlerDefine is an assignment handler for definitions, using :=

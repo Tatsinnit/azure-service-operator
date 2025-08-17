@@ -9,7 +9,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
@@ -17,17 +17,18 @@ import (
 // AddCrossplaneForProvider adds a "ForProvider" property as the sole property in every resource spec
 // and moves everything that was at the spec level down a level into the ForProvider type
 func AddCrossplaneForProvider(idFactory astmodel.IdentifierFactory) *Stage {
-	return NewLegacyStage(
+	return NewStage(
 		"addCrossplaneForProviderProperty",
 		"Add a 'ForProvider' property on every spec",
-		func(ctx context.Context, definitions astmodel.TypeDefinitionSet) (astmodel.TypeDefinitionSet, error) {
+		func(ctx context.Context, state *State) (*State, error) {
+			definitions := state.Definitions()
 			result := make(astmodel.TypeDefinitionSet)
 			for _, typeDef := range definitions {
 				if _, ok := astmodel.AsResourceType(typeDef.Type()); ok {
 					forProviderTypes, err := nestSpecIntoForProvider(
 						idFactory, definitions, typeDef)
 					if err != nil {
-						return nil, errors.Wrapf(err, "creating 'ForProvider' definitions")
+						return nil, eris.Wrapf(err, "creating 'ForProvider' definitions")
 					}
 
 					result.AddAll(forProviderTypes...)
@@ -37,7 +38,7 @@ func AddCrossplaneForProvider(idFactory astmodel.IdentifierFactory) *Stage {
 			unmodified := definitions.Except(result)
 			result.AddTypes(unmodified)
 
-			return result, nil
+			return state.WithDefinitions(result), nil
 		})
 }
 
@@ -46,17 +47,17 @@ func AddCrossplaneForProvider(idFactory astmodel.IdentifierFactory) *Stage {
 func nestSpecIntoForProvider(
 	idFactory astmodel.IdentifierFactory,
 	definitions astmodel.TypeDefinitionSet,
-	typeDef astmodel.TypeDefinition) ([]astmodel.TypeDefinition, error) {
-
+	typeDef astmodel.TypeDefinition,
+) ([]astmodel.TypeDefinition, error) {
 	resource, ok := astmodel.AsResourceType(typeDef.Type())
 	if !ok {
-		return nil, errors.Errorf("provided typeDef was not a resourceType, instead %T", typeDef.Type())
+		return nil, eris.Errorf("provided typeDef was not a resourceType, instead %T", typeDef.Type())
 	}
 	resourceName := typeDef.Name()
 
-	specName, ok := astmodel.AsTypeName(resource.SpecType())
+	specName, ok := astmodel.AsInternalTypeName(resource.SpecType())
 	if !ok {
-		return nil, errors.Errorf("resource %q spec was not of type TypeName, instead: %T", resourceName, resource.SpecType())
+		return nil, eris.Errorf("resource %q spec was not of type TypeName, instead: %T", resourceName, resource.SpecType())
 	}
 
 	// In the case where a spec type is reused across multiple resource definitions, we need to make sure
@@ -76,25 +77,25 @@ func nestSpecIntoForProvider(
 func nestType(
 	idFactory astmodel.IdentifierFactory,
 	definitions astmodel.TypeDefinitionSet,
-	outerTypeName astmodel.TypeName,
+	outerTypeName astmodel.InternalTypeName,
 	nestedTypeName string,
-	nestedPropertyName string) ([]astmodel.TypeDefinition, error) {
-
+	nestedPropertyName string,
+) ([]astmodel.TypeDefinition, error) {
 	outerType, ok := definitions[outerTypeName]
 	if !ok {
-		return nil, errors.Errorf("couldn't find type %q", outerTypeName)
+		return nil, eris.Errorf("couldn't find type %q", outerTypeName)
 	}
 
 	outerObject, ok := astmodel.AsObjectType(outerType.Type())
 	if !ok {
-		return nil, errors.Errorf("type %q was not of type ObjectType, instead %T", outerTypeName, outerType.Type())
+		return nil, eris.Errorf("type %q was not of type ObjectType, instead %T", outerTypeName, outerType.Type())
 	}
 
 	var result []astmodel.TypeDefinition
 
 	// Copy outer type properties onto new "nesting type" with name nestedTypeName
 	nestedDef := astmodel.MakeTypeDefinition(
-		astmodel.MakeTypeName(outerTypeName.PackageReference, nestedTypeName),
+		astmodel.MakeInternalTypeName(outerTypeName.InternalPackageReference(), nestedTypeName),
 		outerObject)
 	result = append(result, nestedDef)
 

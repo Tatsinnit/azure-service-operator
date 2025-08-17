@@ -6,7 +6,7 @@
 package storage
 
 import (
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/config"
@@ -32,18 +32,18 @@ func NewConversionGraphBuilder(
 	}
 }
 
-// Add includes the supplied package reference in the conversion graph
-func (b *ConversionGraphBuilder) Add(refs ...astmodel.PackageReference) {
-	for _, ref := range refs {
-		subBuilder := b.getSubBuilder(ref)
-		subBuilder.Add(ref)
+// Add includes the supplied TypeNames in the conversion graph
+func (b *ConversionGraphBuilder) Add(names ...astmodel.InternalTypeName) {
+	for _, name := range names {
+		subBuilder := b.getSubBuilder(name)
+		subBuilder.Add(name)
 	}
 }
 
-// AddAll includes all the supplied package references in the conversion graph
-func (b *ConversionGraphBuilder) AddAll(set *astmodel.PackageReferenceSet) {
-	for _, ref := range set.AsSlice() {
-		b.Add(ref)
+// AddAll includes the TypeNames in the supplied set in conversion graph
+func (b *ConversionGraphBuilder) AddAll(set astmodel.InternalTypeNameSet) {
+	for name := range set {
+		b.Add(name)
 	}
 }
 
@@ -53,7 +53,7 @@ func (b *ConversionGraphBuilder) Build() (*ConversionGraph, error) {
 	for group, builder := range b.subBuilders {
 		subgraph, err := builder.Build()
 		if err != nil {
-			return nil, errors.Wrapf(err, "building subgraph for group %s", group)
+			return nil, eris.Wrapf(err, "building subgraph for group %s", group)
 		}
 
 		subgraphs[group] = subgraph
@@ -68,12 +68,12 @@ func (b *ConversionGraphBuilder) Build() (*ConversionGraph, error) {
 }
 
 // getSubBuilder finds the relevant builder for the group of the provided reference, creating one if necessary
-func (b *ConversionGraphBuilder) getSubBuilder(ref astmodel.PackageReference) *GroupConversionGraphBuilder {
+func (b *ConversionGraphBuilder) getSubBuilder(name astmodel.InternalTypeName) *GroupConversionGraphBuilder {
 	// Expect to get either a local or a storage reference, not an external one
-	group, _ := ref.GroupVersion()
+	group := name.InternalPackageReference().Group()
 	subBuilder, ok := b.subBuilders[group]
 	if !ok {
-		subBuilder = NewGroupConversionGraphBuilder(group, b.versionPrefix)
+		subBuilder = NewGroupConversionGraphBuilder(group, b.configuration, b.versionPrefix)
 		b.subBuilders[group] = subBuilder
 	}
 

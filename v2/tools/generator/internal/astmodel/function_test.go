@@ -38,7 +38,7 @@ func (fake *FakeFunction) References() TypeNameSet {
 	return fake.Referenced
 }
 
-func (fake *FakeFunction) AsFunc(_ *CodeGenerationContext, _ TypeName) *dst.FuncDecl {
+func (fake *FakeFunction) AsFunc(_ *CodeGenerationContext, receiver InternalTypeName) (*dst.FuncDecl, error) {
 	panic("implement me")
 }
 
@@ -66,7 +66,7 @@ func (fake *FakeFunction) Equals(f Function, _ EqualityOverrides) bool {
 		return false
 	}
 
-	for _, imp := range fake.Imported.AsSlice() {
+	for imp := range fake.Imported.All() {
 		if !fn.Imported.Contains(imp) {
 			return false
 		}

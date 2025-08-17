@@ -8,7 +8,7 @@ package pipeline
 import (
 	"context"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
@@ -31,11 +31,13 @@ var (
 )
 
 func ReplaceAnyTypeWithJSON() *Stage {
-	return NewLegacyStage(
+	return NewStage(
 		"replaceAnyTypeWithJSON",
 		"Replace properties using interface{} with arbitrary JSON",
-		func(ctx context.Context, definitions astmodel.TypeDefinitionSet) (astmodel.TypeDefinitionSet, error) {
-			replaceAnyWithJson := func(it *astmodel.PrimitiveType) astmodel.Type {
+		func(ctx context.Context, state *State) (*State, error) {
+			definitions := state.Definitions()
+
+			replaceAnyWithJSON := func(it *astmodel.PrimitiveType) astmodel.Type {
 				if it == astmodel.AnyType {
 					return astmodel.JSONType
 				}
@@ -43,15 +45,15 @@ func ReplaceAnyTypeWithJSON() *Stage {
 				return it
 			}
 
-			replaceMapOfMapOfAnyWithJSON := func(v *astmodel.TypeVisitor, it *astmodel.MapType, ctx interface{}) (astmodel.Type, error) {
+			replaceMapOfMapOfAnyWithJSON := func(v *astmodel.TypeVisitor[any], it *astmodel.MapType, ctx interface{}) (astmodel.Type, error) {
 				if astmodel.TypeEquals(it, mapOfMapOfAnyType) {
 					return mapOfJSON, nil
 				}
 				return astmodel.IdentityVisitOfMapType(v, it, ctx)
 			}
 
-			visitor := astmodel.TypeVisitorBuilder{
-				VisitPrimitive: replaceAnyWithJson,
+			visitor := astmodel.TypeVisitorBuilder[any]{
+				VisitPrimitive: replaceAnyWithJSON,
 				VisitMapType:   replaceMapOfMapOfAnyWithJSON,
 			}.Build()
 
@@ -59,12 +61,12 @@ func ReplaceAnyTypeWithJSON() *Stage {
 			for _, def := range definitions {
 				d, err := visitor.VisitDefinition(def, nil)
 				if err != nil {
-					return nil, errors.Wrapf(err, "visiting %q", def.Name())
+					return nil, eris.Wrapf(err, "visiting %q", def.Name())
 				}
 				results.Add(d)
 			}
 
-			return results, nil
+			return state.WithDefinitions(results), nil
 		},
 	)
 }

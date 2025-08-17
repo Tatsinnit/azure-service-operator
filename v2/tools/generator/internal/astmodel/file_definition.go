@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
+	kerrors "k8s.io/apimachinery/pkg/util/errors"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 )
@@ -18,22 +20,25 @@ import (
 // FileDefinition is the content of a file we're generating
 type FileDefinition struct {
 	// the package this file is in
-	packageReference PackageReference
+	packageReference InternalPackageReference
 	// definitions to include in this file
 	definitions []TypeDefinition
 
-	// other packages whose references may be needed for code generation
-	generatedPackages map[PackageReference]*PackageDefinition
+	// other generated packages whose references may be needed for code generation
+	generatedPackages map[InternalPackageReference]*PackageDefinition
 }
 
 var _ GoSourceFile = &FileDefinition{}
 
-// NewFileDefinition creates a file definition containing specified definitions
+// NewFileDefinition creates a file definition containing specified definitions.
+// packageRef is the package to which this file belongs.
+// definitions are the type definitions to include in this specific file.
+// generatedPackages is a map of all other packages being generated (to allow for cross-package references).
 func NewFileDefinition(
-	packageRef PackageReference,
+	packageRef InternalPackageReference,
 	definitions []TypeDefinition,
-	generatedPackages map[PackageReference]*PackageDefinition) *FileDefinition {
-
+	generatedPackages map[InternalPackageReference]*PackageDefinition,
+) *FileDefinition {
 	// Topological sort of the definitions, putting them in order of reference
 	ranks := calcRanks(definitions)
 	sort.Slice(definitions, func(i, j int) bool {
@@ -43,18 +48,19 @@ func NewFileDefinition(
 			return iRank < jRank
 		}
 
-		// Case insensitive sort
-		iName := definitions[i].Name().name
-		jName := definitions[j].Name().name
+		// Case-insensitive sort
+		iName := definitions[i].Name().Name()
+		jName := definitions[j].Name().Name()
 
-		iKey := strings.ToLower(iName)
-		jKey := strings.ToLower(jName)
-
-		return iKey < jKey
+		return strings.ToLower(iName) < strings.ToLower(jName)
 	})
 
 	// TODO: check that all definitions are from same package
-	return &FileDefinition{packageRef, definitions, generatedPackages}
+	return &FileDefinition{
+		packageReference:  packageRef,
+		definitions:       definitions,
+		generatedPackages: generatedPackages,
+	}
 }
 
 // Calculate the ranks for each type
@@ -64,10 +70,10 @@ func calcRanks(definitions []TypeDefinition) map[TypeName]int {
 
 	// First need a way to identify all the root type definers
 	// These are the ones not referenced by any other in this file
-	nonroots := make(map[TypeName]bool)
+	nonRoots := make(map[TypeName]bool)
 	for _, d := range definitions {
 		for ref := range d.References() {
-			nonroots[ref] = true
+			nonRoots[ref] = true
 		}
 	}
 
@@ -77,7 +83,7 @@ func calcRanks(definitions []TypeDefinition) map[TypeName]int {
 		if _, ok := d.Type().(*ResourceType); ok {
 			// Resources have rank 0
 			ranks[d.Name()] = 0
-		} else if _, ok := nonroots[d.Name()]; !ok {
+		} else if _, ok := nonRoots[d.Name()]; !ok {
 			// Roots have rank 0
 			ranks[d.Name()] = 0
 		}
@@ -135,7 +141,6 @@ func assignRanks(definers []TypeDefinition, ranks map[TypeName]int) []TypeDefini
 
 // generateImports products the definitive set of imports for use in this file
 func (file *FileDefinition) generateImports() *PackageImportSet {
-
 	allReferences := NewPackageReferenceSet()
 	for _, s := range file.definitions {
 		allReferences.Merge(s.RequiredPackageReferences())
@@ -146,11 +151,12 @@ func (file *FileDefinition) generateImports() *PackageImportSet {
 
 	// Create the set of imports
 	requiredImports := NewPackageImportSet()
-	requiredImports.AddImportsOfReferences(allReferences.AsSlice()...)
+	requiredImports.AddImportsForPackageReferenceSet(allReferences)
 
 	// TODO: Make this configurable
 	requiredImports.ApplyName(MetaV1Reference, "metav1")
 	requiredImports.ApplyName(APIMachineryErrorsReference, "kerrors")
+	requiredImports.ApplyName(MakeSubPackageReference(ARMPackageName, file.packageReference), "arm")
 
 	return requiredImports
 }
@@ -158,25 +164,27 @@ func (file *FileDefinition) generateImports() *PackageImportSet {
 // AsAst generates an AST node representing this file
 func (file *FileDefinition) AsAst() (result *dst.File, err error) {
 	// Create context from imports
-	codeGenContext := NewCodeGenerationContext(file.packageReference, file.generateImports(), file.generatedPackages)
+	codeGenContext := NewCodeGenerationContext(
+		file.packageReference,
+		file.generateImports(),
+		file.generatedPackages)
 
 	// Create all definitions:
-	var definitions []dst.Decl
-
-	// Handle panics coming out of call to AsDeclarations below:
-	defer func() {
-		if r := recover(); r != nil {
-			caught, ok := r.(error)
-			if !ok {
-				panic(r)
-			}
-
-			err = caught
-		}
-	}()
-
+	var declarations []dst.Decl
+	var errs []error
 	for _, s := range file.definitions {
-		definitions = append(definitions, s.AsDeclarations(codeGenContext)...)
+		decls, err := s.AsDeclarations(codeGenContext)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+
+		declarations = append(declarations, decls...)
+	}
+
+	// If we had any errors, return them
+	if len(errs) > 0 {
+		return nil, kerrors.NewAggregate(errs)
 	}
 
 	var decls []dst.Decl
@@ -196,14 +204,19 @@ func (file *FileDefinition) AsAst() (result *dst.File, err error) {
 	}
 
 	// Add generated definitions
-	decls = append(decls, definitions...)
+	decls = append(decls, declarations...)
 
 	// Emit registration for each resource:
 	var exprs []dst.Expr
 	for _, defn := range file.definitions {
 		if resource, ok := defn.Type().(*ResourceType); ok {
 			for _, t := range resource.SchemeTypes(defn.Name()) {
-				literal := astbuilder.NewCompositeLiteralBuilder(t.AsType(codeGenContext))
+				tExpr, err := t.AsTypeExpr(codeGenContext)
+				if err != nil {
+					return nil, eris.Wrapf(err, "creating type expression for %s", t.Name())
+				}
+
+				literal := astbuilder.NewCompositeLiteralBuilder(tExpr)
 				exprs = append(exprs, astbuilder.AddrOf(literal.Build()))
 			}
 		}
@@ -214,21 +227,19 @@ func (file *FileDefinition) AsAst() (result *dst.File, err error) {
 			&dst.FuncDecl{
 				Type: &dst.FuncType{Params: &dst.FieldList{}},
 				Name: dst.NewIdent("init"),
-				Body: &dst.BlockStmt{
-					List: []dst.Stmt{
-						&dst.ExprStmt{
-							Decs: dst.ExprStmtDecorations{
-								NodeDecs: dst.NodeDecs{
-									Before: dst.NewLine,
-								},
-							},
-							X: &dst.CallExpr{
-								Fun:  dst.NewIdent("SchemeBuilder.Register"), // HACK
-								Args: exprs,
+				Body: astbuilder.StatementBlock(
+					&dst.ExprStmt{
+						Decs: dst.ExprStmtDecorations{
+							NodeDecs: dst.NodeDecs{
+								Before: dst.NewLine,
 							},
 						},
+						X: &dst.CallExpr{
+							Fun:  dst.NewIdent("SchemeBuilder.Register"), // HACK
+							Args: exprs,
+						},
 					},
-				},
+				),
 			})
 	}
 

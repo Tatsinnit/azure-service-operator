@@ -8,9 +8,8 @@ package pipeline
 import (
 	"context"
 
-	"github.com/pkg/errors"
-	kerrors "k8s.io/apimachinery/pkg/util/errors"
-	"k8s.io/klog/v2"
+	"github.com/go-logr/logr"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/config"
@@ -19,12 +18,15 @@ import (
 const ApplyExportFiltersStageID = "filterTypes"
 
 // ApplyExportFilters creates a Stage to reduce our set of types for export
-func ApplyExportFilters(configuration *config.Configuration) *Stage {
+func ApplyExportFilters(
+	configuration *config.Configuration,
+	log logr.Logger,
+) *Stage {
 	stage := NewStage(
 		ApplyExportFiltersStageID,
 		"Apply export filters to reduce the number of generated types",
 		func(ctx context.Context, state *State) (*State, error) {
-			return filterTypes(configuration, state)
+			return filterTypes(configuration, state, log)
 		})
 
 	stage.RequiresPostrequisiteStages(VerifyNoErroredTypesStageID)
@@ -35,49 +37,81 @@ func ApplyExportFilters(configuration *config.Configuration) *Stage {
 func filterTypes(
 	configuration *config.Configuration,
 	state *State,
+	log logr.Logger,
 ) (*State, error) {
 	resourcesToExport := make(astmodel.TypeDefinitionSet)
-	var errs []error
-	for _, def := range astmodel.FindResourceDefinitions(state.Definitions()) {
+	for _, def := range state.Definitions().AllResources() {
 		defName := def.Name()
 
-		export, err := shouldExport(defName, configuration)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-
+		export := shouldExport(defName, configuration)
 		if !export {
-			klog.V(3).Infof("Skipping resource %s", defName)
+			log.V(1).Info("Skipping resource", "resource", defName)
 			continue
 		}
 
-		klog.V(3).Infof("Exporting resource %s and related types", defName)
+		log.V(1).Info("Exporting resource", "resource", defName)
 		resourcesToExport.Add(def)
-	}
-
-	if err := kerrors.NewAggregate(errs); err != nil {
-		return nil, err
 	}
 
 	typesToExport, err := astmodel.FindConnectedDefinitions(state.Definitions(), resourcesToExport)
 	if err != nil {
-		return nil, errors.Wrap(err, "finding types connected to resources marked for export")
+		return nil, eris.Wrap(err, "finding types connected to resources marked for export")
 	}
 
-	// Find and apply renames
-	renames := make(map[astmodel.TypeName]astmodel.TypeName)
-	for n := range typesToExport {
-		if as, asErr := configuration.ObjectModelConfiguration.LookupExportAs(n); asErr == nil {
-			renames[n] = n.WithName(as)
+	// Find and apply renames.
+	// If we rename a resource, we use that name for its spec and status as well.
+	renames := make(astmodel.TypeAssociation)
+	addRename := func(name astmodel.InternalTypeName, newName string) {
+		if name.Name() == newName {
+			// Nothing to do
+			return
+		}
+
+		n := name.WithName(newName)
+		if _, ok := state.Definitions()[n]; ok {
+			// Can't rename, as we'd create a name collision
+			return
+		}
+
+		renames[name] = n
+		// Add an alias to the configuration so that we can use the new name to access the rest of the config
+		if configuration.ObjectModelConfiguration.IsTypeConfigured(name) {
+			configuration.ObjectModelConfiguration.AddTypeAlias(name, newName)
 		}
 	}
 
-	if err = configuration.ObjectModelConfiguration.VerifyExportConsumed(); err != nil {
+	for n, def := range typesToExport {
+		newName := ""
+		if as, ok := configuration.ObjectModelConfiguration.ExportAs.Lookup(n); ok {
+			newName = as
+		} else if to, ok := configuration.ObjectModelConfiguration.RenameTo.Lookup(n); ok {
+			newName = to
+		}
+
+		if newName != "" {
+			addRename(n, newName)
+
+			// If this is a resource, we also need to rename the spec and status
+			if rt, ok := astmodel.AsResourceType(def.Type()); ok {
+				if spec, ok := astmodel.AsInternalTypeName(rt.SpecType()); ok {
+					addRename(spec, newName+astmodel.SpecSuffix)
+				}
+				if status, ok := astmodel.AsInternalTypeName(rt.StatusType()); ok {
+					addRename(status, newName+astmodel.StatusSuffix)
+				}
+			}
+		}
+	}
+
+	if err = configuration.ObjectModelConfiguration.Export.VerifyConsumed(); err != nil {
 		return nil, err
 	}
 
-	if err = configuration.ObjectModelConfiguration.VerifyExportAsConsumed(); err != nil {
+	if err = configuration.ObjectModelConfiguration.ExportAs.VerifyConsumed(); err != nil {
+		return nil, err
+	}
+
+	if err = configuration.ObjectModelConfiguration.RenameTo.VerifyConsumed(); err != nil {
 		return nil, err
 	}
 
@@ -92,29 +126,17 @@ func filterTypes(
 }
 
 // shouldExport works out whether the specified Resource should be exported or not
-func shouldExport(defName astmodel.TypeName, configuration *config.Configuration) (bool, error) {
-	export, err := configuration.ObjectModelConfiguration.LookupExport(defName)
-	if err == nil {
+func shouldExport(defName astmodel.InternalTypeName, configuration *config.Configuration) bool {
+	if export, ok := configuration.ObjectModelConfiguration.Export.Lookup(defName); ok {
 		// $export is configured, return that value
-		return export, nil
+		return export
 	}
 
-	if !config.IsNotConfiguredError(err) {
-		// Problem isn't lack of configuration, it's something else
-		return false, errors.Wrapf(err, "looking up export config for %s", defName)
-	}
-
-	_, err = configuration.ObjectModelConfiguration.LookupExportAs(defName)
-	if err == nil {
+	if _, ok := configuration.ObjectModelConfiguration.ExportAs.Lookup(defName); ok {
 		// $exportAs is configured, we DO want to export
-		return true, nil
-	}
-
-	if !config.IsNotConfiguredError(err) {
-		// Problem isn't lack of configuration, it's something else
-		return false, errors.Wrapf(err, "looking up exportAs config for %s", defName)
+		return true
 	}
 
 	// Default is to not export
-	return false, nil
+	return false
 }

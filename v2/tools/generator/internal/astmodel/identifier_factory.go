@@ -11,6 +11,9 @@ import (
 	"sync"
 	"unicode"
 
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
+
 	"github.com/Azure/azure-service-operator/v2/internal/set"
 )
 
@@ -131,7 +134,6 @@ func (factory *identifierFactory) createIdentifierImpl(name string, visibility V
 }
 
 func (factory *identifierFactory) createIdentifierUncached(name string, visibility Visibility, reservedWords reservedWordConsideration) string {
-
 	// Trim any leading or trailing underscores before proceeding.
 	name = strings.Trim(name, "_")
 
@@ -177,18 +179,13 @@ func (factory *identifierFactory) cleanPart(part string, visibility Visibility) 
 	clean := filterRegex.ReplaceAllLiteralString(part, " ")
 	cleanWords := sliceIntoWords(clean)
 	caseCorrectedWords := make([]string, 0, len(cleanWords))
+	title := cases.Title(language.English, cases.NoLower)
 	for ix, word := range cleanWords {
 		var w string
 		if ix == 0 && visibility == NotExported {
 			w = strings.ToLower(word)
 		} else {
-			// Disable lint: the suggested "replacement" for this in /x/cases has fundamental
-			// differences in how it works (e.g. 'JSON' becomes 'Json'; we don’t want that).
-			// Furthermore, the cases (ha) that it "fixes" are not relevant to us
-			// (something about better handling of various punctuation characters;
-			// our words are punctuation-free).
-			//nolint:staticcheck
-			w = strings.Title(word)
+			w = title.String(word)
 		}
 
 		caseCorrectedWords = append(caseCorrectedWords, w)
@@ -223,10 +220,7 @@ func (factory *identifierFactory) CreateReceiver(name string) string {
 	words := sliceIntoWords(clean)
 
 	// Remove forbidden suffix words from the end
-	for {
-		if len(words) == 1 {
-			break
-		}
+	for len(words) != 1 {
 
 		last := len(words) - 1
 		if !factory.forbiddenReceiverSuffixes.Contains(words[last]) {
@@ -297,11 +291,9 @@ func createReservedWords() map[string]string {
 
 // createForbiddenReceiverSuffixes creates a case-sensitive list of words we don't want to use as receiver names
 func createForbiddenReceiverSuffixes() set.Set[string] {
-	// If/when Status or Spec are all capitals, ARM isn't separated as a different word
 	status := strings.TrimPrefix(StatusSuffix, "_")
 	spec := strings.TrimPrefix(SpecSuffix, "_")
-	arm := strings.TrimPrefix(ARMSuffix, "_")
-	return set.Make(status, spec, arm, status+arm, spec+arm)
+	return set.Make(status, spec)
 }
 
 func (factory *identifierFactory) CreateGroupName(group string) string {

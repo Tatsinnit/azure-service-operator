@@ -9,15 +9,18 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/Azure/go-autorest/autorest/to"
 	. "github.com/onsi/gomega"
-	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
-	compute2020 "github.com/Azure/azure-service-operator/v2/api/compute/v1beta20201201"
-	network "github.com/Azure/azure-service-operator/v2/api/network/v1beta20201101"
-	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1beta20200601"
+	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	compute2020 "github.com/Azure/azure-service-operator/v2/api/compute/v1api20201201"
+	network "github.com/Azure/azure-service-operator/v2/api/network/v1api20201101"
+	network20240301 "github.com/Azure/azure-service-operator/v2/api/network/v1api20240301"
+	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1api20200601"
 	"github.com/Azure/azure-service-operator/v2/internal/genericarmclient"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
+	"github.com/Azure/azure-service-operator/v2/internal/util/to"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
 
@@ -34,12 +37,35 @@ func newVMVirtualNetwork(tc *testcommon.KubePerTestContext, owner *genruntime.Kn
 	}
 }
 
+func newVMVirtualNetwork20240301(tc *testcommon.KubePerTestContext, owner *genruntime.KnownResourceReference) *network20240301.VirtualNetwork {
+	return &network20240301.VirtualNetwork{
+		ObjectMeta: tc.MakeObjectMetaWithName(tc.Namer.GenerateName("vn")),
+		Spec: network20240301.VirtualNetwork_Spec{
+			Owner:    owner,
+			Location: tc.AzureRegion,
+			AddressSpace: &network20240301.AddressSpace{
+				AddressPrefixes: []string{"10.0.0.0/16"},
+			},
+		},
+	}
+}
+
 func newVMSubnet(tc *testcommon.KubePerTestContext, owner *genruntime.KnownResourceReference) *network.VirtualNetworksSubnet {
 	return &network.VirtualNetworksSubnet{
 		ObjectMeta: tc.MakeObjectMeta("subnet"),
-		Spec: network.VirtualNetworks_Subnet_Spec{
+		Spec: network.VirtualNetworksSubnet_Spec{
 			Owner:         owner,
-			AddressPrefix: to.StringPtr("10.0.0.0/24"),
+			AddressPrefix: to.Ptr("10.0.0.0/24"),
+		},
+	}
+}
+
+func newVMSubnet20240301(tc *testcommon.KubePerTestContext, owner *genruntime.KnownResourceReference) *network20240301.VirtualNetworksSubnet {
+	return &network20240301.VirtualNetworksSubnet{
+		ObjectMeta: tc.MakeObjectMeta("subnet"),
+		Spec: network20240301.VirtualNetworksSubnet_Spec{
+			Owner:         owner,
+			AddressPrefix: to.Ptr("10.0.0.0/24"),
 		},
 	}
 }
@@ -97,16 +123,16 @@ func newLoadBalancerForVMSS(tc *testcommon.KubePerTestContext, rg *resources.Res
 			},
 			InboundNatPools: []network.InboundNatPool{
 				{
-					Name: to.StringPtr("MyFancyNatPool"),
+					Name: to.Ptr("MyFancyNatPool"),
 					FrontendIPConfiguration: &network.SubResource{
 						Reference: &genruntime.ResourceReference{
 							ARMID: frontIPConfigurationARMID,
 						},
 					},
 					Protocol:               &protocol,
-					FrontendPortRangeStart: to.IntPtr(50_000),
-					FrontendPortRangeEnd:   to.IntPtr(51_000),
-					BackendPort:            to.IntPtr(22),
+					FrontendPortRangeStart: to.Ptr(50_000),
+					FrontendPortRangeEnd:   to.Ptr(51_000),
+					BackendPort:            to.Ptr(22),
 				},
 			},
 		},
@@ -136,33 +162,33 @@ func newVMSS20201201(
 			Location: tc.AzureRegion,
 			Owner:    testcommon.AsOwner(rg),
 			Sku: &compute2020.Sku{
-				Name:     to.StringPtr("STANDARD_D1_v2"),
-				Capacity: to.IntPtr(1),
+				Name:     to.Ptr("STANDARD_D1_v2"),
+				Capacity: to.Ptr(1),
 			},
-			PlatformFaultDomainCount: to.IntPtr(3),
-			SinglePlacementGroup:     to.BoolPtr(false),
+			PlatformFaultDomainCount: to.Ptr(3),
+			SinglePlacementGroup:     to.Ptr(false),
 			UpgradePolicy: &compute2020.UpgradePolicy{
 				Mode: &upgradePolicyMode,
 			},
 			VirtualMachineProfile: &compute2020.VirtualMachineScaleSetVMProfile{
 				StorageProfile: &compute2020.VirtualMachineScaleSetStorageProfile{
 					ImageReference: &compute2020.ImageReference{
-						Publisher: to.StringPtr("Canonical"),
-						Offer:     to.StringPtr("UbuntuServer"),
-						Sku:       to.StringPtr("18.04-lts"),
-						Version:   to.StringPtr("latest"),
+						Publisher: to.Ptr("Canonical"),
+						Offer:     to.Ptr("UbuntuServer"),
+						Sku:       to.Ptr("18.04-lts"),
+						Version:   to.Ptr("latest"),
 					},
 				},
 				OsProfile: &compute2020.VirtualMachineScaleSetOSProfile{
-					ComputerNamePrefix: to.StringPtr("computer"),
+					ComputerNamePrefix: to.Ptr("computer"),
 					AdminUsername:      &adminUsername,
 					LinuxConfiguration: &compute2020.LinuxConfiguration{
-						DisablePasswordAuthentication: to.BoolPtr(true),
+						DisablePasswordAuthentication: to.Ptr(true),
 						Ssh: &compute2020.SshConfiguration{
 							PublicKeys: []compute2020.SshPublicKeySpec{
 								{
 									KeyData: sshPublicKey,
-									Path:    to.StringPtr(fmt.Sprintf("/home/%s/.ssh/authorized_keys", adminUsername)),
+									Path:    to.Ptr(fmt.Sprintf("/home/%s/.ssh/authorized_keys", adminUsername)),
 								},
 							},
 						},
@@ -171,11 +197,11 @@ func newVMSS20201201(
 				NetworkProfile: &compute2020.VirtualMachineScaleSetNetworkProfile{
 					NetworkInterfaceConfigurations: []compute2020.VirtualMachineScaleSetNetworkConfiguration{
 						{
-							Name:    to.StringPtr("mynicconfig"),
-							Primary: to.BoolPtr(true),
+							Name:    to.Ptr("mynicconfig"),
+							Primary: to.Ptr(true),
 							IpConfigurations: []compute2020.VirtualMachineScaleSetIPConfiguration{
 								{
-									Name: to.StringPtr("myipconfiguration"),
+									Name: to.Ptr("myipconfiguration"),
 									Subnet: &compute2020.ApiEntityReference{
 										Reference: tc.MakeReferenceFromResource(subnet),
 									},
@@ -199,7 +225,7 @@ func Test_Compute_VMSS_20201201_CRUD(t *testing.T) {
 
 	tc := globalTestContext.ForTest(t)
 	// Move to a different region where we have quota
-	tc.AzureRegion = to.StringPtr("westeurope")
+	tc.AzureRegion = to.Ptr("westeurope")
 
 	rg := tc.CreateTestResourceGroupAndWait()
 
@@ -220,13 +246,15 @@ func Test_Compute_VMSS_20201201_CRUD(t *testing.T) {
 	// Perform a simple patch to add a basic custom script extension
 	old := vmss.DeepCopy()
 	extensionName := "mycustomextension"
+	extensionName2 := "mycustomextension2"
+
 	vmss.Spec.VirtualMachineProfile.ExtensionProfile = &compute2020.VirtualMachineScaleSetExtensionProfile{
 		Extensions: []compute2020.VirtualMachineScaleSetExtension{
 			{
 				Name:               &extensionName,
-				Publisher:          to.StringPtr("Microsoft.Azure.Extensions"),
-				Type:               to.StringPtr("CustomScript"),
-				TypeHandlerVersion: to.StringPtr("2.0"),
+				Publisher:          to.Ptr("Microsoft.Azure.Extensions"),
+				Type:               to.Ptr("CustomScript"),
+				TypeHandlerVersion: to.Ptr("2.0"),
 				Settings: map[string]v1.JSON{
 					"commandToExecute": {
 						Raw: []byte(`"/bin/bash -c \"echo hello\""`),
@@ -249,9 +277,65 @@ func Test_Compute_VMSS_20201201_CRUD(t *testing.T) {
 	}
 	tc.Expect(found).To(BeTrue())
 
+	tc.RunParallelSubtests(
+		testcommon.Subtest{
+			Name: "VMSS_Extension_20201201_CRUD",
+			Test: func(tc *testcommon.KubePerTestContext) {
+				VMSS_Extension_20201201_CRUD(tc, vmss, extensionName2)
+			},
+		},
+	)
+
+	objectKey := client.ObjectKeyFromObject(vmss)
+
+	tc.Eventually(func() bool {
+		var updated compute2020.VirtualMachineScaleSet
+		tc.GetResource(objectKey, &updated)
+		return checkExtensionExists2020(tc, &updated, extensionName)
+	}).Should(BeTrue())
+
 	// Delete VMSS
 	tc.DeleteResourceAndWait(vmss)
 
 	// Ensure that the resource was really deleted in Azure
 	tc.ExpectResourceIsDeletedInAzure(armId, string(compute2020.APIVersion_Value))
+}
+
+func checkExtensionExists2020(tc *testcommon.KubePerTestContext, vmss *compute2020.VirtualMachineScaleSet, extensionName string) bool {
+	tc.Expect(vmss.Status.VirtualMachineProfile).ToNot(BeNil())
+	tc.Expect(vmss.Status.VirtualMachineProfile.ExtensionProfile).ToNot(BeNil())
+	tc.Expect(len(vmss.Status.VirtualMachineProfile.ExtensionProfile.Extensions)).To(BeNumerically(">", 0))
+
+	found := false
+	for _, extension := range vmss.Status.VirtualMachineProfile.ExtensionProfile.Extensions {
+		tc.Expect(extension.Name).ToNot(BeNil())
+		if *extension.Name == extensionName {
+			found = true
+		}
+	}
+
+	return found
+}
+
+func VMSS_Extension_20201201_CRUD(tc *testcommon.KubePerTestContext, vmss *compute2020.VirtualMachineScaleSet, extensionName string) {
+	extension := &compute2020.VirtualMachineScaleSetsExtension{
+		ObjectMeta: tc.MakeObjectMetaWithName(extensionName),
+		Spec: compute2020.VirtualMachineScaleSetsExtension_Spec{
+			Owner:              testcommon.AsOwner(vmss),
+			Publisher:          to.Ptr("Microsoft.ManagedServices"),
+			Type:               to.Ptr("ApplicationHealthLinux"),
+			TypeHandlerVersion: to.Ptr("1.0"),
+		},
+	}
+
+	tc.CreateResourceAndWait(extension)
+	tc.Expect(extension.Status.Id).ToNot(BeNil())
+	armId := *extension.Status.Id
+
+	tc.DeleteResourceAndWait(extension)
+
+	exists, retryAfter, err := tc.AzureClient.CheckExistenceWithGetByID(tc.Ctx, armId, string(compute2020.APIVersion_Value))
+	tc.Expect(err).ToNot(HaveOccurred())
+	tc.Expect(retryAfter).To(BeZero())
+	tc.Expect(exists).To(BeFalse())
 }

@@ -8,11 +8,15 @@ package multitenant_test
 import (
 	"testing"
 
-	network "github.com/Azure/azure-service-operator/v2/api/network/v1beta20201101"
-	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
-	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
+	. "github.com/onsi/gomega"
+
 	"github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/types"
+
+	network "github.com/Azure/azure-service-operator/v2/api/network/v1api20201101"
+	resources "github.com/Azure/azure-service-operator/v2/api/resources/v1api20200601"
+	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
+	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
 
 const (
@@ -63,11 +67,17 @@ func Test_Pre_Release_ResourceCanBeCreated_AfterUpgrade(t *testing.T) {
 	newNamer := tc.Namer.WithNumRandomChars(0)
 	rgName := newNamer.GenerateName(resourceGroupName)
 
+	// Ensure expected RG still exists
+	rg := &resources.ResourceGroup{}
+	tc.GetResource(types.NamespacedName{Namespace: tc.Namespace, Name: rgName}, rg)
+
+	tc.Expect(rg.Status.Id).ToNot(BeNil())
+	defer tc.DeleteResourcesAndWait(rg)
+
 	// This resource already will exist in kind as will be created without cleanup in test 'Test_Pre_Release_ResourceCanBeCreated_BeforeUpgrade'.
 	vnetBeforeUpgrade := newVnet(tc, newNamer.GenerateName(vnetBeforeUpgradeName), rgName)
 	defer tc.DeleteResourceAndWait(vnetBeforeUpgrade)
 
-	// TODO: Will have to change the version here when we go from beta to stable
 	vnetAfterUpgrade := newVnet(tc, tc.Namer.GenerateName("vn"), rgName)
 	tc.CreateResourceAndWait(vnetAfterUpgrade)
 	tc.DeleteResourcesAndWait(vnetAfterUpgrade)

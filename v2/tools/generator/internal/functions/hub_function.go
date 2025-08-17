@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
@@ -24,21 +25,30 @@ func NewHubFunction(idFactory astmodel.IdentifierFactory) astmodel.Function {
 	return result
 }
 
-func createHubFunctionBody(fn *ObjectFunction, genContext *astmodel.CodeGenerationContext, receiver astmodel.TypeName, methodName string) *dst.FuncDecl {
+func createHubFunctionBody(
+	fn *ObjectFunction,
+	genContext *astmodel.CodeGenerationContext,
+	receiver astmodel.TypeName,
+	methodName string,
+) (*dst.FuncDecl, error) {
 	// Create a sensible name for our receiver
-	receiverName := fn.IdFactory().CreateReceiver(receiver.Name())
+	receiverName := fn.IDFactory().CreateReceiver(receiver.Name())
 
 	// We always use a pointer receiver
-	receiverType := astmodel.NewOptionalType(receiver).AsType(genContext)
+	receiverType := astmodel.NewOptionalType(receiver)
+	receiverTypeExpr, err := receiverType.AsTypeExpr(genContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating receiver type expression")
+	}
 
 	details := astbuilder.FuncDetails{
 		ReceiverIdent: receiverName,
-		ReceiverType:  receiverType,
+		ReceiverType:  receiverTypeExpr,
 		Name:          methodName,
 		Body:          []dst.Stmt{}, // empty body
 	}
 
 	details.AddComments(fmt.Sprintf("marks that this %s is the hub type for conversion", receiver.Name()))
 
-	return details.DefineFunc()
+	return details.DefineFunc(), nil
 }

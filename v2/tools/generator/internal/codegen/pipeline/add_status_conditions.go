@@ -8,7 +8,7 @@ package pipeline
 import (
 	"context"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/functions"
@@ -34,18 +34,17 @@ func AddStatusConditions(idFactory astmodel.IdentifierFactory) *Stage {
 				conditionsProp = conditionsProp.WithDescription("The observed state of the resource").MakeOptional()
 				updatedDef, err := propInjector.Inject(def, conditionsProp)
 				if err != nil {
-					return nil, errors.Wrapf(err, "couldn't add Conditions condition to status %q", def.Name())
+					return nil, eris.Wrapf(err, "couldn't add Conditions condition to status %q", def.Name())
 				}
 				result.Add(updatedDef)
 			}
 
-			resourceDefs := astmodel.FindResourceDefinitions(defs)
-			for _, def := range resourceDefs {
+			for _, def := range defs.AllResources() {
 				resourceType := def.Type().(*astmodel.ResourceType)
 
 				conditionerImpl, err := NewConditionerInterfaceImpl(idFactory, resourceType)
 				if err != nil {
-					return nil, errors.Wrapf(err, "couldn't create genruntime.Conditioner implementation for %q", def.Name())
+					return nil, eris.Wrapf(err, "couldn't create genruntime.Conditioner implementation for %q", def.Name())
 				}
 				resourceType = resourceType.WithInterface(conditionerImpl)
 
@@ -58,9 +57,8 @@ func AddStatusConditions(idFactory astmodel.IdentifierFactory) *Stage {
 
 				result.Add(def.WithType(resourceType))
 			}
-			result = defs.OverlayWith(result)
 
-			return state.WithDefinitions(result), nil
+			return state.WithOverlaidDefinitions(result), nil
 		})
 }
 
@@ -68,21 +66,21 @@ func AddStatusConditions(idFactory astmodel.IdentifierFactory) *Stage {
 // SetConditions() methods, implementing the genruntime.Conditioner interface.
 func NewConditionerInterfaceImpl(
 	idFactory astmodel.IdentifierFactory,
-	resource *astmodel.ResourceType) (*astmodel.InterfaceImplementation, error) {
-
+	resource *astmodel.ResourceType,
+) (*astmodel.InterfaceImplementation, error) {
 	getConditions := functions.NewResourceFunction(
 		"Get"+astmodel.ConditionsProperty,
 		resource,
 		idFactory,
 		functions.GetConditionsFunction,
-		astmodel.NewPackageReferenceSet(astmodel.GenRuntimeConditionsReference))
+		astmodel.GenRuntimeConditionsReference)
 
 	setConditions := functions.NewResourceFunction(
 		"Set"+astmodel.ConditionsProperty,
 		resource,
 		idFactory,
 		functions.SetConditionsFunction,
-		astmodel.NewPackageReferenceSet(astmodel.GenRuntimeConditionsReference))
+		astmodel.GenRuntimeConditionsReference)
 
 	result := astmodel.NewInterfaceImplementation(
 		astmodel.ConditionerType,

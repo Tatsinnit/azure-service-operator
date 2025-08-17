@@ -7,13 +7,14 @@ package test
 
 import (
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
 
 // FakeFunction is a fake function that can be used for testing purposes
-// Note that there's another FakeFunction in astmodel but we can't eliminate that one because it would cause a package
+// Note that there's another FakeFunction in astmodel, but we can't eliminate that one because it would cause a package
 // reference cycle
 type FakeFunction struct {
 	name         string
@@ -49,19 +50,33 @@ func (fake *FakeFunction) References() astmodel.TypeNameSet {
 	return fake.Referenced
 }
 
-func (fake *FakeFunction) AsFunc(generationContext *astmodel.CodeGenerationContext, receiver astmodel.TypeName) *dst.FuncDecl {
+func (fake *FakeFunction) AsFunc(
+	codeGenerationContext *astmodel.CodeGenerationContext,
+	receiver astmodel.InternalTypeName,
+) (*dst.FuncDecl, error) {
 	receiverName := fake.idFactory.CreateReceiver(receiver.Name())
+	receiverType := astmodel.NewOptionalType(receiver)
+	receiverTypeExpr, err := receiverType.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrap(err, "creating receiver type expression")
+	}
+
 	details := astbuilder.FuncDetails{
 		ReceiverIdent: receiverName,
-		ReceiverType:  astmodel.NewOptionalType(receiver).AsType(generationContext),
+		ReceiverType:  receiverTypeExpr,
 		Name:          fake.name,
 	}
 
 	if fake.TypeReturned != nil {
-		details.AddReturn(fake.TypeReturned.AsType(generationContext))
+		typeReturnedExpr, err := fake.TypeReturned.AsTypeExpr(codeGenerationContext)
+		if err != nil {
+			return nil, eris.Wrap(err, "creating type returned expression")
+		}
+
+		details.AddReturn(typeReturnedExpr)
 	}
 
-	return details.DefineFunc()
+	return details.DefineFunc(), nil
 }
 
 func (fake *FakeFunction) Equals(f astmodel.Function, _ astmodel.EqualityOverrides) bool {
@@ -88,7 +103,7 @@ func (fake *FakeFunction) Equals(f astmodel.Function, _ astmodel.EqualityOverrid
 		return false
 	}
 
-	for _, imp := range fake.Imported.AsSlice() {
+	for imp := range fake.Imported.All() {
 		if !fn.Imported.Contains(imp) {
 			return false
 		}

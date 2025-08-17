@@ -9,16 +9,17 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/Azure/azure-service-operator/v2/internal/reconcilers"
+	"github.com/Azure/azure-service-operator/v2/pkg/common/annotations"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime/conditions"
 )
 
 // This test cannot be run in record/replay mode because the state it looks for at the beginning (Ready = false with warning)
-// is not "stable" (the reconciler keeps retries). Since it keeps retrying there isn't a deterministic number of
-// retry attempts it makes
+// is not "stable" (the reconciler keeps retrying). Since it keeps retrying there isn't a deterministic number of
+// retry attempts it makes which means a recording test may run out of recorded retries.
 func Test_ReconcilePolicy_SkipReconcile_DoesntCreateResourceInAzure(t *testing.T) {
 	t.Parallel()
 
@@ -27,7 +28,7 @@ func Test_ReconcilePolicy_SkipReconcile_DoesntCreateResourceInAzure(t *testing.T
 	// Create a resource group
 	rg := tc.NewTestResourceGroup()
 	rg.Annotations = map[string]string{
-		reconcilers.ReconcilePolicyAnnotation: string(reconcilers.ReconcilePolicySkip),
+		annotations.ReconcilePolicy: string(annotations.ReconcilePolicySkip),
 	}
 	tc.CreateResourceAndWaitForState(rg, metav1.ConditionFalse, conditions.ConditionSeverityWarning)
 
@@ -43,7 +44,7 @@ func Test_ReconcilePolicy_SkipReconcile_DoesntCreateResourceInAzure(t *testing.T
 
 	// The actual Azure resource shouldn't exist
 	armID := rg.Annotations[genruntime.ResourceIDAnnotation]
-	exists, _, err := tc.AzureClient.HeadByID(
+	exists, _, err := tc.AzureClient.CheckExistenceWithGetByID(
 		tc.Ctx,
 		armID,
 		"2020-06-01")
@@ -53,7 +54,7 @@ func Test_ReconcilePolicy_SkipReconcile_DoesntCreateResourceInAzure(t *testing.T
 	// Now when we remove the annotation the resource should move to ready state
 	// Update the tags
 	old := rg.DeepCopy()
-	delete(rg.Annotations, reconcilers.ReconcilePolicyAnnotation)
+	delete(rg.Annotations, annotations.ReconcilePolicy)
 	tc.Patch(old, rg)
 	tc.Eventually(rg).Should(tc.Match.BeProvisioned(0))
 
@@ -62,7 +63,7 @@ func Test_ReconcilePolicy_SkipReconcile_DoesntCreateResourceInAzure(t *testing.T
 	tc.Expect(rg.Status.Location).ToNot(BeNil())
 
 	// The actual Azure resource should exist
-	exists, _, err = tc.AzureClient.HeadByID(
+	exists, _, err = tc.AzureClient.CheckExistenceWithGetByID(
 		tc.Ctx,
 		armID,
 		"2020-06-01")

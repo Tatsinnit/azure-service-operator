@@ -8,7 +8,8 @@ package resolver
 import (
 	"context"
 
-	"github.com/pkg/errors"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
+	"github.com/rotisserie/eris"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -26,6 +27,7 @@ import (
 type Resolver struct {
 	client                   kubeclient.Client
 	kubeSecretResolver       SecretResolver
+	kubeSecretMapResolver    SecretMapResolver
 	kubeConfigMapResolver    ConfigMapResolver
 	reconciledResourceLookup map[schema.GroupKind]schema.GroupVersionKind
 }
@@ -34,6 +36,7 @@ func NewResolver(client kubeclient.Client) *Resolver {
 	return &Resolver{
 		client:                   client,
 		kubeSecretResolver:       NewKubeSecretResolver(client),
+		kubeSecretMapResolver:    NewKubeSecretMapResolver(client),
 		kubeConfigMapResolver:    NewKubeConfigMapResolver(client),
 		reconciledResourceLookup: make(map[schema.GroupKind]schema.GroupVersionKind),
 	}
@@ -43,7 +46,7 @@ func (r *Resolver) IndexStorageTypes(scheme *runtime.Scheme, objs []*registratio
 	for _, obj := range objs {
 		gvk, err := apiutil.GVKForObject(obj.Obj, scheme)
 		if err != nil {
-			return errors.Wrapf(err, "creating GVK for obj %T", obj)
+			return eris.Wrapf(err, "creating GVK for obj %T", obj)
 		}
 		groupKind := schema.GroupKind{Group: gvk.Group, Kind: gvk.Kind}
 		if existing, ok := r.reconciledResourceLookup[groupKind]; ok {
@@ -51,12 +54,13 @@ func (r *Resolver) IndexStorageTypes(scheme *runtime.Scheme, objs []*registratio
 				continue
 			}
 
-			return errors.Errorf(
+			return eris.Errorf(
 				"group: %q, kind: %q already has registered storage version %q, but found %q as well",
 				gvk.Group,
 				gvk.Kind,
 				existing.Version,
 				gvk.Version)
+
 		}
 		r.reconciledResourceLookup[groupKind] = gvk
 	}
@@ -83,32 +87,32 @@ func (r *Resolver) ResolveReferenceToARMID(ctx context.Context, ref genruntime.N
 	id, ok := genruntime.GetResourceID(obj)
 	if !ok {
 		// Resource doesn't have a resource ID. This probably means it's not done deploying
-		return "", errors.Errorf("ref %s doesn't have an assigned ARM ID", ref)
+		return "", eris.Errorf("ref %s doesn't have an assigned ARM ID", ref)
 	}
 
 	return id, nil
 }
 
 // ResolveReferencesToARMIDs resolves all provided references to their ARM IDs.
-func (r *Resolver) ResolveReferencesToARMIDs(ctx context.Context, refs map[genruntime.NamespacedResourceReference]struct{}) (genruntime.Resolved[genruntime.ResourceReference], error) {
+func (r *Resolver) ResolveReferencesToARMIDs(ctx context.Context, refs map[genruntime.NamespacedResourceReference]struct{}) (genruntime.Resolved[genruntime.ResourceReference, string], error) {
 	result := make(map[genruntime.ResourceReference]string, len(refs))
 
 	for ref := range refs {
 		armID, err := r.ResolveReferenceToARMID(ctx, ref)
 		if err != nil {
-			return genruntime.MakeResolved[genruntime.ResourceReference](nil), err
+			return genruntime.MakeResolved[genruntime.ResourceReference, string](nil), err
 		}
 		result[ref.ResourceReference] = armID
 	}
 
-	return genruntime.MakeResolved[genruntime.ResourceReference](result), nil
+	return genruntime.MakeResolved[genruntime.ResourceReference, string](result), nil
 }
 
 // ResolveResourceReferences resolves every reference found on the specified genruntime.ARMMetaObject to its corresponding ARM ID.
-func (r *Resolver) ResolveResourceReferences(ctx context.Context, metaObject genruntime.ARMMetaObject) (genruntime.Resolved[genruntime.ResourceReference], error) {
+func (r *Resolver) ResolveResourceReferences(ctx context.Context, metaObject genruntime.ARMMetaObject) (genruntime.Resolved[genruntime.ResourceReference, string], error) {
 	refs, err := reflecthelpers.FindResourceReferences(metaObject)
 	if err != nil {
-		return genruntime.Resolved[genruntime.ResourceReference]{}, errors.Wrapf(err, "finding references on %q", metaObject.GetName())
+		return genruntime.Resolved[genruntime.ResourceReference, string]{}, eris.Wrapf(err, "finding references on %q", metaObject.GetName())
 	}
 
 	// Include the namespace
@@ -120,28 +124,34 @@ func (r *Resolver) ResolveResourceReferences(ctx context.Context, metaObject gen
 	// resolve them
 	resolvedRefs, err := r.ResolveReferencesToARMIDs(ctx, namespacedRefs)
 	if err != nil {
-		return genruntime.Resolved[genruntime.ResourceReference]{}, errors.Wrapf(err, "failed resolving ARM IDs for references")
+		return genruntime.Resolved[genruntime.ResourceReference, string]{}, eris.Wrapf(err, "failed resolving ARM IDs for references")
 	}
 
 	return resolvedRefs, nil
 }
 
 // ResolveResourceHierarchy gets the resource hierarchy for a given resource. The result is a slice of
-// resources, with the uppermost parent at position 0 and the resource itself at position len(slice)-1
+// resources, with the uppermost parent at position 0 and the resource itself at position len(slice)-1.
+// Note that there is NO GUARANTEE that this hierarchy is "complete". It may root up to a resource which uses
+// the ARMID field of owner.
 func (r *Resolver) ResolveResourceHierarchy(ctx context.Context, obj genruntime.ARMMetaObject) (ResourceHierarchy, error) {
 	owner := obj.Owner()
 	if owner == nil {
 		return ResourceHierarchy{obj}, nil
 	}
 
-	ownerMeta, err := r.ResolveOwner(ctx, obj)
+	ownerDetails, err := r.ResolveOwner(ctx, obj)
 	if err != nil {
 		return nil, err
 	}
 
-	owners, err := r.ResolveResourceHierarchy(ctx, ownerMeta)
+	if ownerDetails.Result == OwnerFoundARM {
+		return ResourceHierarchy{obj}, nil
+	}
+
+	owners, err := r.ResolveResourceHierarchy(ctx, ownerDetails.Owner)
 	if err != nil {
-		return nil, errors.Wrapf(err, "getting owners for %s", ownerMeta.GetName())
+		return nil, eris.Wrapf(err, "getting owners for %s", ownerDetails.Owner.GetName())
 	}
 
 	return append(owners, obj), nil
@@ -162,29 +172,91 @@ func (r *Resolver) ResolveReference(ctx context.Context, ref genruntime.Namespac
 	refObj, err := r.client.GetObject(ctx, refNamespacedName, refGVK)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
+			// Check if the user has mistakenly put the armID in 'name' field
+			_, err1 := arm.ParseResourceID(ref.Name)
+			if err1 == nil {
+				return nil, eris.Errorf("couldn't resolve reference %s. 'name' looks like it might be an ARM ID; did you mean 'armID: %s'?", refNamespacedName.String(), ref.Name)
+			}
+
 			err := core.NewReferenceNotFoundError(refNamespacedName, err)
-			return nil, errors.WithStack(err)
+			return nil, eris.Wrapf(
+				err,
+				"couldn't resolve reference %s/%s",
+				ref.Namespace,
+				ref.Name)
 		}
 
-		return nil, errors.Wrapf(err, "couldn't resolve reference %s", ref.String())
+		return nil, eris.Wrapf(err, "couldn't resolve reference %s", ref.String())
 	}
 
 	metaObj, ok := refObj.(genruntime.ARMMetaObject)
 	if !ok {
-		return nil, errors.Errorf("reference %s (%s) was not of type genruntime.ARMMetaObject", refNamespacedName, refGVK)
+		return nil, eris.Errorf("reference %s (%s) was not of type genruntime.ARMMetaObject", refNamespacedName, refGVK)
 	}
 
 	return metaObj, nil
 }
 
-// ResolveOwner returns the MetaObject for the given resource's owner. If the resource is supposed to have
+type ResolveOwnerResult string
+
+const (
+	// OwnerFoundKubernetes indicates the owner was found in Kubernetes.
+	OwnerFoundKubernetes = ResolveOwnerResult("OwnerFoundKubernetes")
+	// OwnerFoundARM indicates the owner is an ARM ID. The resource the ARM ID points to may or may not exist in Azure currently.
+	OwnerFoundARM = ResolveOwnerResult("OwnerFoundARM")
+	// OwnerNotExpected indicates that this resource is not expected to have any owner. (Example: ResourceGroup)
+	OwnerNotExpected = ResolveOwnerResult("OwnerNotExpected")
+)
+
+type OwnerDetails struct {
+	Result ResolveOwnerResult
+	Owner  genruntime.ARMMetaObject
+	ARMID  string
+}
+
+func (det OwnerDetails) FoundKubernetesOwner() bool {
+	if det.Result == OwnerNotExpected || det.Result == OwnerFoundARM {
+		// If no owner is expected or the owner is only in ARM, no need to assign ownership in Kubernetes
+		return false
+	}
+
+	return true
+}
+
+func OwnerDetailsFromKubernetes(owner genruntime.ARMMetaObject) OwnerDetails {
+	return OwnerDetails{
+		Result: OwnerFoundKubernetes,
+		Owner:  owner,
+	}
+}
+
+func OwnerDetailsFromARM(armID string) OwnerDetails {
+	return OwnerDetails{
+		Result: OwnerFoundARM,
+		ARMID:  armID,
+	}
+}
+
+func OwnerDetailsNotExpected() OwnerDetails {
+	return OwnerDetails{
+		Result: OwnerNotExpected,
+	}
+}
+
+// ResolveOwner returns an OwnerDetails describing more information about the owner of the provided resource.
+// If the resource is supposed to have
 // an owner but doesn't, this returns an ReferenceNotFound error. If the resource is not supposed
-// to have an owner (for example, ResourceGroup), returns nil.
-func (r *Resolver) ResolveOwner(ctx context.Context, obj genruntime.ARMOwnedMetaObject) (genruntime.ARMMetaObject, error) {
+// to have an owner (for example, ResourceGroup) or the owner points to a raw ARM ID this returns an OwnerDetails
+// with the OwnerDetails.Result set appropriately.
+func (r *Resolver) ResolveOwner(ctx context.Context, obj genruntime.ARMOwnedMetaObject) (OwnerDetails, error) {
 	owner := obj.Owner()
 
 	if owner == nil {
-		return nil, nil
+		return OwnerDetailsNotExpected(), nil
+	}
+
+	if owner.IsDirectARMReference() {
+		return OwnerDetailsFromARM(owner.ARMID), nil
 	}
 
 	namespacedRef := genruntime.NamespacedResourceReference{
@@ -193,10 +265,10 @@ func (r *Resolver) ResolveOwner(ctx context.Context, obj genruntime.ARMOwnedMeta
 	}
 	ownerMeta, err := r.ResolveReference(ctx, namespacedRef)
 	if err != nil {
-		return nil, err
+		return OwnerDetails{}, err
 	}
 
-	return ownerMeta, nil
+	return OwnerDetailsFromKubernetes(ownerMeta), nil
 }
 
 // Scheme returns the current scheme from our client
@@ -208,13 +280,13 @@ func (r *Resolver) findGVK(ref genruntime.NamespacedResourceReference) (schema.G
 	var ownerGvk schema.GroupVersionKind
 
 	if !ref.IsKubernetesReference() {
-		return ownerGvk, errors.Errorf("reference %s is not pointing to a Kubernetes resource", ref)
+		return ownerGvk, eris.Errorf("reference %s is not pointing to a Kubernetes resource", ref)
 	}
 
 	groupKind := schema.GroupKind{Group: ref.Group, Kind: ref.Kind}
 	gvk, ok := r.reconciledResourceLookup[groupKind]
 	if !ok {
-		return ownerGvk, errors.Errorf("group: %q, kind: %q was not in reconciledResourceLookup", ref.Group, ref.Kind)
+		return ownerGvk, eris.Errorf("group: %q, kind: %q was not in reconciledResourceLookup", ref.Group, ref.Kind)
 	}
 
 	return gvk, nil
@@ -224,15 +296,15 @@ func (r *Resolver) findGVK(ref genruntime.NamespacedResourceReference) (schema.G
 func (r *Resolver) ResolveSecretReferences(
 	ctx context.Context,
 	refs set.Set[genruntime.NamespacedSecretReference],
-) (genruntime.Resolved[genruntime.SecretReference], error) {
+) (genruntime.Resolved[genruntime.SecretReference, string], error) {
 	return r.kubeSecretResolver.ResolveSecretReferences(ctx, refs)
 }
 
 // ResolveResourceSecretReferences resolves all of the specified genruntime.MetaObject's secret references.
-func (r *Resolver) ResolveResourceSecretReferences(ctx context.Context, metaObject genruntime.MetaObject) (genruntime.Resolved[genruntime.SecretReference], error) {
+func (r *Resolver) ResolveResourceSecretReferences(ctx context.Context, metaObject genruntime.MetaObject) (genruntime.Resolved[genruntime.SecretReference, string], error) {
 	refs, err := reflecthelpers.FindSecretReferences(metaObject)
 	if err != nil {
-		return genruntime.Resolved[genruntime.SecretReference]{}, errors.Wrapf(err, "finding secrets on %q", metaObject.GetName())
+		return genruntime.Resolved[genruntime.SecretReference, string]{}, eris.Wrapf(err, "finding secrets on %q", metaObject.GetName())
 	}
 
 	// Include the namespace
@@ -244,7 +316,40 @@ func (r *Resolver) ResolveResourceSecretReferences(ctx context.Context, metaObje
 	// resolve them
 	resolvedSecrets, err := r.ResolveSecretReferences(ctx, namespacedSecretRefs)
 	if err != nil {
-		return genruntime.Resolved[genruntime.SecretReference]{}, errors.Wrapf(err, "failed resolving secret references")
+		return genruntime.Resolved[genruntime.SecretReference, string]{}, eris.Wrapf(err, "failed resolving secret references")
+	}
+
+	return resolvedSecrets, nil
+}
+
+// ResolveSecretMapReferences resolves all provided secret map references
+func (r *Resolver) ResolveSecretMapReferences(
+	ctx context.Context,
+	refs set.Set[genruntime.NamespacedSecretMapReference],
+) (genruntime.Resolved[genruntime.SecretMapReference, map[string]string], error) {
+	return r.kubeSecretMapResolver.ResolveSecretMapReferences(ctx, refs)
+}
+
+// ResolveResourceSecretMapReferences resolves all the specified genruntime.MetaObject's secret maps.
+func (r *Resolver) ResolveResourceSecretMapReferences(
+	ctx context.Context,
+	metaObject genruntime.MetaObject,
+) (genruntime.Resolved[genruntime.SecretMapReference, map[string]string], error) {
+	refs, err := reflecthelpers.FindSecretMaps(metaObject)
+	if err != nil {
+		return genruntime.Resolved[genruntime.SecretMapReference, map[string]string]{}, eris.Wrapf(err, "finding secrets on %q", metaObject.GetName())
+	}
+
+	// Include the namespace
+	namespacedSecretRefs := set.Make[genruntime.NamespacedSecretMapReference]()
+	for ref := range refs {
+		namespacedSecretRefs.Add(ref.AsNamespacedRef(metaObject.GetNamespace()))
+	}
+
+	// resolve them
+	resolvedSecrets, err := r.ResolveSecretMapReferences(ctx, namespacedSecretRefs)
+	if err != nil {
+		return genruntime.Resolved[genruntime.SecretMapReference, map[string]string]{}, eris.Wrapf(err, "failed resolving secret references")
 	}
 
 	return resolvedSecrets, nil
@@ -254,15 +359,15 @@ func (r *Resolver) ResolveResourceSecretReferences(ctx context.Context, metaObje
 func (r *Resolver) ResolveConfigMapReferences(
 	ctx context.Context,
 	refs set.Set[genruntime.NamespacedConfigMapReference],
-) (genruntime.Resolved[genruntime.ConfigMapReference], error) {
+) (genruntime.Resolved[genruntime.ConfigMapReference, string], error) {
 	return r.kubeConfigMapResolver.ResolveConfigMapReferences(ctx, refs)
 }
 
 // ResolveResourceConfigMapReferences resolves the specified genruntime.MetaObject's configmap references.
-func (r *Resolver) ResolveResourceConfigMapReferences(ctx context.Context, metaObject genruntime.MetaObject) (genruntime.Resolved[genruntime.ConfigMapReference], error) {
+func (r *Resolver) ResolveResourceConfigMapReferences(ctx context.Context, metaObject genruntime.MetaObject) (genruntime.Resolved[genruntime.ConfigMapReference, string], error) {
 	refs, err := reflecthelpers.FindConfigMapReferences(metaObject)
 	if err != nil {
-		return genruntime.Resolved[genruntime.ConfigMapReference]{}, errors.Wrapf(err, "finding config maps on %q", metaObject.GetName())
+		return genruntime.Resolved[genruntime.ConfigMapReference, string]{}, eris.Wrapf(err, "finding config maps on %q", metaObject.GetName())
 	}
 
 	// Include the namespace
@@ -274,7 +379,7 @@ func (r *Resolver) ResolveResourceConfigMapReferences(ctx context.Context, metaO
 	// resolve them
 	resolvedConfigMaps, err := r.ResolveConfigMapReferences(ctx, namespacedConfigMapReferences)
 	if err != nil {
-		return genruntime.Resolved[genruntime.ConfigMapReference]{}, errors.Wrapf(err, "failed resolving config map references")
+		return genruntime.Resolved[genruntime.ConfigMapReference, string]{}, eris.Wrapf(err, "failed resolving config map references")
 	}
 
 	return resolvedConfigMaps, nil
@@ -301,6 +406,11 @@ func (r *Resolver) ResolveAll(ctx context.Context, metaObject genruntime.ARMMeta
 		return nil, genruntime.ConvertToARMResolvedDetails{}, err
 	}
 
+	resolvedSecretMaps, err := r.ResolveResourceSecretMapReferences(ctx, metaObject)
+	if err != nil {
+		return nil, genruntime.ConvertToARMResolvedDetails{}, err
+	}
+
 	// Resolve all configmaps
 	resolvedConfigMaps, err := r.ResolveResourceConfigMapReferences(ctx, metaObject)
 	if err != nil {
@@ -311,6 +421,7 @@ func (r *Resolver) ResolveAll(ctx context.Context, metaObject genruntime.ARMMeta
 		Name:               resourceHierarchy.AzureName(),
 		ResolvedReferences: resolvedRefs,
 		ResolvedSecrets:    resolvedSecrets,
+		ResolvedSecretMaps: resolvedSecretMaps,
 		ResolvedConfigMaps: resolvedConfigMaps,
 	}
 

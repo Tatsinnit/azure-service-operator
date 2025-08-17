@@ -7,32 +7,32 @@ package astmodel
 
 import (
 	"fmt"
+	"iter"
 	"math/big"
 	"regexp"
 
-	"github.com/kylelemons/godebug/diff"
-
 	"github.com/google/go-cmp/cmp"
 	"github.com/kr/pretty"
-	"github.com/pkg/errors"
+	"github.com/kylelemons/godebug/diff"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/readonly"
 )
 
 // TypeDefinitionSet is a map of TypeName to TypeDefinition, representing a set of type definitions.
-type TypeDefinitionSet map[TypeName]TypeDefinition
+type TypeDefinitionSet map[InternalTypeName]TypeDefinition
 
-// A restricted interface to indicate that the
+// ReadonlyTypeDefinitions is a restricted interface to indicate that the
 // consumer won’t modify the contained types.
 type ReadonlyTypeDefinitions interface {
-	MustGetDefinition(name TypeName) TypeDefinition
-	GetDefinition(name TypeName) (TypeDefinition, error)
+	MustGetDefinition(name InternalTypeName) TypeDefinition
+	GetDefinition(name InternalTypeName) (TypeDefinition, error)
 }
 
 var _ ReadonlyTypeDefinitions = TypeDefinitionSet{}
 
 // MakeTypeDefinitionSet makes it easier to declare a TypeDefinitionSet from a map
-func MakeTypeDefinitionSet(types map[TypeName]Type) TypeDefinitionSet {
+func MakeTypeDefinitionSet(types map[InternalTypeName]Type) TypeDefinitionSet {
 	result := make(TypeDefinitionSet, len(types))
 	for name, ty := range types {
 		result.Add(MakeTypeDefinition(name, ty))
@@ -41,8 +41,18 @@ func MakeTypeDefinitionSet(types map[TypeName]Type) TypeDefinitionSet {
 	return result
 }
 
+// MakeTypeDefinitionSetFromDefinitions makes it easier to declare a TypeDefinitionSet from a collection of definitions
+func MakeTypeDefinitionSetFromDefinitions(definitions ...TypeDefinition) TypeDefinitionSet {
+	result := make(TypeDefinitionSet, len(definitions))
+	for _, def := range definitions {
+		result.Add(def)
+	}
+
+	return result
+}
+
 // MustGetDefinition looks up a type definition and panics if it cannot be found
-func (set TypeDefinitionSet) MustGetDefinition(name TypeName) TypeDefinition {
+func (set TypeDefinitionSet) MustGetDefinition(name InternalTypeName) TypeDefinition {
 	result, ok := set[name]
 	if !ok {
 		panic(fmt.Sprintf("couldn't find type %q", name))
@@ -53,10 +63,10 @@ func (set TypeDefinitionSet) MustGetDefinition(name TypeName) TypeDefinition {
 
 // GetDefinition attempts to look up a type definition based on the name. An error is
 // returned if it cannot be found
-func (set TypeDefinitionSet) GetDefinition(name TypeName) (TypeDefinition, error) {
+func (set TypeDefinitionSet) GetDefinition(name InternalTypeName) (TypeDefinition, error) {
 	result, ok := set[name]
 	if !ok {
-		return TypeDefinition{}, errors.Errorf("couldn't find type %q", name)
+		return TypeDefinition{}, eris.Errorf("couldn't find type %q", name)
 	}
 
 	return result, nil
@@ -74,21 +84,21 @@ func (set TypeDefinitionSet) Add(def TypeDefinition) {
 
 // FullyResolve turns something that might be a TypeName into something that isn't
 func (set TypeDefinitionSet) FullyResolve(t Type) (Type, error) {
-	seen := NewTypeNameSet()
+	seen := NewInternalTypeNameSet()
 
-	tn, ok := t.(TypeName)
+	tn, ok := t.(InternalTypeName)
 	for ok {
 		seen.Add(tn)
 
 		def, found := set[tn]
 		if !found {
-			return nil, errors.Errorf("couldn't find definition for %s", tn)
+			return nil, eris.Errorf("couldn't find definition for %s", tn)
 		}
 
 		t = def.Type()
-		tn, ok = t.(TypeName)
+		tn, ok = t.(InternalTypeName)
 		if ok && seen.Contains(tn) {
-			return nil, errors.Errorf("cycle detected in type definition for %s", tn)
+			return nil, eris.Errorf("cycle detected in type definition for %s", tn)
 		}
 	}
 
@@ -97,21 +107,21 @@ func (set TypeDefinitionSet) FullyResolve(t Type) (Type, error) {
 
 // FullyResolveDefinition turns a definition that might point to a TypeName that into a definition something that doesn't
 func (set TypeDefinitionSet) FullyResolveDefinition(def TypeDefinition) (TypeDefinition, error) {
-	seen := NewTypeNameSet()
+	seen := NewInternalTypeNameSet()
 
-	tn, ok := def.Type().(TypeName)
+	tn, ok := def.Type().(InternalTypeName)
 	for ok {
 		seen.Add(tn)
 
 		var found bool
 		def, found = set[tn]
 		if !found {
-			return TypeDefinition{}, errors.Errorf("couldn't find definition for %s", tn)
+			return TypeDefinition{}, eris.Errorf("couldn't find definition for %s", tn)
 		}
 
-		tn, ok = def.Type().(TypeName)
+		tn, ok = def.Type().(InternalTypeName)
 		if ok && seen.Contains(tn) {
-			return TypeDefinition{}, errors.Errorf("cycle detected in type definition for %s", tn)
+			return TypeDefinition{}, eris.Errorf("cycle detected in type definition for %s", tn)
 		}
 	}
 
@@ -146,18 +156,19 @@ func (set TypeDefinitionSet) AddTypesAllowDuplicates(definitions TypeDefinitionS
 	return nil
 }
 
-// AddAllowDuplicates attempts to add the specified definition to the types collection.
+// AddAllowDuplicates attempts to add the specified definition to the collection of types.
 // Multiple adds of a type with the same shape are allowed, but attempting to add two
 // types with the same name but different shape will trigger an error.
 func (set TypeDefinitionSet) AddAllowDuplicates(def TypeDefinition) error {
-	if !set.Contains(def.Name()) {
+	existing, found := set[def.Name()]
+	if !found {
+		// Not already in the set
 		set.Add(def)
 		return nil
 	}
 
-	existing := set[def.Name()]
 	if !TypeEquals(def.Type(), existing.Type()) {
-		return errors.Errorf("type definition for %q has two shapes: \r\n%s", existing.Name(), DiffTypes(existing.Type(), def.Type()))
+		return eris.Errorf("type definition for %q has two shapes: \r\n%s", existing.Name(), DiffTypes(existing.Type(), def.Type()))
 	}
 
 	// Can safely skip this add
@@ -176,7 +187,8 @@ func DiffTypes(x, y interface{}) string {
 		ResourceType{},
 		EnumType{},
 		FlaggedType{},
-		TypeName{},
+		InternalTypeName{},
+		ExternalTypeName{},
 		LocalPackageReference{},
 		InterfaceImplementer{},
 		TypeSet{},
@@ -245,7 +257,7 @@ func (set TypeDefinitionSet) Except(definitions TypeDefinitionSet) TypeDefinitio
 }
 
 // Contains returns true if the set contains a definition for the specified name
-func (set TypeDefinitionSet) Contains(name TypeName) bool {
+func (set TypeDefinitionSet) Contains(name InternalTypeName) bool {
 	_, ok := set[name]
 	return ok
 }
@@ -258,7 +270,7 @@ func (set TypeDefinitionSet) OverlayWith(t TypeDefinitionSet) TypeDefinitionSet 
 	return result
 }
 
-// Names returns the names of all of the types in the set
+// Names returns the names of all types in the set
 func (set TypeDefinitionSet) Names() TypeNameSet {
 	result := NewTypeNameSet()
 	for name := range set {
@@ -290,7 +302,7 @@ func (set TypeDefinitionSet) ResolveResourceType(aType Type) (*ResourceType, boo
 	case *ResourceType:
 		return t, true
 
-	case TypeName:
+	case InternalTypeName:
 		if def, ok := set[t]; ok {
 			return set.ResolveResourceType(def.theType)
 		}
@@ -307,7 +319,7 @@ func (set TypeDefinitionSet) ResolveEnumType(aType Type) (EnumType, bool) {
 	case *EnumType:
 		return *t, true
 
-	case TypeName:
+	case InternalTypeName:
 		if def, ok := set[t]; ok {
 			return set.ResolveEnumDefinition(&def)
 		}
@@ -325,7 +337,7 @@ func (set TypeDefinitionSet) ResolveObjectType(aType Type) (*ObjectType, bool) {
 	case *ObjectType:
 		return t, true
 
-	case TypeName:
+	case InternalTypeName:
 		if def, ok := set[t]; ok {
 			return set.ResolveObjectType(def.theType)
 		}
@@ -361,20 +373,20 @@ func (set TypeDefinitionSet) AsSlice() []TypeDefinition {
 	return result
 }
 
-type ResolvedResourceDefinition struct {
+type ResourceSpecAndStatusResult struct {
 	ResourceDef  TypeDefinition
 	ResourceType *ResourceType
 
 	SpecDef  TypeDefinition
-	SpecType *ObjectType
+	SpecType ReadonlyObjectType
 
 	StatusDef  TypeDefinition
-	StatusType *ObjectType
+	StatusType ReadonlyObjectType
 }
 
 // ResolveResourceSpecAndStatus takes a TypeDefinition that is a ResourceType and looks up its Spec and Status (as well as
-// the TypeDefinition's corresponding to them) and returns a ResolvedResourceDefinition
-func (set TypeDefinitionSet) ResolveResourceSpecAndStatus(resourceDef TypeDefinition) (*ResolvedResourceDefinition, error) {
+// the TypeDefinition's corresponding to them) and returns a ResourceSpecAndStatusResult
+func (set TypeDefinitionSet) ResolveResourceSpecAndStatus(resourceDef TypeDefinition) (*ResourceSpecAndStatusResult, error) {
 	return ResolveResourceSpecAndStatus(set, resourceDef)
 }
 
@@ -400,14 +412,14 @@ func (set TypeDefinitionSet) Process(transformation func(definition TypeDefiniti
 // ResolveResourceSpecDefinition finds the TypeDefinition associated with the resource Spec.
 func ResolveResourceSpecDefinition(defs ReadonlyTypeDefinitions, resourceType *ResourceType) (TypeDefinition, error) {
 	// The expectation is that the spec type is just a name
-	specName, ok := resourceType.SpecType().(TypeName)
+	specName, ok := resourceType.SpecType().(InternalTypeName)
 	if !ok {
-		return TypeDefinition{}, errors.Errorf("spec was not of type TypeName, instead: %T", resourceType.SpecType())
+		return TypeDefinition{}, eris.Errorf("spec was not of type InternalTypeName, instead: %T", resourceType.SpecType())
 	}
 
 	resourceSpecDef, err := defs.GetDefinition(specName)
 	if !ok {
-		return TypeDefinition{}, errors.Wrapf(err, "couldn't find spec")
+		return TypeDefinition{}, eris.Wrapf(err, "couldn't find spec")
 	}
 
 	return resourceSpecDef, nil
@@ -415,14 +427,14 @@ func ResolveResourceSpecDefinition(defs ReadonlyTypeDefinitions, resourceType *R
 
 // ResolveResourceStatusDefinition finds the TypeDefinition associated with the resource Status.
 func ResolveResourceStatusDefinition(defs ReadonlyTypeDefinitions, resourceType *ResourceType) (TypeDefinition, error) {
-	statusName, ok := resourceType.StatusType().(TypeName)
+	statusName, ok := resourceType.StatusType().(InternalTypeName)
 	if !ok {
-		return TypeDefinition{}, errors.Errorf("status was not of type TypeName, instead: %T", resourceType.StatusType())
+		return TypeDefinition{}, eris.Errorf("status was not of type InternalTypeName, instead: %T", resourceType.StatusType())
 	}
 
 	resourceStatusDef, err := defs.GetDefinition(statusName)
 	if !ok {
-		return TypeDefinition{}, errors.Wrapf(err, "couldn't find status")
+		return TypeDefinition{}, eris.Wrapf(err, "couldn't find status")
 	}
 
 	// preserve outer spec name
@@ -430,11 +442,11 @@ func ResolveResourceStatusDefinition(defs ReadonlyTypeDefinitions, resourceType 
 }
 
 // ResolveResourceSpecAndStatus takes a TypeDefinition that is a ResourceType and looks up its Spec and Status (as well as
-// the TypeDefinition's corresponding to them) and returns a ResolvedResourceDefinition
-func ResolveResourceSpecAndStatus(defs ReadonlyTypeDefinitions, resourceDef TypeDefinition) (*ResolvedResourceDefinition, error) {
+// the TypeDefinition's corresponding to them) and returns a ResourceSpecAndStatusResult
+func ResolveResourceSpecAndStatus(defs ReadonlyTypeDefinitions, resourceDef TypeDefinition) (*ResourceSpecAndStatusResult, error) {
 	resource, ok := AsResourceType(resourceDef.Type())
 	if !ok {
-		return nil, errors.Errorf("expected %q to be a Resource but instead it was a %T", resourceDef.Name(), resourceDef.Type())
+		return nil, eris.Errorf("expected %q to be a Resource but instead it was a %T", resourceDef.Name(), resourceDef.Type())
 	}
 
 	// Resolve the spec
@@ -444,7 +456,7 @@ func ResolveResourceSpecAndStatus(defs ReadonlyTypeDefinitions, resourceDef Type
 	}
 	spec, ok := AsObjectType(specDef.Type())
 	if !ok {
-		return nil, errors.Errorf("resource spec %q did not contain an object, instead %s", resource.SpecType().String(), specDef.Type())
+		return nil, eris.Errorf("resource spec %q did not contain an object, instead %s", resource.SpecType().String(), specDef.Type())
 	}
 
 	// Resolve the status if it's there (we need this because our golden file tests don't have status currently)
@@ -458,11 +470,11 @@ func ResolveResourceSpecAndStatus(defs ReadonlyTypeDefinitions, resourceDef Type
 		}
 		status, ok = AsObjectType(statusDef.Type())
 		if !ok {
-			return nil, errors.Errorf("resource status %q did not contain an object, instead %s", resource.StatusType().String(), statusDef.Type())
+			return nil, eris.Errorf("resource status %q did not contain an object, instead %s", resource.StatusType().String(), statusDef.Type())
 		}
 	}
 
-	return &ResolvedResourceDefinition{
+	return &ResourceSpecAndStatusResult{
 		ResourceDef:  resourceDef,
 		ResourceType: resource,
 		SpecDef:      specDef,
@@ -472,11 +484,27 @@ func ResolveResourceSpecAndStatus(defs ReadonlyTypeDefinitions, resourceDef Type
 	}, nil
 }
 
+// AllResources returns all the resources in the set.
+func (set TypeDefinitionSet) AllResources() iter.Seq2[InternalTypeName, TypeDefinition] {
+	return func(yield func(InternalTypeName, TypeDefinition) bool) {
+		for _, def := range set {
+			_, ok := AsResourceType(def.Type())
+			if !ok {
+				continue
+			}
+
+			if !yield(def.Name(), def) {
+				break
+			}
+		}
+	}
+}
+
 // FindResourceDefinitions walks the provided set of TypeDefinitions and returns all the resource definitions
 func FindResourceDefinitions(definitions TypeDefinitionSet) TypeDefinitionSet {
 	result := make(TypeDefinitionSet)
 
-	// Find all our resources and extract all their Specs
+	// Find all our resources
 	for _, def := range definitions {
 		_, ok := AsResourceType(def.Type())
 		if !ok {
@@ -502,7 +530,7 @@ func FindSpecDefinitions(definitions TypeDefinitionSet) TypeDefinitionSet {
 		}
 
 		// We have a resource type
-		tn, ok := AsTypeName(rt.SpecType())
+		tn, ok := AsInternalTypeName(rt.SpecType())
 		if !ok {
 			continue
 		}
@@ -533,7 +561,7 @@ func FindStatusDefinitions(definitions TypeDefinitionSet) TypeDefinitionSet {
 		}
 
 		// We have a resource type
-		tn, ok := AsTypeName(rt.StatusType())
+		tn, ok := AsInternalTypeName(rt.StatusType())
 		if !ok {
 			continue
 		}
@@ -557,13 +585,13 @@ func FindStatusDefinitions(definitions TypeDefinitionSet) TypeDefinitionSet {
 func FindConnectedDefinitions(definitions TypeDefinitionSet, roots TypeDefinitionSet) (TypeDefinitionSet, error) {
 	walker := NewTypeWalker(
 		definitions,
-		TypeVisitorBuilder{}.Build())
+		TypeVisitorBuilder[any]{}.Build())
 
 	result := make(TypeDefinitionSet)
 	for _, def := range roots {
 		types, err := walker.Walk(def)
 		if err != nil {
-			return nil, errors.Wrapf(err, "failed walking types")
+			return nil, eris.Wrapf(err, "failed walking types")
 		}
 
 		err = result.AddTypesAllowDuplicates(types)

@@ -8,12 +8,12 @@ package controllers_test
 import (
 	"testing"
 
-	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	appconfig "github.com/Azure/azure-service-operator/v2/api/appconfiguration/v1beta20220501"
+	appconfig "github.com/Azure/azure-service-operator/v2/api/appconfiguration/v1api20220501"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
+	"github.com/Azure/azure-service-operator/v2/internal/util/to"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
 
@@ -22,8 +22,10 @@ import (
 func Test_AppConfiguration_ConfigurationStore_CRUD(t *testing.T) {
 	t.Parallel()
 
-	createModeDefault := appconfig.ConfigurationStoreProperties_CreateMode_Default
-	publicNetworkAccessDisabled := appconfig.ConfigurationStoreProperties_PublicNetworkAccess_Disabled
+	if *isLive {
+		t.Skip("can't run in live mode, as ConfigurationStore retains the name after deletion which results in conflicts")
+	}
+
 	publicNetworkAccessEnabled := appconfig.ConfigurationStoreProperties_PublicNetworkAccess_Enabled
 
 	tc := globalTestContext.ForTest(t)
@@ -33,13 +35,13 @@ func Test_AppConfiguration_ConfigurationStore_CRUD(t *testing.T) {
 		TypeMeta:   metav1.TypeMeta{},
 		ObjectMeta: tc.MakeObjectMeta("confstore"),
 		Spec: appconfig.ConfigurationStore_Spec{
-			CreateMode: &createModeDefault,
+			CreateMode: to.Ptr(appconfig.ConfigurationStoreProperties_CreateMode_Default),
 			Location:   tc.AzureRegion,
 			Owner:      testcommon.AsOwner(rg),
 			Sku: &appconfig.Sku{
-				Name: to.StringPtr("standard"),
+				Name: to.Ptr("standard"),
 			},
-			PublicNetworkAccess: &publicNetworkAccessDisabled,
+			PublicNetworkAccess: to.Ptr(appconfig.ConfigurationStoreProperties_PublicNetworkAccess_Disabled),
 		},
 		Status: appconfig.ConfigurationStore_STATUS{},
 	}
@@ -62,7 +64,7 @@ func Test_AppConfiguration_ConfigurationStore_CRUD(t *testing.T) {
 
 	tc.DeleteResourceAndWait(cs)
 
-	exists, _, err := tc.AzureClient.HeadByID(
+	exists, _, err := tc.AzureClient.CheckExistenceWithGetByID(
 		tc.Ctx,
 		armId,
 		string(appconfig.APIVersion_Value))
@@ -74,7 +76,6 @@ func ConfigStore_WriteSecrets(tc *testcommon.KubePerTestContext, cs *appconfig.C
 	old := cs.DeepCopy()
 	csKeysSecret := "cskeyssecret"
 	cs.Spec.OperatorSpec = &appconfig.ConfigurationStoreOperatorSpec{
-
 		Secrets: &appconfig.ConfigurationStoreOperatorSecrets{
 			PrimaryConnectionString:           &genruntime.SecretDestination{Name: csKeysSecret, Key: "primaryConnectionString"},
 			SecondaryConnectionString:         &genruntime.SecretDestination{Name: csKeysSecret, Key: "secondaryConnectionString"},

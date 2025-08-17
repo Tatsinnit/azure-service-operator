@@ -34,7 +34,7 @@ func TestGolden_AddOperatorSpec_AddsSpecWithConfiguredSecrets(t *testing.T) {
 		omc.ModifyType(
 			resource.Name(),
 			func(tc *config.TypeConfiguration) error {
-				tc.SetAzureGeneratedSecrets([]string{"key1"})
+				tc.AzureGeneratedSecrets.Set([]string{"key1"})
 				return nil
 			})).
 		To(Succeed())
@@ -45,7 +45,7 @@ func TestGolden_AddOperatorSpec_AddsSpecWithConfiguredSecrets(t *testing.T) {
 	addOperatorSpec := AddOperatorSpec(configuration, idFactory)
 
 	// Don't need a context when testing
-	state := NewState().WithDefinitions(defs)
+	state := NewState(defs)
 	finalState, err := addOperatorSpec.Run(context.TODO(), state)
 
 	g.Expect(err).To(Succeed())
@@ -68,11 +68,12 @@ func TestAddOperatorSpec_AddsSpecWithConfiguredConfigMaps(t *testing.T) {
 	idFactory := astmodel.NewIdentifierFactory()
 	omc := config.NewObjectModelConfiguration()
 	g.Expect(
-		omc.ModifyProperty(
-			status.Name(),
-			test.StatusProperty.PropertyName(),
-			func(prop *config.PropertyConfiguration) error {
-				prop.SetExportAsConfigMapPropertyName("statusProp")
+		omc.ModifyType(
+			resource.Name(),
+			func(typ *config.TypeConfiguration) error {
+				typ.GeneratedConfigs.Set(map[string]string{
+					"statusProp": "$.Status.Status",
+				})
 				return nil
 			},
 		)).
@@ -84,7 +85,7 @@ func TestAddOperatorSpec_AddsSpecWithConfiguredConfigMaps(t *testing.T) {
 	addOperatorSpec := AddOperatorSpec(configuration, idFactory)
 
 	// Don't need a context when testing
-	state := NewState().WithDefinitions(defs)
+	state := NewState(defs)
 	finalState, err := addOperatorSpec.Run(context.TODO(), state)
 
 	g.Expect(err).To(Succeed())
@@ -110,7 +111,7 @@ func TestAddOperatorSpec_AddsSpecWithManualConfigMaps(t *testing.T) {
 		omc.ModifyType(
 			resource.Name(),
 			func(tc *config.TypeConfiguration) error {
-				tc.SetAzureGeneratedConfigs([]string{"config1"})
+				tc.ManualConfigs.Set([]string{"config1"})
 				return nil
 			})).
 		To(Succeed())
@@ -121,7 +122,7 @@ func TestAddOperatorSpec_AddsSpecWithManualConfigMaps(t *testing.T) {
 	addOperatorSpec := AddOperatorSpec(configuration, idFactory)
 
 	// Don't need a context when testing
-	state := NewState().WithDefinitions(defs)
+	state := NewState(defs)
 	finalState, err := addOperatorSpec.Run(context.TODO(), state)
 
 	g.Expect(err).To(Succeed())

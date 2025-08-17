@@ -7,6 +7,7 @@ package functions
 
 import (
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
@@ -68,11 +69,21 @@ func (o *OriginalGVKFunction) References() astmodel.TypeNameSet {
 
 // AsFunc returns the generated code for the OriginalGVK() function
 func (o *OriginalGVKFunction) AsFunc(
-	generationContext *astmodel.CodeGenerationContext, receiver astmodel.TypeName) *dst.FuncDecl {
-	gvkType := astmodel.GroupVersionKindType.AsType(generationContext)
+	codeGenerationContext *astmodel.CodeGenerationContext,
+	receiver astmodel.InternalTypeName,
+) (*dst.FuncDecl, error) {
+	gvkType, err := astmodel.GroupVersionKindType.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrapf(err, "creating type expression for %s", astmodel.GroupVersionKindType)
+	}
+
 	groupVersionPackageGlobal := dst.NewIdent("GroupVersion")
 
 	receiverName := o.idFactory.CreateReceiver(receiver.Name())
+	receiverTypeExpr, err := receiver.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrapf(err, "creating type expression for %s", receiver)
+	}
 
 	spec := astbuilder.Selector(dst.NewIdent(receiverName), "Spec")
 
@@ -90,15 +101,15 @@ func (o *OriginalGVKFunction) AsFunc(
 
 	funcDetails := &astbuilder.FuncDetails{
 		ReceiverIdent: receiverName,
-		ReceiverType:  astbuilder.Dereference(receiver.AsType(generationContext)),
+		ReceiverType:  astbuilder.PointerTo(receiverTypeExpr),
 		Name:          o.Name(),
 		Body:          astbuilder.Statements(astbuilder.Returns(astbuilder.AddrOf(initGVK))),
 	}
 
 	funcDetails.AddComments("returns a GroupValueKind for the original API version used to create the resource")
-	funcDetails.AddReturn(astbuilder.Dereference(gvkType))
+	funcDetails.AddReturn(astbuilder.PointerTo(gvkType))
 
-	return funcDetails.DefineFunc()
+	return funcDetails.DefineFunc(), nil
 }
 
 // Equals returns true if the passed function is equal to us, or false otherwise

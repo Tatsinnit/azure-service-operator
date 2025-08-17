@@ -6,15 +6,15 @@
 package jsonast
 
 import (
-	"github.com/Azure/azure-service-operator/v2/internal/set"
 	"math/big"
 	"net/url"
 	"regexp"
 	"strings"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	"github.com/xeipuuv/gojsonschema"
 
+	"github.com/Azure/azure-service-operator/v2/internal/set"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 )
 
@@ -58,7 +58,7 @@ func (schema GoJSONSchema) url() *url.URL {
 	return schema.inner.ID.GetUrl()
 }
 
-func (schema GoJSONSchema) Id() string {
+func (schema GoJSONSchema) ID() string {
 	return "" // Not used, GoJSONSchema going away soon
 }
 
@@ -242,16 +242,16 @@ func isURLPathSeparator(c rune) bool {
 	return c == '/'
 }
 
-func (schema GoJSONSchema) refTypeName() (astmodel.TypeName, error) {
+func (schema GoJSONSchema) refTypeName() (astmodel.InternalTypeName, error) {
 	// make a new topic based on the ref URL
 	name, err := schema.refObjectName()
 	if err != nil {
-		return astmodel.EmptyTypeName, err
+		return astmodel.InternalTypeName{}, err
 	}
 
 	group, err := schema.refGroupName()
 	if err != nil {
-		return astmodel.EmptyTypeName, err
+		return astmodel.InternalTypeName{}, err
 	}
 
 	version := schema.refVersion()
@@ -269,7 +269,7 @@ func (schema GoJSONSchema) refTypeName() (astmodel.TypeName, error) {
 	}
 
 	// produce a usable name:
-	return astmodel.MakeTypeName(
+	return astmodel.MakeInternalTypeName(
 		schema.makeLocalPackageReference(
 			schema.idFactory.CreateGroupName(group),
 			version),
@@ -290,7 +290,7 @@ func objectTypeOf(url *url.URL) (string, error) {
 	fragmentParts := strings.FieldsFunc(url.Fragment, isURLPathSeparator)
 
 	if len(fragmentParts) == 0 {
-		return "", errors.Errorf("unexpected URL format: no fragment parts extracted from %q", url.String())
+		return "", eris.Errorf("unexpected URL format: no fragment parts extracted from %q", url.String())
 	}
 
 	return fragmentParts[len(fragmentParts)-1], nil
@@ -305,7 +305,7 @@ func groupOf(url *url.URL) (string, error) {
 
 	file := pathParts[len(pathParts)-1]
 	if !strings.HasSuffix(file, ".json") {
-		return "", errors.Errorf("unexpected URL format (doesn't point to .json file)")
+		return "", eris.Errorf("unexpected URL format (doesn't point to .json file)")
 	}
 
 	return strings.TrimSuffix(file, ".json"), nil

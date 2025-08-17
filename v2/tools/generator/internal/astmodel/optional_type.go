@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 )
@@ -120,20 +121,23 @@ func (optional *OptionalType) WithElement(t Type) Type {
 	return &result
 }
 
-func (optional *OptionalType) AsDeclarations(codeGenerationContext *CodeGenerationContext, declContext DeclarationContext) []dst.Decl {
+func (optional *OptionalType) AsDeclarations(codeGenerationContext *CodeGenerationContext, declContext DeclarationContext) ([]dst.Decl, error) {
 	return AsSimpleDeclarations(codeGenerationContext, declContext, optional)
 }
 
 // AsType renders the Go abstract syntax tree for an optional type
-func (optional *OptionalType) AsType(codeGenerationContext *CodeGenerationContext) dst.Expr {
+func (optional *OptionalType) AsTypeExpr(codeGenerationContext *CodeGenerationContext) (dst.Expr, error) {
 	// Special case interface{} as it shouldn't be a pointer
-	if optional.element == AnyType {
-		return optional.element.AsType(codeGenerationContext)
+	elementExpr, err := optional.element.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrapf(err, "creating element for optional type")
 	}
 
-	return &dst.StarExpr{
-		X: optional.element.AsType(codeGenerationContext),
+	if optional.element == AnyType {
+		return elementExpr, nil
 	}
+
+	return astbuilder.PointerTo(elementExpr), nil
 }
 
 // AsZero renders an expression for the "zero" value of the type
@@ -183,7 +187,7 @@ func (optional *OptionalType) Unwrap() Type {
 // WriteDebugDescription adds a description of the current type to the passed builder instance.
 // builder receives the full description, including nested types.
 // definitions is a dictionary for resolving named types.
-func (optional *OptionalType) WriteDebugDescription(builder *strings.Builder, currentPackage PackageReference) {
+func (optional *OptionalType) WriteDebugDescription(builder *strings.Builder, currentPackage InternalPackageReference) {
 	if optional == nil {
 		builder.WriteString("<nilOptional>")
 		return

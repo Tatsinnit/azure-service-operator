@@ -10,8 +10,8 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	eventgrid "github.com/Azure/azure-service-operator/v2/api/eventgrid/v1beta20200601"
-	storage "github.com/Azure/azure-service-operator/v2/api/storage/v1beta20210401"
+	eventgrid "github.com/Azure/azure-service-operator/v2/api/eventgrid/v1api20200601"
+	storage "github.com/Azure/azure-service-operator/v2/api/storage/v1api20210401"
 	"github.com/Azure/azure-service-operator/v2/internal/testcommon"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
 )
@@ -56,7 +56,7 @@ func Test_EventGrid_Domain(t *testing.T) {
 
 	queueServices := &storage.StorageAccountsQueueService{
 		ObjectMeta: tc.MakeObjectMeta("dest-queues"),
-		Spec: storage.StorageAccounts_QueueService_Spec{
+		Spec: storage.StorageAccountsQueueService_Spec{
 			Owner: testcommon.AsOwner(acct),
 		},
 	}
@@ -65,7 +65,7 @@ func Test_EventGrid_Domain(t *testing.T) {
 
 	queue := &storage.StorageAccountsQueueServicesQueue{
 		ObjectMeta: tc.MakeObjectMeta("dest-queue"),
-		Spec: storage.StorageAccounts_QueueServices_Queue_Spec{
+		Spec: storage.StorageAccountsQueueServicesQueue_Spec{
 			Owner: testcommon.AsOwner(queueServices),
 		},
 	}
@@ -92,7 +92,7 @@ func Test_EventGrid_Domain(t *testing.T) {
 	tc.DeleteResourceAndWait(domain)
 
 	// Ensure that the resource group was really deleted in Azure
-	exists, _, err := tc.AzureClient.HeadByID(
+	exists, _, err := tc.AzureClient.CheckExistenceWithGetByID(
 		tc.Ctx,
 		armId,
 		string(eventgrid.APIVersion_Value))
@@ -103,7 +103,7 @@ func Test_EventGrid_Domain(t *testing.T) {
 func DomainTopicAndSubscription_CRUD(tc *testcommon.KubePerTestContext, queue *storage.StorageAccountsQueueServicesQueue, domain *eventgrid.Domain, acctReference *genruntime.ResourceReference) {
 	topic := &eventgrid.DomainsTopic{
 		ObjectMeta: tc.MakeObjectMeta("topic"),
-		Spec: eventgrid.Domains_Topic_Spec{
+		Spec: eventgrid.DomainsTopic_Spec{
 			Owner: testcommon.AsOwner(domain),
 		},
 	}

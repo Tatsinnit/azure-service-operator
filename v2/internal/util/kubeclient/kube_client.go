@@ -8,13 +8,20 @@ package kubeclient
 import (
 	"context"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+type CommitType string
+
+const (
+	SpecOnly      = CommitType("SpecOnly")
+	SpecAndStatus = CommitType("SpecAndStatus")
 )
 
 type Client interface {
@@ -24,7 +31,7 @@ type Client interface {
 
 	GetObject(ctx context.Context, namespacedName types.NamespacedName, gvk schema.GroupVersionKind) (client.Object, error)
 	GetObjectOrDefault(ctx context.Context, namespacedName types.NamespacedName, gvk schema.GroupVersionKind) (client.Object, error)
-	CommitObject(ctx context.Context, obj client.Object) error
+	CommitObject(ctx context.Context, obj client.Object, commitType CommitType) error
 }
 
 type clientHelper struct {
@@ -79,15 +86,27 @@ func (c *clientHelper) RESTMapper() meta.RESTMapper {
 	return c.client.RESTMapper()
 }
 
+func (c *clientHelper) SubResource(subResource string) client.SubResourceClient {
+	return c.client.SubResource(subResource)
+}
+
+func (c *clientHelper) GroupVersionKindFor(obj runtime.Object) (schema.GroupVersionKind, error) {
+	return c.client.GroupVersionKindFor(obj)
+}
+
+func (c *clientHelper) IsObjectNamespaced(obj runtime.Object) (bool, error) {
+	return c.client.IsObjectNamespaced(obj)
+}
+
 func (c *clientHelper) GetObject(ctx context.Context, namespacedName types.NamespacedName, gvk schema.GroupVersionKind) (client.Object, error) {
 	obj, err := c.Scheme().New(gvk)
 	if err != nil {
-		return nil, errors.Wrapf(err, "unable to create object from gvk %s with", gvk)
+		return nil, eris.Wrapf(err, "unable to create object from gvk %s with", gvk)
 	}
 
 	clientObj, ok := obj.(client.Object)
 	if !ok {
-		return nil, errors.Errorf("gvk %s doesn't implement client.Object", gvk)
+		return nil, eris.Errorf("gvk %s doesn't implement client.Object", gvk)
 	}
 
 	if err := c.Get(ctx, namespacedName, clientObj); err != nil {
@@ -112,7 +131,7 @@ func (c *clientHelper) GetObjectOrDefault(ctx context.Context, namespacedName ty
 // CommitObject persists the contents of obj to etcd by using the Kubernetes client.
 // Note that after this method has been called, obj contains the result of the update
 // from APIServer (including an updated resourceVersion). Both Spec and Status are written
-func (c *clientHelper) CommitObject(ctx context.Context, obj client.Object) error {
+func (c *clientHelper) CommitObject(ctx context.Context, obj client.Object, commitType CommitType) error {
 	// Order of updates (spec first or status first) matters here.
 	// If the status is updated first: clients that are waiting on status
 	// Condition Ready == true might see that quickly enough, and make a spec
@@ -128,16 +147,18 @@ func (c *clientHelper) CommitObject(ctx context.Context, obj client.Object) erro
 
 	err := c.Update(ctx, clone)
 	if err != nil {
-		return errors.Wrapf(err, "updating %s/%s resource", obj.GetNamespace(), obj.GetName())
+		return eris.Wrapf(err, "updating %s/%s resource", obj.GetNamespace(), obj.GetName())
 	}
 
 	obj.SetResourceVersion(clone.GetResourceVersion())
 
-	// Note that subsequent calls to GET can (if using a cached client) can miss the updates we've just done.
-	// See: https://github.com/kubernetes-sigs/controller-runtime/issues/1464.
-	err = c.Status().Update(ctx, obj)
-	if err != nil {
-		return errors.Wrapf(err, "updating %s/%s resource status", obj.GetNamespace(), obj.GetName())
+	if commitType == SpecAndStatus {
+		// Note that subsequent calls to GET can (if using a cached client) can miss the updates we've just done.
+		// See: https://github.com/kubernetes-sigs/controller-runtime/issues/1464.
+		err = c.Status().Update(ctx, obj)
+		if err != nil {
+			return eris.Wrapf(err, "updating %s/%s resource status", obj.GetNamespace(), obj.GetName())
+		}
 	}
 
 	return nil

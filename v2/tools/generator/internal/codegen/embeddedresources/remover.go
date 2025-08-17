@@ -8,17 +8,17 @@ package embeddedresources
 import (
 	"fmt"
 
-	"github.com/pkg/errors"
+	"github.com/go-logr/logr"
+	"github.com/rotisserie/eris"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
-	"k8s.io/klog/v2"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/config"
 )
 
 type resourceRemovalVisitorContext struct {
-	resource            astmodel.TypeName
-	name                astmodel.TypeName
+	resource            astmodel.InternalTypeName
+	name                astmodel.InternalTypeName
 	depth               int
 	modifiedDefinitions astmodel.TypeDefinitionSet
 }
@@ -31,7 +31,7 @@ func (e resourceRemovalVisitorContext) WithMoreDepth() resourceRemovalVisitorCon
 	return e
 }
 
-func (e resourceRemovalVisitorContext) WithName(name astmodel.TypeName) resourceRemovalVisitorContext {
+func (e resourceRemovalVisitorContext) WithName(name astmodel.InternalTypeName) resourceRemovalVisitorContext {
 	e.name = name
 	return e
 }
@@ -64,15 +64,15 @@ type EmbeddedResourceRemover struct {
 	// the property subnets/routes on the parent will delete subresources if that collection doesn't include all existing
 	// subnets/routes.
 	// This is a map of resource name to details about the owned resource
-	resourcesWhichOwnSubresourceLifecycle map[astmodel.TypeName][]misbehavingResourceDetails
+	resourcesWhichOwnSubresourceLifecycle map[astmodel.InternalTypeName][]misbehavingResourceDetails
 
 	// resourcesEmbeddedInParent is a collection of subresources whose IsResource() is conditional based on the context it's used in.
 	// In some places, it is a resource and should be pruned. In other places, it must not be pruned. This usually boils down
 	// to pseudo-resources in networking that while they look like a resource can only be created as properties on another
 	// resource and so must NOT be pruned from that context as otherwise they cannot be created anywhere.
 	// This map is from subresource type name to resource type name.
-	resourcesEmbeddedInParent map[astmodel.TypeName]astmodel.TypeName
-	renames                   map[astmodel.TypeName]embeddedResourceTypeName // A set of all the type renames made, indexed by the new name
+	resourcesEmbeddedInParent map[astmodel.InternalTypeName]astmodel.InternalTypeName
+	renames                   map[astmodel.InternalTypeName]embeddedResourceTypeName // A set of all the type renames made, indexed by the new name
 }
 
 // MakeEmbeddedResourceRemover creates an EmbeddedResourceRemover for the specified astmodel.TypeDefinitionSet collection.
@@ -81,12 +81,12 @@ func MakeEmbeddedResourceRemover(configuration *config.Configuration, definition
 
 	resourcesEmbeddedInParent, err := findResourcesEmbeddedInParent(configuration, definitions)
 	if err != nil {
-		return EmbeddedResourceRemover{}, errors.Wrap(err, "couldn't find all resources embedded in parent")
+		return EmbeddedResourceRemover{}, eris.Wrap(err, "couldn't find all resources embedded in parent")
 	}
 
 	misbehavingResources, err := findMisbehavingResources(configuration, definitions)
 	if err != nil {
-		return EmbeddedResourceRemover{}, errors.Wrap(err, "couldn't find all misbehaving embedded resources")
+		return EmbeddedResourceRemover{}, eris.Wrap(err, "couldn't find all misbehaving embedded resources")
 	}
 
 	remover := EmbeddedResourceRemover{
@@ -96,20 +96,22 @@ func MakeEmbeddedResourceRemover(configuration *config.Configuration, definition
 		resourceToSubresourceMap:              resourceToSubresourceMap,
 		typeSuffix:                            "SubResourceEmbedded",
 		typeFlag:                              astmodel.TypeFlag("embeddedSubResource"),
-		renames:                               make(map[astmodel.TypeName]embeddedResourceTypeName),
+		renames:                               make(map[astmodel.InternalTypeName]embeddedResourceTypeName),
 	}
 
 	return remover, nil
 }
 
 // RemoveEmbeddedResources removes any embedded resources according to the
-func (e EmbeddedResourceRemover) RemoveEmbeddedResources() (astmodel.TypeDefinitionSet, error) {
-	result := make(astmodel.TypeDefinitionSet)
+func (e EmbeddedResourceRemover) RemoveEmbeddedResources(
+	log logr.Logger,
+) (astmodel.TypeDefinitionSet, error) {
+	result := make(astmodel.TypeDefinitionSet, len(e.definitions))
 
-	originalNames := make(map[astmodel.TypeName]embeddedResourceTypeName)
+	originalNames := make(map[astmodel.InternalTypeName]embeddedResourceTypeName, len(e.definitions)/2)
 
 	visitor := e.makeEmbeddedResourceRemovalTypeVisitor()
-	for _, def := range astmodel.FindResourceDefinitions(e.definitions) {
+	for _, def := range e.definitions.AllResources() {
 		typeWalker := e.newResourceRemovalTypeWalker(visitor, def)
 
 		updatedTypes, err := typeWalker.Walk(def)
@@ -130,62 +132,63 @@ func (e EmbeddedResourceRemover) RemoveEmbeddedResources() (astmodel.TypeDefinit
 		}
 	}
 
-	result, err := simplifyTypeNames(result, e.typeFlag, originalNames)
+	result, err := simplifyTypeNames(result, e.typeFlag, originalNames, log)
 	if err != nil {
 		return nil, err
 	}
 
-	return RemoveEmptyObjects(result)
+	return RemoveEmptyObjects(result, log)
 }
 
-func (e EmbeddedResourceRemover) makeEmbeddedResourceRemovalTypeVisitor() astmodel.TypeVisitor {
-	visitor := astmodel.TypeVisitorBuilder{
-		VisitObjectType: func(this *astmodel.TypeVisitor, it *astmodel.ObjectType, ctx interface{}) (astmodel.Type, error) {
-			typedCtx := ctx.(resourceRemovalVisitorContext)
-
-			parent := e.resourcesEmbeddedInParent[typedCtx.name]
-			isResourceEmbeddedInParent := astmodel.TypeEquals(parent, typedCtx.resource)
+func (e EmbeddedResourceRemover) makeEmbeddedResourceRemovalTypeVisitor() astmodel.TypeVisitor[resourceRemovalVisitorContext] {
+	visitor := astmodel.TypeVisitorBuilder[resourceRemovalVisitorContext]{
+		VisitObjectType: func(
+			this *astmodel.TypeVisitor[resourceRemovalVisitorContext],
+			it *astmodel.ObjectType,
+			ctx resourceRemovalVisitorContext,
+		) (astmodel.Type, error) {
+			parent := e.resourcesEmbeddedInParent[ctx.name]
+			isResourceEmbeddedInParent := astmodel.TypeEquals(parent, ctx.resource)
 			if isResourceEmbeddedInParent {
-				// Remove the ID field if there is one, and it's a spec type.
+				// Remove the ID field if there is one, and it's not a status type.
 				// The expectation is that these resources must be created through
 				// their parent, so you won't ever use the ID field
-				if !typedCtx.name.RepresentsStatusType() {
+				if !ctx.name.IsStatus() {
 					it = it.WithoutSpecificProperties("Id")
 				}
+
 				return astmodel.OrderedIdentityVisitOfObjectType(this, it, ctx)
 			}
 
 			// If this resource has any properties that are flagged as misbehaving embedded resources, we have to skip
 			// pruning that property
-			if detailsCollection, ok := e.resourcesWhichOwnSubresourceLifecycle[typedCtx.resource]; ok {
+			if detailsCollection, ok := e.resourcesWhichOwnSubresourceLifecycle[ctx.resource]; ok {
 				for _, details := range detailsCollection {
-					if details.propertyType == typedCtx.name {
+					if details.propertyType == ctx.name {
 						return astmodel.OrderedIdentityVisitOfObjectType(this, it, ctx)
 					}
 				}
 			}
 
-			if typedCtx.depth <= 1 || !it.IsResource() {
+			if ctx.depth <= 1 || !it.IsResource() {
 				// Avoid removing top level Spec
 				return astmodel.OrderedIdentityVisitOfObjectType(this, it, ctx)
 			}
 
-			if subResources, ok := e.resourceToSubresourceMap[getResourceKey(typedCtx.resource)]; ok {
+			if subResources, ok := e.resourceToSubresourceMap[getResourceKey(ctx.resource)]; ok {
 				isSubresource := it.IsResource() && it.Resources() != nil && subResources.ContainsAny(it.Resources())
-				if subResources.Contains(typedCtx.name) || isSubresource {
+				if subResources.Contains(ctx.name) || isSubresource {
 					it = astmodel.EmptyObjectType // Remove this object
 					return it, nil
 				}
 			}
 
-			var keep []*astmodel.PropertyDefinition
-			it.Properties().ForEach(func(def *astmodel.PropertyDefinition) {
-				if def.HasName("Id") {
-					keep = append(keep, def)
-				}
-			})
+			id, ok := it.Property("Id")
+			it = it.WithoutProperties()
+			if ok {
+				it = it.WithProperties(id)
+			}
 
-			it = it.WithoutProperties().WithProperties(keep...)
 			return astmodel.OrderedIdentityVisitOfObjectType(this, it, ctx)
 		},
 	}.Build()
@@ -193,11 +196,12 @@ func (e EmbeddedResourceRemover) makeEmbeddedResourceRemovalTypeVisitor() astmod
 	return visitor
 }
 
-func (e EmbeddedResourceRemover) newResourceRemovalTypeWalker(visitor astmodel.TypeVisitor, def astmodel.TypeDefinition) *astmodel.TypeWalker {
+func (e EmbeddedResourceRemover) newResourceRemovalTypeWalker(
+	visitor astmodel.TypeVisitor[resourceRemovalVisitorContext],
+	def astmodel.TypeDefinition,
+) *astmodel.TypeWalker[resourceRemovalVisitorContext] {
 	typeWalker := astmodel.NewTypeWalker(e.definitions, visitor)
-	typeWalker.AfterVisit = func(original astmodel.TypeDefinition, updated astmodel.TypeDefinition, ctx interface{}) (astmodel.TypeDefinition, error) {
-		typedCtx := ctx.(resourceRemovalVisitorContext)
-
+	typeWalker.AfterVisit = func(original astmodel.TypeDefinition, updated astmodel.TypeDefinition, ctx resourceRemovalVisitorContext) (astmodel.TypeDefinition, error) {
 		if !astmodel.TypeEquals(original.Name(), updated.Name()) {
 			panic(fmt.Sprintf("Unexpected name mismatch during type walk: %q -> %q", original.Name(), updated.Name()))
 		}
@@ -212,18 +216,18 @@ func (e EmbeddedResourceRemover) newResourceRemovalTypeWalker(visitor astmodel.T
 		// A particular type may be used in multiple contexts in the same resource, or in multiple contexts in different resources. Since the pruning we are
 		// doing is context specific, a single type may end up with multiple shapes after pruning. In order to cater for this possibility we generate a
 		// unique name below and then collapse unneeded uniqueness away with simplifyTypeNames.
-		var newName astmodel.TypeName
+		var newName astmodel.InternalTypeName
 		var embeddedName embeddedResourceTypeName
 		exists := false
 		for count := 0; ; count++ {
 			embeddedName = embeddedResourceTypeName{
 				original: original.Name(),
-				context:  typedCtx.resource.Name(),
+				context:  ctx.resource.Name(),
 				suffix:   e.typeSuffix,
 				count:    count,
 			}
 			newName = embeddedName.ToTypeName()
-			existing, ok := typedCtx.modifiedDefinitions[newName]
+			existing, ok := ctx.modifiedDefinitions[newName]
 			if !ok {
 				break
 			}
@@ -239,15 +243,13 @@ func (e EmbeddedResourceRemover) newResourceRemovalTypeWalker(visitor astmodel.T
 		updated = updated.WithName(newName)
 		updated = updated.WithType(flaggedType)
 		if !exists {
-			typedCtx.modifiedDefinitions.Add(updated)
+			ctx.modifiedDefinitions.Add(updated)
 		}
-
-		klog.V(5).Infof("Updating %q to %q", original.Name(), updated.Name())
 
 		return updated, nil
 	}
 
-	typeWalker.ShouldRemoveCycle = func(def astmodel.TypeDefinition, ctx interface{}) (bool, error) {
+	typeWalker.ShouldRemoveCycle = func(def astmodel.TypeDefinition, ctx resourceRemovalVisitorContext) (bool, error) {
 		ot, ok := astmodel.AsObjectType(def.Type())
 		if !ok {
 			return false, nil
@@ -267,19 +269,25 @@ func (e EmbeddedResourceRemover) newResourceRemovalTypeWalker(visitor astmodel.T
 		// Sometimes these resource-like things are promoted to real resources in future APIs as in the case of Subnet in the 2017-06-01
 		// API version.
 		if isTypeResourceLookalike(def.Type()) {
-			klog.V(5).Infof("Type %q is a resource lookalike", def.Name())
 			return true, nil
 		}
 
 		return false, nil // Leave other cycles for now
 	}
 
-	typeWalker.MakeContext = func(it astmodel.TypeName, ctx interface{}) (interface{}, error) {
-		if ctx == nil {
-			return resourceRemovalVisitorContext{resource: def.Name(), depth: 0, modifiedDefinitions: make(astmodel.TypeDefinitionSet)}, nil
+	typeWalker.MakeContext = func(
+		it astmodel.InternalTypeName,
+		ctx resourceRemovalVisitorContext,
+	) (resourceRemovalVisitorContext, error) {
+		if ctx.resource.IsEmpty() {
+			return resourceRemovalVisitorContext{
+				resource:            def.Name(),
+				depth:               0,
+				modifiedDefinitions: make(astmodel.TypeDefinitionSet),
+			}, nil
 		}
-		typedCtx := ctx.(resourceRemovalVisitorContext)
-		return typedCtx.WithMoreDepth().WithName(it), nil
+
+		return ctx.WithMoreDepth().WithName(it), nil
 	}
 
 	return typeWalker
@@ -288,19 +296,18 @@ func (e EmbeddedResourceRemover) newResourceRemovalTypeWalker(visitor astmodel.T
 func findResourceSubResources(definitions astmodel.TypeDefinitionSet) map[resourceKey]astmodel.TypeNameSet {
 	result := make(map[resourceKey]astmodel.TypeNameSet)
 
-	resources := astmodel.FindResourceDefinitions(definitions)
-	for _, def := range resources {
+	for _, def := range definitions.AllResources() {
 		resource, ok := astmodel.AsResourceType(def.Type())
 		if !ok {
 			// Shouldn't be possible to get here
 			panic(fmt.Sprintf("resource was somehow not a resource: %q", def.Name()))
 		}
 
-		if resource.Owner() == nil {
+		if resource.Owner().IsEmpty() {
 			continue
 		}
 
-		owner := *resource.Owner()
+		owner := resource.Owner()
 		ownerKey := getResourceKey(owner)
 		if result[ownerKey] == nil {
 			result[ownerKey] = astmodel.NewTypeNameSet()
@@ -338,8 +345,11 @@ func isObjectResourceLookalike(o *astmodel.ObjectType) bool {
 	return hasRequiredProperties
 }
 
-func findResourcesEmbeddedInParent(configuration *config.Configuration, defs astmodel.TypeDefinitionSet) (map[astmodel.TypeName]astmodel.TypeName, error) {
-	result := make(map[astmodel.TypeName]astmodel.TypeName)
+func findResourcesEmbeddedInParent(
+	configuration *config.Configuration,
+	defs astmodel.TypeDefinitionSet,
+) (astmodel.TypeAssociation, error) {
+	result := make(astmodel.TypeAssociation)
 
 	var errs []error
 	for name, def := range defs {
@@ -348,26 +358,22 @@ func findResourcesEmbeddedInParent(configuration *config.Configuration, defs ast
 			continue
 		}
 
-		parentResource, err := configuration.ObjectModelConfiguration.LookupResourceEmbeddedInParent(name)
-		if err != nil {
-			if config.IsNotConfiguredError(err) {
-				// $isResource is not configured, skip this object
-				continue
-			}
-
-			// If something else went wrong, keep details
-			errs = append(errs, err)
+		parentResource, ok := configuration.ObjectModelConfiguration.ResourceEmbeddedInParent.Lookup(name)
+		if !ok {
+			// Not configured, nothing to do
 			continue
 		}
 
 		// Perform some validation that this annotation makes sense before we accept it
 		if !objectType.IsResource() {
-			errs = append(errs, errors.Errorf("%s is not labelled as a resource, so cannot be a resource embedded in a parent", name))
+			errs = append(errs, eris.Errorf("%s is not labelled as a resource, so cannot be a resource embedded in a parent", name))
 			continue
 		}
+
 		parentTypeName := name.WithName(parentResource)
 		if !defs.Contains(parentTypeName) {
-			errs = append(errs, errors.Errorf("cannot find %s parent %s", name, parentTypeName))
+			err := eris.Errorf("in package %s cannot find %s parent %s", name.InternalPackageReference(), name.Name(), parentTypeName.Name())
+			errs = append(errs, err)
 			continue
 		}
 
@@ -381,7 +387,7 @@ func findResourcesEmbeddedInParent(configuration *config.Configuration, defs ast
 	}
 
 	// Ensure that all the $isResource properties were used
-	err = configuration.ObjectModelConfiguration.VerifyResourceEmbeddedInParentConsumed()
+	err = configuration.ObjectModelConfiguration.ResourceEmbeddedInParent.VerifyConsumed()
 	if err != nil {
 		return nil, err
 	}
@@ -394,8 +400,8 @@ type resourceKey struct {
 	group string
 }
 
-func getResourceKey(name astmodel.TypeName) resourceKey {
-	group, _ := name.PackageReference.GroupVersion()
+func getResourceKey(name astmodel.InternalTypeName) resourceKey {
+	group := name.InternalPackageReference().Group()
 
 	return resourceKey{
 		group: group,

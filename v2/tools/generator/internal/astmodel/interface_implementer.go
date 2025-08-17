@@ -10,7 +10,9 @@ import (
 	"sort"
 
 	"github.com/dave/dst"
+	"github.com/rotisserie/eris"
 	"golang.org/x/exp/maps"
+	kerrors "k8s.io/apimachinery/pkg/util/errors"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 )
@@ -62,9 +64,9 @@ func (i InterfaceImplementer) References() TypeNameSet {
 
 func (i InterfaceImplementer) AsDeclarations(
 	codeGenerationContext *CodeGenerationContext,
-	typeName TypeName,
+	typeName InternalTypeName,
 	_ []string,
-) []dst.Decl {
+) ([]dst.Decl, error) {
 	// interfaces must be ordered by name for deterministic output
 	// (We sort them directly to skip future lookups)
 	interfaces := make([]*InterfaceImplementation, 0, len(i.interfaces))
@@ -73,7 +75,12 @@ func (i InterfaceImplementer) AsDeclarations(
 	}
 
 	sort.Slice(interfaces, func(i int, j int) bool {
-		return interfaces[i].Name().name < interfaces[j].Name().name
+		// If the names are the same, differentiate based on pkgname
+		if interfaces[i].Name().Name() == interfaces[j].Name().Name() {
+			return interfaces[i].Name().PackageReference().PackageName() < interfaces[j].Name().PackageReference().PackageName()
+		}
+
+		return interfaces[i].Name().Name() < interfaces[j].Name().Name()
 	})
 
 	result := make([]dst.Decl, 0, len(interfaces))
@@ -85,13 +92,26 @@ func (i InterfaceImplementer) AsDeclarations(
 			return functions[i].Name() < functions[j].Name()
 		})
 
+		var errs []error
 		for _, f := range functions {
-			decl := generateMethodDeclForFunction(typeName, f, codeGenerationContext)
+			decl, err := generateMethodDeclForFunction(typeName, f, codeGenerationContext)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+
 			result = append(result, decl)
+		}
+
+		if len(errs) > 0 {
+			return nil, eris.Wrapf(
+				kerrors.NewAggregate(errs),
+				"generating declarations for interface %s",
+				iface.name.Name())
 		}
 	}
 
-	return result
+	return result, nil
 }
 
 func (i InterfaceImplementer) Equals(other InterfaceImplementer, overrides EqualityOverrides) bool {
@@ -127,7 +147,7 @@ func (i InterfaceImplementer) generateInterfaceImplAssertion(
 	iface *InterfaceImplementation,
 	typeName TypeName,
 ) dst.Decl {
-	ifacePackageName, err := codeGenerationContext.GetImportedPackageName(iface.name.PackageReference)
+	ifacePackageName, err := codeGenerationContext.GetImportedPackageName(iface.name.PackageReference())
 	if err != nil {
 		panic(err)
 	}
@@ -150,14 +170,14 @@ func (i InterfaceImplementer) generateInterfaceImplAssertion(
 			&dst.ValueSpec{
 				Type: astbuilder.Selector(
 					dst.NewIdent(ifacePackageName),
-					iface.name.name),
+					iface.name.Name()),
 				Names: []*dst.Ident{
 					dst.NewIdent("_"),
 				},
 				Values: astbuilder.Expressions(
 					astbuilder.AddrOf(
 						&dst.CompositeLit{
-							Type: dst.NewIdent(typeName.name),
+							Type: dst.NewIdent(typeName.Name()),
 						})),
 			},
 		},

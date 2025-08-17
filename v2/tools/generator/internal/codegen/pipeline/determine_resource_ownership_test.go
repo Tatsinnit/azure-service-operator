@@ -11,22 +11,27 @@ import (
 	"github.com/onsi/gomega"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
+	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/config"
 )
 
-var pr astmodel.PackageReference = astmodel.MakeLocalPackageReference("prefix", "group", "v", "20000101")
+var pr astmodel.InternalPackageReference = astmodel.MakeLocalPackageReference("prefix", "group", "v", "20000101")
 
 func Test_FindChildren_ResourceDoesNotOwnItself(t *testing.T) {
 	t.Parallel()
 
 	g := gomega.NewWithT(t)
 
+	cfg := config.NewConfiguration()
 	resources := make(astmodel.TypeDefinitionSet)
 
 	ownerType := astmodel.NewResourceType(nil, nil).WithARMURI("/resources/owner")
-	ownerName := astmodel.MakeTypeName(pr, "Owner")
-	resources.Add(astmodel.MakeTypeDefinition(ownerName, ownerType))
+	ownerName := astmodel.MakeInternalTypeName(pr, "Owner")
+	owner := astmodel.MakeTypeDefinition(ownerName, ownerType)
+	resources.Add(owner)
 
-	children := findChildren(ownerType, ownerName, resources)
+	stage := newOwnershipStage(cfg, resources)
+
+	children := stage.findChildren(owner)
 	g.Expect(children).To(gomega.BeEmpty())
 }
 
@@ -35,17 +40,21 @@ func Test_FindChildren_ResourceOwnsChild(t *testing.T) {
 
 	g := gomega.NewWithT(t)
 
+	cfg := config.NewConfiguration()
 	resources := make(astmodel.TypeDefinitionSet)
 
 	ownerType := astmodel.NewResourceType(nil, nil).WithARMURI("/resources/owner")
-	ownerName := astmodel.MakeTypeName(pr, "Owner")
-	resources.Add(astmodel.MakeTypeDefinition(ownerName, ownerType))
+	ownerName := astmodel.MakeInternalTypeName(pr, "Owner")
+	owner := astmodel.MakeTypeDefinition(ownerName, ownerType)
+	resources.Add(owner)
 
 	childType := astmodel.NewResourceType(nil, nil).WithARMURI("/resources/owner/subresources/child")
-	childName := astmodel.MakeTypeName(pr, "Child")
-	resources.Add(astmodel.MakeTypeDefinition(childName, childType))
+	childName := astmodel.MakeInternalTypeName(pr, "Child")
+	child := astmodel.MakeTypeDefinition(childName, childType)
+	resources.Add(child)
 
-	children := findChildren(ownerType, ownerName, resources)
+	stage := newOwnershipStage(cfg, resources)
+	children := stage.findChildren(owner)
 	g.Expect(children).To(gomega.ConsistOf(childName))
 }
 
@@ -54,17 +63,21 @@ func Test_FindChildren_ResourceOwnsChildWhenNameParametersAreDifferent(t *testin
 
 	g := gomega.NewWithT(t)
 
+	cfg := config.NewConfiguration()
 	resources := make(astmodel.TypeDefinitionSet)
 
 	ownerType := astmodel.NewResourceType(nil, nil).WithARMURI("/resources/{name}")
-	ownerName := astmodel.MakeTypeName(pr, "Owner")
-	resources.Add(astmodel.MakeTypeDefinition(ownerName, ownerType))
+	ownerName := astmodel.MakeInternalTypeName(pr, "Owner")
+	owner := astmodel.MakeTypeDefinition(ownerName, ownerType)
+	resources.Add(owner)
 
 	childType := astmodel.NewResourceType(nil, nil).WithARMURI("/resources/{otherName}/subresources/child")
-	childName := astmodel.MakeTypeName(pr, "Child")
-	resources.Add(astmodel.MakeTypeDefinition(childName, childType))
+	childName := astmodel.MakeInternalTypeName(pr, "Child")
+	child := astmodel.MakeTypeDefinition(childName, childType)
+	resources.Add(child)
 
-	children := findChildren(ownerType, ownerName, resources)
+	stage := newOwnershipStage(cfg, resources)
+	children := stage.findChildren(owner)
 	g.Expect(children).To(gomega.ConsistOf(childName))
 }
 
@@ -73,17 +86,21 @@ func Test_FindChildren_ResourceOwnsChildWhenNameIsDefault(t *testing.T) {
 
 	g := gomega.NewWithT(t)
 
+	cfg := config.NewConfiguration()
 	resources := make(astmodel.TypeDefinitionSet)
 
 	ownerType := astmodel.NewResourceType(nil, nil).WithARMURI("/resources/default")
-	ownerName := astmodel.MakeTypeName(pr, "Owner")
-	resources.Add(astmodel.MakeTypeDefinition(ownerName, ownerType))
+	ownerName := astmodel.MakeInternalTypeName(pr, "Owner")
+	owner := astmodel.MakeTypeDefinition(ownerName, ownerType)
+	resources.Add(owner)
 
 	childType := astmodel.NewResourceType(nil, nil).WithARMURI("/resources/default/subresources/child")
-	childName := astmodel.MakeTypeName(pr, "Child")
-	resources.Add(astmodel.MakeTypeDefinition(childName, childType))
+	childName := astmodel.MakeInternalTypeName(pr, "Child")
+	child := astmodel.MakeTypeDefinition(childName, childType)
+	resources.Add(child)
 
-	children := findChildren(ownerType, ownerName, resources)
+	stage := newOwnershipStage(cfg, resources)
+	children := stage.findChildren(owner)
 	g.Expect(children).To(gomega.ConsistOf(childName))
 }
 
@@ -92,17 +109,21 @@ func Test_FindChildren_ResourceDoesNotOwnGrandChild(t *testing.T) {
 
 	g := gomega.NewWithT(t)
 
+	cfg := config.NewConfiguration()
 	resources := make(astmodel.TypeDefinitionSet)
 
 	ownerType := astmodel.NewResourceType(nil, nil).WithARMURI("/resources/owner")
-	ownerName := astmodel.MakeTypeName(pr, "Owner")
-	resources.Add(astmodel.MakeTypeDefinition(ownerName, ownerType))
+	ownerName := astmodel.MakeInternalTypeName(pr, "Owner")
+	owner := astmodel.MakeTypeDefinition(ownerName, ownerType)
+	resources.Add(owner)
 
 	grandChildType := astmodel.NewResourceType(nil, nil).WithARMURI("/resources/owner/subresources/child/subsubresources/grandchild")
-	grandChildName := astmodel.MakeTypeName(pr, "GrandChild")
-	resources.Add(astmodel.MakeTypeDefinition(grandChildName, grandChildType))
+	grandChildName := astmodel.MakeInternalTypeName(pr, "GrandChild")
+	grandChild := astmodel.MakeTypeDefinition(grandChildName, grandChildType)
+	resources.Add(grandChild)
 
-	children := findChildren(ownerType, ownerName, resources)
+	stage := newOwnershipStage(cfg, resources)
+	children := stage.findChildren(owner)
 	g.Expect(children).To(gomega.BeEmpty())
 }
 
@@ -111,16 +132,20 @@ func Test_FindChildren_ResourceDoesNotOwnExtendedVersionOfName(t *testing.T) {
 
 	g := gomega.NewWithT(t)
 
+	cfg := config.NewConfiguration()
 	resources := make(astmodel.TypeDefinitionSet)
 
 	ownerType := astmodel.NewResourceType(nil, nil).WithARMURI("/resources/owner")
-	ownerName := astmodel.MakeTypeName(pr, "Owner")
-	resources.Add(astmodel.MakeTypeDefinition(ownerName, ownerType))
+	ownerName := astmodel.MakeInternalTypeName(pr, "Owner")
+	owner := astmodel.MakeTypeDefinition(ownerName, ownerType)
+	resources.Add(owner)
 
 	grandChildType := astmodel.NewResourceType(nil, nil).WithARMURI("/resources/ownerLonger")
-	grandChildName := astmodel.MakeTypeName(pr, "GrandChild")
-	resources.Add(astmodel.MakeTypeDefinition(grandChildName, grandChildType))
+	grandChildName := astmodel.MakeInternalTypeName(pr, "GrandChild")
+	grandChild := astmodel.MakeTypeDefinition(grandChildName, grandChildType)
+	resources.Add(grandChild)
 
-	children := findChildren(ownerType, ownerName, resources)
+	stage := newOwnershipStage(cfg, resources)
+	children := stage.findChildren(owner)
 	g.Expect(children).To(gomega.BeEmpty())
 }

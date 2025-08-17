@@ -6,7 +6,11 @@
 package storage
 
 import (
-	"github.com/pkg/errors"
+	"bytes"
+	"io"
+	"os"
+
+	"github.com/rotisserie/eris"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astmodel"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/config"
@@ -16,20 +20,20 @@ import (
 // For each group (e.g. microsoft.storage or microsoft.batch) we have a separate subgraph of directed conversions
 type ConversionGraph struct {
 	configuration *config.ObjectModelConfiguration
-	subGraphs     map[string]*GroupConversionGraph
+	subGraphs     map[string]*GroupConversionGraph // Map of group name to subgraph
 }
 
-// LookupTransition looks for a link and find out where it ends, given the starting reference.
-// Returns the end and true if it's found, or nil and false if not.
-func (graph *ConversionGraph) LookupTransition(ref astmodel.PackageReference) (astmodel.PackageReference, bool) {
+// LookupTransition accepts a type name and looks up the transition to the next version in the graph
+// Returns the next version and true if it's found, or an empty type name and false if not.
+func (graph *ConversionGraph) LookupTransition(name astmodel.InternalTypeName) astmodel.InternalTypeName {
 	// Expect to get either a local or a storage reference, not an external one
-	group, _ := ref.GroupVersion()
+	group := name.InternalPackageReference().Group()
 	subgraph, ok := graph.subGraphs[group]
 	if !ok {
-		return nil, false
+		return astmodel.InternalTypeName{}
 	}
 
-	return subgraph.LookupTransition(ref)
+	return subgraph.LookupTransition(name)
 }
 
 // FindNextType returns the type name of the next closest type on the path to the hub type.
@@ -38,56 +42,86 @@ func (graph *ConversionGraph) LookupTransition(ref astmodel.PackageReference) (a
 // If the name passed in is for the hub type for the given resource, no next type will be found.
 // This is used to identify the next type needed for property assignment functions, and is a building block for
 // identification of hub definitions.
-func (graph *ConversionGraph) FindNextType(name astmodel.TypeName, definitions astmodel.TypeDefinitionSet) (astmodel.TypeName, error) {
-
-	// Look for a next type with the same name
-	nextType, stepsUntilNextFound := graph.searchForMatchingType(name, definitions)
-
-	// Look for a renamed type with the same name
-	renamedType, stepsUntilRenameFound, err := graph.searchForRenamedType(name, definitions)
-	if err != nil {
-		return astmodel.EmptyTypeName, errors.Wrapf(err, "searching for type renamed from %s", name)
+func (graph *ConversionGraph) FindNextType(
+	name astmodel.InternalTypeName,
+	definitions astmodel.TypeDefinitionSet,
+) (astmodel.InternalTypeName, error) {
+	group := name.InternalPackageReference().Group()
+	subgraph, ok := graph.subGraphs[group]
+	if !ok {
+		return astmodel.InternalTypeName{}, nil
 	}
 
+	// Look for a next type with the same name
+	nextType := subgraph.LookupTransition(name)
+
+	// Look for a renamed type with the same name
+	renamedType, err := subgraph.searchForRenamedType(name, definitions)
+	if err != nil {
+		// Something went wrong
+		return astmodel.InternalTypeName{}, eris.Wrapf(err, "searching for type renamed from %s", name)
+	}
+
+	// If we have no renamed type, return the next type (if any)
 	if renamedType.IsEmpty() {
-		// No rename active, return whatever we found from the original name
 		return nextType, nil
 	}
 
+	// If we have no next type, return the renamed type (if any)
 	if nextType.IsEmpty() {
-		// Have a renamed type, and no match on original name, return the renamed type
 		return renamedType, nil
 	}
 
-	if stepsUntilRenameFound < stepsUntilNextFound {
-		// Rename matched earlier type, no conflict
-		// (this might happen if a different type is introduced with the same name in a later version, or if a type
-		// is renamed in one version and renamed back in a later one)
-		return renamedType, nil
+	// We have both a next type and a renamed type
+	// If they're in the same package, the type-rename has been configured on the wrong version (or the wrong type)
+	if nextType.PackageReference().Equals(renamedType.PackageReference()) {
+		return astmodel.InternalTypeName{},
+			eris.Errorf("confict between rename of %s to %s and existing type %s", name, renamedType, nextType)
 	}
 
-	// We have a conflict between the renamed type and the original type
-	return astmodel.EmptyTypeName, errors.Errorf(
-		"configured rename of %s to %s conflicts with existing type %s",
-		name,
-		renamedType,
-		nextType)
+	// Now we need to return the earlier type. We can do this by comparing the package paths.
+	// (this be needed if a different type is introduced with the same name in a later version, or if a type is
+	// renamed in one version and renamed back in a later one)
+	if astmodel.ComparePathAndVersion(
+		nextType.PackageReference().ImportPath(),
+		renamedType.PackageReference().ImportPath()) < 0 {
+		// nextType came first
+		return nextType, nil
+	}
+
+	return renamedType, nil
 }
 
 // FindHub returns the type name of the hub resource, given the type name of one of the resources that is
 // persisted using that hub type. This is done by following links in the conversion graph until we either reach the end
 // or we find that a newer version of the type does not exist.
-// Returns the hub type and true if found; an empty name and false if not.
-func (graph *ConversionGraph) FindHub(name astmodel.TypeName, definitions astmodel.TypeDefinitionSet) (astmodel.TypeName, error) {
+// Returns the hub type if found; an empty name and an error if not.
+func (graph *ConversionGraph) FindHub(
+	name astmodel.InternalTypeName,
+	definitions astmodel.TypeDefinitionSet,
+) (astmodel.InternalTypeName, error) {
+	result, _, err := graph.FindHubAndDistance(name, definitions)
+	return result, err
+}
+
+// FindHubAndDistance returns the type name of the hub resource, given the type name of one of the resources that is
+// persisted using that hub type. This is done by following links in the conversion graph until we either reach the end
+// or we find that a newer version of the type does not exist.
+// Returns the distance if a hub was found, an error if not.
+func (graph *ConversionGraph) FindHubAndDistance(
+	name astmodel.InternalTypeName,
+	definitions astmodel.TypeDefinitionSet,
+) (astmodel.InternalTypeName, int, error) {
 	// Look for the hub step
 	result := name
+	distance := 0
 	for {
 		hub, err := graph.FindNextType(result, definitions)
 		if err != nil {
-			return astmodel.EmptyTypeName, errors.Wrapf(
-				err,
-				"finding hub for %s",
-				name)
+			return astmodel.InternalTypeName{},
+				-1,
+				eris.Wrapf(err, "finding hub for %s",
+					name)
 		}
 
 		if hub.IsEmpty() {
@@ -95,9 +129,37 @@ func (graph *ConversionGraph) FindHub(name astmodel.TypeName, definitions astmod
 		}
 
 		result = hub
+		distance++
 	}
 
-	return result, nil
+	return result, distance, nil
+}
+
+// FindInPath searches the path from the specified type name to the hub for a type name that matches the predicate,
+// returning either the first matching type, and true, or an empty type name and false.
+func (graph *ConversionGraph) FindInPath(
+	start astmodel.InternalTypeName,
+	predicate func(name astmodel.InternalTypeName) bool,
+) (astmodel.InternalTypeName, bool) {
+	current := start
+	for {
+		if predicate(current) {
+			return current, true
+		}
+
+		next, err := graph.FindNextType(current, nil)
+		if err != nil {
+			break
+		}
+
+		if next.IsEmpty() {
+			break
+		}
+
+		current = next
+	}
+
+	return astmodel.InternalTypeName{}, false
 }
 
 // TransitionCount returns the number of transitions in the graph
@@ -118,12 +180,13 @@ func (graph *ConversionGraph) TransitionCount() int {
 // definitions is a set of known definitions.
 func (graph *ConversionGraph) FindNextProperty(
 	ref astmodel.PropertyReference,
-	definitions astmodel.TypeDefinitionSet) (astmodel.PropertyReference, error) {
+	definitions astmodel.TypeDefinitionSet,
+) (astmodel.PropertyReference, error) {
 	nextType, err := graph.FindNextType(ref.DeclaringType(), definitions)
 	if err != nil {
 		// Something went wrong
 		return astmodel.EmptyPropertyReference,
-			errors.Wrapf(err, "finding next property for %s", ref)
+			eris.Wrapf(err, "finding next property for %s", ref)
 	}
 
 	// If no next type, no next property either
@@ -131,83 +194,43 @@ func (graph *ConversionGraph) FindNextProperty(
 		return astmodel.EmptyPropertyReference, nil
 	}
 
-	//TODO: property renaming support goes here (when implemented)
+	// TODO: property renaming support goes here (when implemented)
 
 	return astmodel.MakePropertyReference(nextType, ref.Property()), nil
 }
 
-// searchForRenamedType walks through the conversion graph looking for a match to our configured rename.
-// If no rename is configured, returns an empty type name and -1. If one is configured, either returns the found type
-// and the number of steps, or an error if not found.
-// We only look for type renames if we're starting from a storage package - no renames are needed when converting
-// from an api package to a storage package because the storage versions are always synthesized with an exact match
-// on type names.
-func (graph *ConversionGraph) searchForRenamedType(
-	name astmodel.TypeName,
-	definitions astmodel.TypeDefinitionSet) (astmodel.TypeName, int, error) {
-
-	// No configuration, or we're not looking at a storage package
-	if graph.configuration == nil || !astmodel.IsStoragePackageReference(name.PackageReference) {
-		return astmodel.EmptyTypeName, -1, nil
-	}
-
-	rename, err := graph.configuration.LookupNameInNextVersion(name)
-	if config.IsNotConfiguredError(err) {
-		// We found no configured rename, nothing to do
-		return astmodel.EmptyTypeName, -1, nil
-	}
-
-	// If we have any error other than a NotConfiguredError, something went wrong, and we must abort
+func (graph *ConversionGraph) String(group string, kind string) (string, error) {
+	var content bytes.Buffer
+	err := graph.WriteTo(group, kind, &content)
 	if err != nil {
-		return astmodel.EmptyTypeName, -1, errors.Wrapf(
-			err,
-			"finding next type after %s",
-			name)
+		return "", eris.Wrapf(err, "writing conversion graph")
 	}
 
-	newType := name.WithName(rename)
-	result, stepsUntilFound := graph.searchForMatchingType(newType, definitions)
+	return content.String(), nil
+}
 
-	// Validity check on the type-rename to verify that it specifies a type that exists.
-	// If we didn't find the type, the configured rename is invalid
-	if result.IsEmpty() {
-		group, version := name.PackageReference.GroupVersion()
-		return astmodel.EmptyTypeName, -1, errors.Errorf(
-			"rename of %s/%s/%s invalid because no type with name %s was found in any later version",
-			group,
-			version,
-			name.Name(),
-			rename)
+func (graph *ConversionGraph) SaveTo(group string, kind string, filename string) error {
+	file, err := os.Create(filename)
+	if err != nil {
+		return eris.Wrapf(err, "creating %s", filename)
 	}
 
-	return result, stepsUntilFound, nil
+	defer file.Close()
+
+	err = graph.WriteTo(group, kind, file)
+	if err != nil {
+		return eris.Wrapf(err, "writing conversion graph to %s", filename)
+	}
+
+	return nil
 }
 
-// searchForMatchingType walks through the conversion graph looking for the next type with the same name as the one
-// provided. Returns the found type and the number of steps, if found; otherwise returns an empty type name and -1.
-func (graph *ConversionGraph) searchForMatchingType(
-	typeName astmodel.TypeName,
-	definitions astmodel.TypeDefinitionSet) (astmodel.TypeName, int) {
-	return graph.searchForMatchingTypeImpl(typeName, definitions, 1)
-}
-
-// searchForMatchingTypeImpl is the recursive implementation of searchForMatchingType.
-func (graph *ConversionGraph) searchForMatchingTypeImpl(
-	typeName astmodel.TypeName,
-	definitions astmodel.TypeDefinitionSet,
-	stepsSoFar int) (astmodel.TypeName, int) {
-	nextPackage, ok := graph.LookupTransition(typeName.PackageReference)
+// WriteTo gives a debug dump of the conversion graph for a particular type name
+func (graph *ConversionGraph) WriteTo(group string, kind string, writer io.Writer) error {
+	subgraph, ok := graph.subGraphs[group]
 	if !ok {
-		// No next package, we've fallen off the end of the graph
-		return astmodel.EmptyTypeName, -1
+		return nil
 	}
 
-	nextTypeName := astmodel.MakeTypeName(nextPackage, typeName.Name())
-	if definitions.Contains(nextTypeName) {
-		// Found the type we're looking for
-		return nextTypeName, stepsSoFar
-	}
-
-	// Keep walking to find the next type, if any
-	return graph.searchForMatchingTypeImpl(nextTypeName, definitions, stepsSoFar+1)
+	return subgraph.WriteTo(kind, writer)
 }

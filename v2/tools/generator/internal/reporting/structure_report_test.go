@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+
 	"github.com/sebdah/goldie/v2"
 )
 
@@ -25,7 +26,7 @@ func TestDebugReport_GeneratesExpectedOutput(t *testing.T) {
 	var buf bytes.Buffer
 	g.Expect(r.SaveTo(&buf)).To(Succeed())
 
-	gold.Assert(t, t.Name(), []byte(buf.String()))
+	gold.Assert(t, t.Name(), buf.Bytes())
 }
 
 func addNodes(r *StructureReport, name string, count int) {
@@ -35,7 +36,7 @@ func addNodes(r *StructureReport, name string, count int) {
 
 	for i := 0; i < count; i++ {
 		n := fmt.Sprintf("%s.%d", name, i+1)
-		nested := r.Addf(n)
+		nested := r.Addf("%s", n)
 		addNodes(nested, n, count-i-1)
 	}
 }

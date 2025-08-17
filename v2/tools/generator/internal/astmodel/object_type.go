@@ -11,8 +11,9 @@ import (
 	"strings"
 
 	"github.com/dave/dst"
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 	"golang.org/x/exp/slices"
+	kerrors "k8s.io/apimachinery/pkg/util/errors"
 
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/astbuilder"
 	"github.com/Azure/azure-service-operator/v2/tools/generator/internal/readonly"
@@ -30,8 +31,10 @@ type ObjectType struct {
 }
 
 // for want of a better place for this to live…
-var AdditionalPropertiesPropertyName = PropertyName("AdditionalProperties")
-var AdditionalPropertiesJsonName = "additionalProperties"
+var (
+	AdditionalPropertiesPropertyName = PropertyName("AdditionalProperties")
+	AdditionalPropertiesJSONName     = "additionalProperties"
+)
 
 // EmptyObjectType is an empty object
 var EmptyObjectType = NewObjectType()
@@ -60,7 +63,15 @@ func NewObjectType() *ObjectType {
 	}
 }
 
-func (objectType *ObjectType) AsDeclarations(codeGenerationContext *CodeGenerationContext, declContext DeclarationContext) []dst.Decl {
+func (objectType *ObjectType) AsDeclarations(
+	codeGenerationContext *CodeGenerationContext,
+	declContext DeclarationContext,
+) ([]dst.Decl, error) {
+	objectTypeExpr, err := objectType.AsTypeExpr(codeGenerationContext)
+	if err != nil {
+		return nil, eris.Wrapf(err, "creating object type expression for %s", declContext.Name)
+	}
+
 	declaration := &dst.GenDecl{
 		Decs: dst.GenDeclDecorations{
 			NodeDecs: dst.NodeDecs{
@@ -72,7 +83,7 @@ func (objectType *ObjectType) AsDeclarations(codeGenerationContext *CodeGenerati
 		Specs: []dst.Spec{
 			&dst.TypeSpec{
 				Name: dst.NewIdent(declContext.Name.Name()),
-				Type: objectType.AsType(codeGenerationContext),
+				Type: objectTypeExpr,
 			},
 		},
 	}
@@ -80,21 +91,42 @@ func (objectType *ObjectType) AsDeclarations(codeGenerationContext *CodeGenerati
 	astbuilder.AddUnwrappedComments(&declaration.Decs.Start, declContext.Description)
 	AddValidationComments(&declaration.Decs.Start, declContext.Validations)
 
-	result := []dst.Decl{declaration}
-	result = append(result, objectType.InterfaceImplementer.AsDeclarations(codeGenerationContext, declContext.Name, nil)...)
-	result = append(result, objectType.generateMethodDecls(codeGenerationContext, declContext.Name)...)
-	return result
+	interfaceDeclarations, err := objectType.InterfaceImplementer.AsDeclarations(codeGenerationContext, declContext.Name, nil)
+	if err != nil {
+		return nil, eris.Wrapf(err, "generating interface declarations for %s", declContext.Name)
+	}
+
+	methodDeclarations, err := objectType.generateMethodDecls(codeGenerationContext, declContext.Name)
+	if err != nil {
+		return nil, eris.Wrapf(err, "generating method declarations for %s", declContext.Name)
+	}
+
+	result := astbuilder.Declarations(
+		declaration,
+		interfaceDeclarations,
+		methodDeclarations)
+
+	return result, nil
 }
 
-func (objectType *ObjectType) generateMethodDecls(codeGenerationContext *CodeGenerationContext, typeName TypeName) []dst.Decl {
+func (objectType *ObjectType) generateMethodDecls(
+	codeGenerationContext *CodeGenerationContext,
+	typeName InternalTypeName,
+) ([]dst.Decl, error) {
 	funcs := objectType.Functions()
 	result := make([]dst.Decl, 0, len(funcs))
+	var errs []error
 	for _, f := range funcs {
-		funcDef := generateMethodDeclForFunction(typeName, f, codeGenerationContext)
+		funcDef, err := generateMethodDeclForFunction(typeName, f, codeGenerationContext)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+
 		result = append(result, funcDef)
 	}
 
-	return result
+	return result, kerrors.NewAggregate(errs)
 }
 
 func defineField(fieldName string, fieldType dst.Expr, tag string) *dst.Field {
@@ -213,15 +245,32 @@ func (objectType *ObjectType) HasFunctionWithName(name string) bool {
 }
 
 // AsType implements Type for ObjectType
-func (objectType *ObjectType) AsType(codeGenerationContext *CodeGenerationContext) dst.Expr {
+func (objectType *ObjectType) AsTypeExpr(codeGenerationContext *CodeGenerationContext) (dst.Expr, error) {
 	embedded := objectType.EmbeddedProperties()
 	fields := make([]*dst.Field, 0, len(embedded))
+	var errs []error
 	for _, f := range embedded {
-		fields = append(fields, f.AsField(codeGenerationContext))
+		field, err := f.AsField(codeGenerationContext)
+		if err != nil {
+			errs = append(errs, eris.Wrapf(err, "creating field for embedded property %s", f.PropertyName()))
+			continue
+		}
+
+		fields = append(fields, field)
 	}
 
 	for _, f := range objectType.properties.AsSlice() {
-		fields = append(fields, f.AsField(codeGenerationContext))
+		field, err := f.AsField(codeGenerationContext)
+		if err != nil {
+			errs = append(errs, eris.Wrapf(err, "creating field for property %s", f.PropertyName()))
+			continue
+		}
+
+		fields = append(fields, field)
+	}
+
+	if len(errs) > 0 {
+		return nil, eris.Wrapf(kerrors.NewAggregate(errs), "creating fields for object type")
 	}
 
 	if len(fields) > 0 {
@@ -234,7 +283,7 @@ func (objectType *ObjectType) AsType(codeGenerationContext *CodeGenerationContex
 		Fields: &dst.FieldList{
 			List: fields,
 		},
-	}
+	}, nil
 }
 
 // AsZero renders an expression for the "zero" value of the type
@@ -461,7 +510,7 @@ func (objectType *ObjectType) checkEmbeddedProperty(property *PropertyDefinition
 	// There are certain expectations about the shape of the provided property -- namely
 	// it must not have a name and its Type must be TypeName or Optional[TypeName]
 	if property.PropertyName() != "" {
-		return errors.Errorf("embedded property name must be empty, was: %s", property.PropertyName())
+		return eris.Errorf("embedded property name must be empty, was: %s", property.PropertyName())
 	}
 
 	return nil
@@ -514,7 +563,7 @@ func (objectType *ObjectType) WithInterface(iface *InterfaceImplementation) *Obj
 
 // WithoutInterface removes the specified interface
 func (objectType *ObjectType) WithoutInterface(name TypeName) *ObjectType {
-	if _, found := objectType.InterfaceImplementer.FindInterface(name); !found {
+	if _, found := objectType.FindInterface(name); !found {
 		return objectType
 	}
 
@@ -582,12 +631,12 @@ func extractEmbeddedTypeName(t Type) (TypeName, error) {
 		return typeName, nil
 	}
 
-	return TypeName{}, errors.Errorf("embedded property type must be TypeName, was: %T", t)
+	return nil, eris.Errorf("embedded property type must be TypeName, was: %T", t)
 }
 
 // WriteDebugDescription adds a description of the current type to the passed builder.
 // builder receives the full description, including nested types.
-func (objectType *ObjectType) WriteDebugDescription(builder *strings.Builder, currentPackage PackageReference) {
+func (objectType *ObjectType) WriteDebugDescription(builder *strings.Builder, currentPackage InternalPackageReference) {
 	if objectType == nil {
 		builder.WriteString("<nilObject>")
 	} else {

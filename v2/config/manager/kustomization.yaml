@@ -1,8 +1,10 @@
+namePrefix: azureserviceoperator-
+
 resources:
 - manager.yaml
 - manager_metrics_service.yaml
+- manager_pod_disruption_budget.yaml
 
 patchesStrategicMerge:
-  - manager_auth_proxy_patch.yaml
   - manager_image_patch.yaml
   - manager_pull_policy.yaml

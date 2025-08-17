@@ -8,10 +8,9 @@ package testcommon
 import (
 	"context"
 
+	"github.com/rotisserie/eris"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	"github.com/pkg/errors"
 
 	"github.com/Azure/azure-service-operator/v2/internal/config"
 	"github.com/Azure/azure-service-operator/v2/pkg/genruntime"
@@ -30,18 +29,18 @@ func NewKubeContext(
 	useEnvTest bool,
 	recordReplay bool,
 	region string,
-	nameConfig *ResourceNameConfig) (KubeGlobalContext, error) {
-
+	nameConfig *ResourceNameConfig,
+) (KubeGlobalContext, error) {
 	var err error
 	var cbtc BaseTestContextFactory
-	var cleanup func() = func() {}
+	cleanup := func() {}
 
 	if useEnvTest {
 		cbtc, cleanup = createEnvtestContext()
 	} else {
 		cbtc, err = createRealKubeContext()
 		if err != nil {
-			return KubeGlobalContext{}, errors.Wrap(err, "unable to create real Kube context")
+			return KubeGlobalContext{}, eris.Wrap(err, "unable to create real Kube context")
 		}
 	}
 
@@ -68,5 +67,17 @@ type KubeBaseTestContext struct {
 func AsOwner(obj client.Object) *genruntime.KnownResourceReference {
 	return &genruntime.KnownResourceReference{
 		Name: obj.GetName(),
+	}
+}
+
+func AsKubernetesOwner(obj client.Object) *genruntime.KubernetesOwnerReference {
+	return &genruntime.KubernetesOwnerReference{
+		Name: obj.GetName(),
+	}
+}
+
+func AsARMIDOwner(id string) *genruntime.KnownResourceReference {
+	return &genruntime.KnownResourceReference{
+		ARMID: id,
 	}
 }

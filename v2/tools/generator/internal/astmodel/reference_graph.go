@@ -8,7 +8,7 @@ package astmodel
 import (
 	"fmt"
 
-	"github.com/pkg/errors"
+	"github.com/rotisserie/eris"
 )
 
 // ReferenceGraph is a graph of references between types
@@ -17,27 +17,26 @@ type ReferenceGraph struct {
 	references map[TypeName]TypeNameSet
 }
 
-// CollectARMSpecAndStatusDefinitions returns a TypeNameSet of all of the ARM spec definitions
+// CollectARMSpecAndStatusDefinitions returns a TypeNameSet of all the ARM spec definitions
 // passed in.
 func CollectARMSpecAndStatusDefinitions(definitions TypeDefinitionSet) TypeNameSet {
-	findARMType := func(t Type) (TypeName, error) {
-		name, ok := t.(TypeName)
+	findARMType := func(t Type) (InternalTypeName, error) {
+		name, ok := AsInternalTypeName(t)
 		if !ok {
-			return TypeName{}, errors.Errorf("type was not of type TypeName, instead %T", t)
+			return InternalTypeName{}, eris.Errorf("type was not of type InternalTypeName, instead %T", t)
 		}
 
 		armName := CreateARMTypeName(name)
 
 		if _, ok = definitions[armName]; !ok {
-			return TypeName{}, errors.Errorf("couldn't find ARM type %q", armName)
+			return InternalTypeName{}, eris.Errorf("couldn't find ARM type %q", armName)
 		}
 
 		return armName, nil
 	}
 
 	armSpecAndStatus := NewTypeNameSet()
-	resources := FindResourceDefinitions(definitions)
-	for _, def := range resources {
+	for _, def := range definitions.AllResources() {
 		resourceType, ok := AsResourceType(def.Type())
 		if !ok {
 			panic(fmt.Sprintf("FindResourceDefinitions() returned non-resource type %T", def.Type()))
@@ -59,6 +58,22 @@ func CollectARMSpecAndStatusDefinitions(definitions TypeDefinitionSet) TypeNameS
 		}
 	}
 	return armSpecAndStatus
+}
+
+func CollectUnreferencedTypes(defs TypeDefinitionSet) TypeNameSet {
+	referencedTypes := NewTypeNameSet()
+	for _, def := range defs {
+		referencedTypes.AddAll(def.References())
+	}
+
+	result := NewTypeNameSet()
+	for name := range defs {
+		if !referencedTypes.Contains(name) {
+			result.Add(name)
+		}
+	}
+
+	return result
 }
 
 // MakeReferenceGraph produces a new ReferenceGraph with the given roots and references
@@ -83,9 +98,14 @@ func MakeReferenceGraphWithRoots(roots TypeNameSet, definitions TypeDefinitionSe
 // MakeReferenceGraphWithResourcesAsRoots produces a ReferenceGraph for the given set of
 // definitions, where the Resource types (and their ARM spec/status) are the roots.
 func MakeReferenceGraphWithResourcesAsRoots(definitions TypeDefinitionSet) ReferenceGraph {
+	// Every resource type is a root
 	resources := FindResourceDefinitions(definitions)
-	armSpecAndStatus := CollectARMSpecAndStatusDefinitions(definitions)
-	roots := SetUnion(resources.Names(), armSpecAndStatus)
+	roots := resources.Names()
+
+	// Use any remaining unreferenced objects as roots too.
+	// These will be ARM Spec & Status types, plus compat types
+	unreferenced := CollectUnreferencedTypes(definitions)
+	roots.AddAll(unreferenced)
 
 	return MakeReferenceGraphWithRoots(roots, definitions)
 }
@@ -99,7 +119,7 @@ func (reachable ReachableTypes) Contains(tn TypeName) bool {
 
 // Connected returns the set of types that are reachable from the roots.
 func (c ReferenceGraph) Connected() ReachableTypes {
-	// Make a non-nil set so we don't need to worry about passing it back down.
+	// Make a non-nil set, so we don't need to worry about passing it back down.
 	connectedTypes := make(ReachableTypes)
 	for node := range c.roots {
 		c.collectTypes(0, node, connectedTypes)

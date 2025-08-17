@@ -58,6 +58,47 @@ func TestComparePackageReferencesByPathAndVersion(t *testing.T) {
 		{"Preview comes before storage", "1preview", "1storage", -1},
 		{"Preview comes before grape", "1preview", "1grape", -1},
 		{"Preview comes before GA", "1preview", "1", -1},
+		// Version tests
+		{"v2.0.0 comes before v2.1.0", "v2.0.0", "v2.1.0", -1},
+		{"v2.1.0 comes before v2.9.0", "v2.1.0", "v2.9.0", -1},
+		{"v2.9.0 comes before v2.10.0", "v2.9.0", "v2.10.0", -1},
+		// Consistency tests, based on observed weirdness
+		{
+			"Storage subpackage comes after base",
+			"github.com/Azure/azure-service-operator/testing/person/v20200101",
+			"github.com/Azure/azure-service-operator/testing/person/v20200101/storage",
+			-1,
+		},
+		{
+			"Storage subpackage comes after base, reversed",
+			"github.com/Azure/azure-service-operator/testing/person/v20200101/storage",
+			"github.com/Azure/azure-service-operator/testing/person/v20200101",
+			1,
+		},
+		{
+			"Storage subpackage comes after preview base",
+			"github.com/Azure/azure-service-operator/testing/person/v20211231preview",
+			"github.com/Azure/azure-service-operator/testing/person/v20211231preview/storage",
+			-1,
+		},
+		{
+			"Storage subpackage comes after preview base, reversed",
+			"github.com/Azure/azure-service-operator/testing/person/v20211231preview/storage",
+			"github.com/Azure/azure-service-operator/testing/person/v20211231preview",
+			1,
+		},
+		{
+			"Storage subpackage of non-preview comes after preview base",
+			"github.com/Azure/azure-service-operator/testing/person/v20211231/storage",
+			"github.com/Azure/azure-service-operator/testing/person/v20211231preview",
+			1,
+		},
+		{
+			"Storage subpackage of non-preview comes after preview base, reversed",
+			"github.com/Azure/azure-service-operator/testing/person/v20211231preview",
+			"github.com/Azure/azure-service-operator/testing/person/v20211231/storage",
+			-1,
+		},
 	}
 
 	for _, c := range cases {
@@ -130,7 +171,7 @@ func TestContainsPreviewVersionLabel(t *testing.T) {
 			t.Parallel()
 			g := NewGomegaWithT(t)
 
-			isPreview := containsPreviewVersionLabel(c.version)
+			isPreview := ContainsPreviewVersionLabel(c.version)
 			g.Expect(isPreview).To(Equal(c.expected))
 		})
 	}

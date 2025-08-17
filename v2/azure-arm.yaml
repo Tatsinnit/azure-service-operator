@@ -22,15 +22,16 @@ pipeline: azure
 
 supportedResourcesReport:
   # Path is relative to the module path, above
-  outputPath: ../docs/hugo/content/reference/_index.md
+  outputFolder: ../docs/hugo/content/reference/
   # Path to documentation fragments to inject into the report
   fragmentPath: ../docs/v2/azure/supported-resources
   # resourceUrlTemplate is the template for generating URLs to the API docs for our resources
   # the placeholders {group} {version} and {kind} are supported.
-  resourceUrlTemplate: "https://azure.github.io/azure-service-operator/reference/{group}/{version}/#{group}.azure.com/{version}.{kind}"
+  resourceUrlTemplate: '{{< relref "/reference/{group}/{version}#{kind}" >}}'
   # resourcePath is a template used for generating a file path for checking whether docs for a resource have been generated
   # specified relative to the directory of outputPath, and supports the same placeholders
   resourcePathTemplate: "{group}/{version}.md"
+  currentRelease: v2.14.0
 
 #
 # These filters are used early in the processing pipeline. 
@@ -41,11 +42,14 @@ supportedResourcesReport:
 # Filters are applied in document order, with the earliest matching filter being applied for each type.
 #
 typeFilters:
-
+  - action: include
+    group: containerservice
+    because: We know ContainerService doesn't do weird things with their previews
+    
   - action: include
     group: servicebus
-    version: v*20210101preview
-    because: We want to export this particular preview version
+    version: v*20210101preview;v*20221001preview
+    because: We want to export these particular preview versions
 
   - action: include
     group: keyvault
@@ -55,6 +59,11 @@ typeFilters:
   - action: include
     group: dbforpostgresql
     version: v*20220120preview
+    because: We want to export this particular preview version
+
+  - action: include
+    group: dbforpostgresql
+    version: v*20230601preview
     because: We want to export this particular preview version
 
   - action: include
@@ -71,6 +80,26 @@ typeFilters:
     group: managedidentity
     version: v*20220131preview
     because: We want to export this particular preview version
+
+  - action: include
+    group: apimanagement
+    version: v*20230501preview
+    because: This version of APIM is created in a matter of minutes
+
+  - action: include
+    group: insights
+    version: v*20210501preview
+    because: We're using DiagnosticSetting from this.
+
+# Latest non-preview version is not supported, see https://github.com/Azure/bicep-types-az/issues/2185
+  - action: include
+    group: insights
+    version: v*20240101preview
+    because: We need ScheduledQueryRules from this.
+
+  - action: include
+    group: common
+    because: we need these for common resource properties
 
   - action: prune
     version: '*preview'
@@ -111,13 +140,66 @@ typeFilters:
     group: costmanagement
     because: QueryFilter is a self-referential, infinitely recursive type. We can't easily unroll it and controller-gen doesn't support recursive types
 
+#
+# When loading resources, it's possible for us to end up with a name collision if two resources 
+# specify similar URLs (we derive the names from the structure of the ARM URL specified for the 
+# resource). This is an extremely rare event.
+# Because this happens so early in the operation of our pipeline, our existing mechanisms for 
+# disambiguation and renaming can't be applied, so we special case them here.
+#
+# This is configuration of last resort; in most cases, you should use the objectModelConfiguration
+# to rename things as it is much more flexible.
+#
+typeLoaderRenames:
+  - group: insights
+    name: DiagnosticSetting
+    scope: Location
+    renameTo: SubscriptionDiagnosticSetting
+
 # Exclusions for packages that currently produce types including AnyType.
 # TODO: get rid of these, either by chasing the teams generating
 # weird json or by handling them differently in the generator.
 anyTypePackages:
 
+
+# 
+# Type Transformers are used to make precision edits to the object model we've loaded from the 
+# original OpenAPI/Swagger files.
+#
+# We need these because there is great variability in how different product groups define their 
+# APIs, and because some of the common constructs that are used can't be directly handled in Go.
+#
+# The available properties fall into two groups - the first used to select which type needs to be 
+# transformed, and the second to define the required transformation.
+#
+# Selection Properties
+#
+# group    - select types or properties in the specified group or groups
+# version  - select types or properties in the specified version or version(s)
+# name     - select types or properties with the specified name or name(s)
+# property - select properties with the given name or name(s)
+#
+# All of these properties are matchers:
+#
+# o They allow multiple values, semicolon (;) separated
+# o They allow glob style wildcards '*' and '?'
+#
+# ifType - matches a type or property only if it has the specified type
+#
+# target - defines a new type to replace the existing
+# remove - specifies a property should be deleted
+#
+# Every TypeTransformer has a 'because' property which should be used to explain (in human terms)
+# what's being done and why.
+#
+# Some of the transformations below have been commented to illustrate use.
+#
 typeTransformers:
-  # Deal with stuff that exists on ARM resources but doesn't make sense on CRDs
+  # 
+  # Match the property 'Tags' on any type,
+  # but only if it has the type 'map[string]any'
+  # and replace it with 'map[string]string'
+  #
   - name: "*"
     property: Tags
     ifType: 
@@ -134,125 +216,267 @@ typeTransformers:
           name: string
     because: Tags is defined as map[string]interface{} when it should be map[string]string
 
+  #
+  # In the group 'cache', 
+  # remove the property'RedisProperties_Status.AccessKeys'
+  # because it's only populated in a response from Azure 
+  #
+
+  - group: kubernetesconfiguration
+    name: Extension_Properties_Spec
+    property: Statuses
+    remove: true
+    because: This property should be marked readonly in Swagger
+
   - group: cache
     name: RedisProperties_Status
     property: AccessKeys
     remove: true
     because: AccessKeys is only set on response to PUT/CREATE, but we fill out Status via GET so this field is always empty. It also contains secrets we wouldn't want to expose in status anyway.
 
-  # Deal with UserAssignedIdentities, which we don't currently handle correctly
-  # TODO: For now we prune these, see https://github.com/Azure/azure-service-operator/issues/2528 for supporting them better
-  - name: BatchAccountIdentity
-    group: batch
-    property: UserAssignedIdentities
-    remove: true
-    because: We don't handle UserAssignedIdentities properly currently. See https://github.com/Azure/azure-service-operator/issues/2528
-  - name: Identity
-    group: servicebus
-    property: UserAssignedIdentities
-    remove: true
-    because: We don't handle UserAssignedIdentities properly currently. See https://github.com/Azure/azure-service-operator/issues/2528
-  - name: Identity
-    group: storage
-    property: UserAssignedIdentities
-    remove: true
-    because: We don't handle UserAssignedIdentities properly currently. See https://github.com/Azure/azure-service-operator/issues/2528
-  - name: ManagedServiceIdentity
-    group: documentdb
-    property: UserAssignedIdentities
-    remove: true
-    because: We don't handle UserAssignedIdentities properly currently. See https://github.com/Azure/azure-service-operator/issues/2528
-  - group: compute
-    name: VirtualMachineScaleSetIdentity;VirtualMachineScaleSetIdentity_Status;VirtualMachineIdentity;VirtualMachineIdentity_Status
-    property: UserAssignedIdentities
-    remove: true
-    because: We don't handle UserAssignedIdentities properly currently. See https://github.com/Azure/azure-service-operator/issues/2528
-  - group: eventhub
-    name: Identity
-    property: UserAssignedIdentities
-    remove: true
-    because: We don't handle UserAssignedIdentities properly currently. See https://github.com/Azure/azure-service-operator/issues/2528
-  - group: dbformysql
-    name: Identity
-    property: UserAssignedIdentities
-    remove: true
-    because: We don't handle UserAssignedIdentities properly currently. See https://github.com/Azure/azure-service-operator/issues/2528
-  - group: containerinstance
-    name: ContainerGroupIdentity
-    property: UserAssignedIdentities
-    remove: true
-    because: We don't handle UserAssignedIdentities properly currently. See https://github.com/Azure/azure-service-operator/issues/2528
-  - group: appconfiguration
-    name: ResourceIdentity
-    property: UserAssignedIdentities
-    remove: true
-    because: We don't handle UserAssignedIdentities properly currently. See https://github.com/Azure/azure-service-operator/issues/2528
+  #
+  # In the group 'keyvault',
+  # on the types 'VaultProperties_CreateMode` and 'VaultProperties_CreateMode_STATUS'
+  # redefine the property 'CreateMode' to be an enum with four values
+  #
+  - group: keyvault
+    name: VaultProperties_CreateMode;VaultProperties_CreateMode_STATUS 
+    target:
+      enum:
+        base: string
+        values:
+          - default
+          - recover
+          - createOrRecover
+          - purgeThenCreate
+    because: "We're adding two new options to allow KeyVaults to goal-seek"
 
-  # Properties that should have been marked as ReadOnly in the Swagger
-  - name: Namespace_Properties_Spec
-    group: eventhub
+  #
+  # In the group 'insights'
+  # rename the object 'AutoscaleSetting' 
+  # to 'AutoscaleSettingProperties'.
+  #
+  # Using object: true so that we don't rename the 
+  # resource `Autoscalesetting` (with a lowercase 's') as well
+  #
+  - group: insights
+    name: AutoscaleSetting
+    renameTo: AutoscaleSettingProperties
+    ifType:
+      object: true
+    because: We want to use the name `AutoscaleSetting` (with a capital 'S') for the resource
+
+  # 
+  # In the group 'apimanagement', 
+  # remove the properties 'ApiManagementServiceProperties.PrivateEndpointConnections', 'AuthorizationContractProperties.Error' and 'AuthorizationContractProperties.Status'
+  # 
+  - group: apimanagement
+    name: ApiManagementServiceProperties
     property: PrivateEndpointConnections
     remove: true
     because: This property should be marked readonly
-  - name: PrivateEndpointConnectionProperties
-    group: eventhub
-    property: PrivateLinkServiceConnectionState
+
+  - group: apimanagement
+    name: AuthorizationContractProperties
+    property: Error
     remove: true
-    because: This property should be marked readonly
-  - name: PrivateEndpointConnectionProperties
-    group: eventhub
-    property: ProvisioningState
+    because: This property should be marked readonly in Swagger
+
+  - group: apimanagement
+    name: AuthorizationContractProperties
+    property: Status
+    remove: true
+    because: This property should be marked readonly in Swagger
+
+  # The Kusto API doesn't permit creating a ReadyOnlyFollowingDatabase directly, so we prune it from the Database resource
+  - group: kusto
+    name: Clusters_Database_Spec;Database_STATUS
+    property: ReadOnlyFollowing
+    remove: true
+    because: This database kind that cannot be created directly
+  #
+  # In the group 'compute',
+  # remove the enum restrictions from the vmSize property of VirtualMachine
+  #
+  - group: compute
+    name: HardwareProfile
+    property: VmSize
+    target:
+      name: string
+      optional: true
+    because: The enum restrictions on this type are incomplete. Making this type a plain string to allow for growth of supported VM sizes without a new API version
+
+  - group: compute
+    name: VirtualMachineScaleSetExtensionProperties;VirtualMachineExtensionProperties
+    property: ProtectedSettings
+    ifType:
+      map:
+        key:
+          name: string
+        value:
+          name: any
+    target:
+      map:
+        key:
+          name: string
+        value:
+          name: string
+    because: ProtectedSettings is defined as map[string]v1.JSON and it should be a marked as secret.
+
+  - group: compute
+    name: VirtualMachineScaleSetExtensionProperties_STATUS;VirtualMachineExtensionProperties_STATUS
+    property: ProtectedSettings
+    remove: true
+    because: We don't want Protected settings on status
+
+  # 
+  # In the group 'dataprotection',
+  # from the type 'BackupVault_Spec',
+  # Remove the properties 'Etag' and 'SystemData'
+  #
+  - group: dataprotection
+    name: BackupVault_Spec
+    property: Etag;SystemData
+    remove: true
+    because: These properties should be marked readonly in Swagger
+
+  - group: dataprotection
+    name: BackupVaults_BackupPolicy_Spec
+    property: SystemData
+    remove: true
+    because: This property should be marked readonly in Swagger
+
+  - group: dataprotection
+    name: BackupVaults_BackupInstance_Spec
+    property: SystemData
+    remove: true
+    because: This property should be marked readonly in Swagger
+
+  - name: IotHub_Spec
+    group: devices
+    property: Etag
     remove: true
     because: This property should be marked readonly
 
+  # 
+  # In the group 'devices',
+  # from the types 'SharedAccessSignatureAuthorizationRule'
+  # and 'SharedAccessSignatureAuthorizationRule_STATUS'
+  # remove the properties 'PrimaryKey' and 'SecondaryKey'
+  #
+  - group: devices
+    name: SharedAccessSignatureAuthorizationRule;SharedAccessSignatureAuthorizationRule_STATUS
+    property: PrimaryKey;SecondaryKey
+    remove: true
+    because: This property should be marked readonly
+
+  #
+  # In the group 'eventhub',
+  # from the type 'Namespace_Properties_Spec'
+  # remove the property 'PrivateEndpointConnections'
+  #
+  - group: eventhub
+    name: Namespace_Properties_Spec
+    property: PrivateEndpointConnections
+    remove: true
+    because: This property should be marked readonly
+
+  #
+  # In the group 'eventhub'
+  # from the object 'PrivateEndpointConnectionProperties'
+  # remove the properties 'PrivateLinkServiceConnectionState' and 'ProvisioningState'
+  #
+  - group: eventhub
+    name: PrivateEndpointConnectionProperties
+    property: PrivateLinkServiceConnectionState; ProvisioningState
+    remove: true
+    because: These properties should be marked readonly
+
+  - group: kubernetesconfiguration
+    name: FluxConfiguration_Spec;FluxConfiguration_STATUS
+    property: SystemData
+    remove: true
+    because: These properties should be marked readonly
+
+  - group: machinelearningservices
+    name: EncryptionProperty
+    property: Status
+    remove: true
+    because: it is supposed to be marked ReadOnly in Swagger
+
+  - group: machinelearningservices
+    name: SystemCreatedStorageAccount
+    property: ArmResourceId
+    remove: true
+    because: it is supposed to be marked ReadOnly in Swagger
+
+  - group: machinelearningservices
+    name: SystemCreatedAcrAccount
+    property: ArmResourceId
+    remove: true
+    because: it is supposed to be marked ReadOnly in Swagger
+
   - group: network
-    version: "*"
     name: RouteTables_Route_Spec
     property: Type
     remove: true
     because: it is supposed to be marked ReadOnly in Swagger
+
   - group: network
-    version: "*"
     name: NetworkInterfaceIPConfiguration
     property: Type
     remove: true
     because: it is supposed to be marked ReadOnly in Swagger
+
   - group: network
-    version: "*"
     name: NetworkInterfacePropertiesFormat
     property: MigrationPhase
     remove: true
     because: it is supposed to be marked ReadOnly in Swagger
+
   - group: network
-    version: "*"
     name: PublicIPAddressPropertiesFormat
     property: MigrationPhase
     remove: true
     because: it is supposed to be marked ReadOnly in Swagger
+  
+  # 
+  # In the group 'network'
+  # remove the property 'Type'
+  # from the following four types
+  #
+  # - Delegation
+  # - NetworkSecurityGroups_SecurityRule_Spec
+  # - VirtualNetworks_Subnet_Spec
+  # - VirtualNetworks_VirtualNetworkPeering_Spec
+  #
   - group: network
-    version: "*"
-    name: NetworkSecurityGroups_SecurityRule_Spec
+    name: Delegation;NetworkSecurityGroups_SecurityRule_Spec;VirtualNetworks_Subnet_Spec;VirtualNetworks_VirtualNetworkPeering_Spec
     property: Type
     remove: true
-    because: it is supposed to be marked ReadOnly in Swagger
+    because: type is supposed to be marked ReadOnly in Swagger
+
+  # 
+  # In the group 'network'
+  # remove the property 'Etag'
+  # from the following nine types:
+  #
+  # - DnsZone_Spec
+  # - DnsZones_AAAA_Spec
+  # - DnsZones_CAA_Spec
+  # - DnsZones_CNAME_Spec
+  # - DnsZones_MX_Spec
+  # - DnsZones_NS_Spec
+  # - DnsZones_PTR_Spec
+  # - DnsZones_SRV_Spec
+  # - DnsZones_TXT_Spec
+  #
   - group: network
-    version: "*"
-    name: VirtualNetworks_Subnet_Spec
-    property: Type
+    name: DnsZone_Spec;DnsZones_AAAA_Spec;DnsZones_CAA_Spec;DnsZones_CNAME_Spec;DnsZones_MX_Spec;DnsZones_NS_Spec;DnsZones_PTR_Spec;DnsZones_SRV_Spec;DnsZones_TXT_Spec
+    property: Etag
     remove: true
-    because: it is supposed to be marked ReadOnly in Swagger
-  - group: network
-    version: "*"
-    name: VirtualNetworks_VirtualNetworkPeering_Spec
-    property: Type
-    remove: true
-    because: it is supposed to be marked ReadOnly in Swagger
-  - group: network
-    version: "*"
-    name: Delegation
-    property: Type
-    remove: true
-    because: it is supposed to be marked ReadOnly in Swagger
+    because: Etag is supposed to be marked ReadOnly in Swagger
+
   - group: network
     version: "*"
     name: Delegation
@@ -268,11 +492,42 @@ typeTransformers:
     remove: true
     because: We don't handle this very well right now, manually remove until TODO above has been done
 
+  - group: network
+    version: "*"
+    name: PrivateEndpointProperties
+    property: CustomDnsConfigs
+    remove: true
+    because: it is supposed to be marked ReadOnly in Swagger
+
+  - group: notificationhubs
+    name: NamespaceProperties
+    property: Status;ProvisioningState
+    remove: true
+    because: This property should be marked readonly
+
+  - group: notificationhubs
+    name: SharedAccessAuthorizationRuleProperties
+    property: PrimaryKey;SecondaryKey
+    remove: true
+    because: This property should be marked readonly
+
   - name: EventHubProperties;Namespaces_Eventhub_Properties_Spec
     group: eventhub
     property: Status
     remove: true
     because: These properties should be marked readonly
+
+  - group: redhatopenshift
+    name: OpenShiftClusterProperties
+    property: ProvisioningState
+    remove: true
+    because: This property should be marked readonly in Swagger
+
+  - group: search
+    name: DataPlaneAuthOptions
+    property: ApiKeyOnly
+    remove: true
+    because: We need a better handling for JSON # Discussion: https://github.com/Azure/azure-service-operator/pull/2916/files/93b06daa9549a91ac626e3241c5987b23b4087ac#r1179803300
 
   ## Deal with properties that should have been marked readOnly but weren't
 
@@ -294,20 +549,48 @@ typeTransformers:
     property: Status
     remove: true
     because: This property should have been marked readonly but wasn't.
+
+  - group: storage
+    name: NetworkRuleSet  # This type is subsequently flattened into NamespacesTopics_Spec
+    property: Bypass
+    target:
+      name: string
+      optional: true
+    because: The enum restrictions on this type are incomplete. Storage allows a,b,c but doesn't document that in the enum.
+
   - group: servicebus
     name: SBSubscriptionProperties  # This type is subsequently flattened into Namespaces_Topics_Subscription_Spec
     property: Status
     remove: true
     because: This property should have been marked readonly but wasn't.
+
   - group: documentdb
     name: Location  # This type is subsequently flattened into NamespacesTopics_Spec
     property: ProvisioningState
     remove: true
     because: This property should have been marked readonly but wasn't.
 
+  - group: documentdb
+    name: DatabaseAccount_Spec
+    property: CustomerManagedKeyStatus
+    remove: true
+    because: This property should have been marked readonly but wasn't.
+
+  - group: documentdb
+    name: MongoRoleDefinitionResource_STATUS # This type is subsequently flattened into MongoRoleDefinition_STATUS
+    property: Type
+    remove: true
+    because: This property is documented as a string but returned as an int. See https://github.com/Azure/azure-service-operator/issues/4559 and https://github.com/Azure/azure-rest-api-specs/issues/23062.
+
   - group: compute
     name: DiskProperties  # This type is subsequently flattened into Disks_Spec
     property: DiskState
+    remove: true
+    because: This property should have been marked readonly but wasn't.
+
+  - group: cognitiveservices
+    name: DeploymentProperties
+    property: CurrentCapacity
     remove: true
     because: This property should have been marked readonly but wasn't.
 
@@ -317,19 +600,28 @@ typeTransformers:
     property: Subnets
     remove: true
     because: This is an embedded resource
+
   - group: network
     name: VirtualNetworkPropertiesFormat_Status  # This type is subsequently flattened into VirtualNetwork_Status
     property: VirtualNetworkPeerings
     remove: true
     because: This is an embedded resource
+
   - group: network
     name: RouteTablePropertiesFormat_Status  # This type is subsequently flattened into RouteTable_Status
     property: Routes
     remove: true
     because: This is an embedded resource
+
   - group: network
     name: RouteTablePropertiesFormat_Status  # This type is subsequently flattened into RouteTable_Status
     property: Subnets
+    remove: true
+    because: This is an embedded resource
+
+  - group: network
+    name: NetworkSecurityGroupPropertiesFormat_Status  # This type is subsequently flattened into NetworkSecurityGroup_Status
+    property: SecurityRules
     remove: true
     because: This is an embedded resource
 
@@ -348,6 +640,26 @@ typeTransformers:
     property: Kind
     remove: true
     because: This shouldn't be here, it's supposed to be on the Properties type (and is already). They somehow accidentally duplicated it.
+
+  - group: signalrservice
+    name: SignalR_Replica_Spec
+    property: Sku
+    target: 
+      required: true
+    because: This property should be marked required in Swagger
+
+  - group: insights
+    name: Workbook_Spec
+    property: Etag
+    remove: true
+    because: This property should be marked readonly in Swagger
+
+  - group: insights
+    name: DataCollectionEndpointSpec
+    property: ImmutableId
+    remove: true
+    because: This property should be marked readonly in Swagger
+
 
 status:
 
@@ -376,6 +688,11 @@ status:
       # force the namespace here or it can fall foul of the sibling-name-collision test
       basePath: 'securityinsights/resource-manager/common',
       namespace: 'Microsoft.SecurityInsights'
+    },
+    {
+      # force the namespace here or it can fall foul of the sibling-name-collision test
+      basePath: 'synapse/common',
+      namespace: 'Microsoft.Synapse'
     },
   # the rest of the configuration below is copied from the ARM schema repo:
   # https://github.com/Azure/azure-resource-manager-schemas/blob/master/generator/autogenlist.ts
@@ -519,7 +836,24 @@ status:
 # All modifiers start with `$` in order to avoid clashes with ARM object and 
 # property names
 #
-# Available 'type' modifiers:
+# ===================
+#   Group modifiers
+# ===================
+#
+# $payloadType: <string>
+#     Specifies the type of the payload to generate for the group. This is used to compensate for 
+#     some Azure Resource Providers using PATCH semantics instead of PUT semantics for updates.
+#     We control this at the group level because RPs tend to be consistent across all their resources.
+#
+#     Valid values are:
+#     omitempty - only non-empty properties are included (default)
+#     explicitCollections - always include collections (serialized as null), even if empty; other properties only if specified.
+#     explicitEmptyCollections - always include collections (serialized as empty collections), even if empty; other properties only if specified.
+#     explicitProperties - always include all properties, even the empty ones.
+#
+# ==================
+#   Type modifiers
+# ==================
 #
 # $azureGeneratedSecrets: <array of strings>
 #     An array of names identifying the secrets generated by Azure which can be automatically
@@ -527,6 +861,14 @@ status:
 #     a property on operatorSpec.Secrets. Actual retrieval of the secrets must be manually
 #     implemented as an extension on the resource type in question.
 #     Only valid for resource types.
+#
+# $generatedConfigs: <map of string -> string>
+#     The key of the map is the name of the property to export, the value of the map is a json-path like expression
+#     to the property to export. Currently only $.<prop>.<prop> syntax is supported.
+#     Only valid for resources.
+#     Example:
+#         $generatedConfigs:
+#           BlobEndpoint: $.Status.PrimaryEndpoints.Blob
 #
 # $export: <bool>
 #     Requests that support for this resource type be generated.
@@ -540,10 +882,44 @@ status:
 #     Implies $export: true
 #     Only valid for resource types.
 #
+# $importable: <bool>
+#     Requests that support for asoctl to import this resource type be included
+#     in the generated code.
+#     If not specified, the default value is true.
+#     Only valid for resource types.
+#
+# $manualConfigs: <array of strings>
+#     An array of names identifying the properties which will be exported to config maps manually. Prefer $generatedConfigs
+#     if the property is on Status or otherwise accessible on the resource itself. $manualConfigs can be used
+#     to have more control over exactly what value goes into the exported config map, at the cost of needing to manually implement
+#     the config map export in a resource extension. BEWARE: If you include a property here but don't actually use it in
+#     a manually implemented resource extension, the $.Spec.OperatorSpec.ConfigMaps.<MyCustomConfigValue> field will do nothing
+#     and be ignored!
+#     Example:
+#         $manualConfigs:
+#           - MyCustomConfigValue
+#
 # $nameInNextVersion: <string>
 #     Gives the name this type has in the next version of the resource.
 #     Establishes a connection between the two types allowing for proper
 #     forward and backward conversion.
+#
+# $renameTo: <string>
+#     Changes the name of any type, allowing selective adjustments to make 
+#     names more idiomatic for Go and/or Kubernetes use.
+#
+#     For resource types, prefer $exportAs
+#     Note: using $export: + $renameTo: for a resource is not quite the same as
+#     using $exportAs because the renaming happens at a different stage of the
+#     pipeline.
+#
+#     If you have two names differing only by letter case, use a TypeTransform
+#     to selectively rename one of the types.
+#
+# $stripDocumentation: <bool>
+#     Strips documentation from the specified resource and all objects referenced by the resource
+#     recursively. Should not be used unless completely necessary - usually to reduce the size of
+#     a CRD to below the Kubernetes CRD size limit.
 #
 # $supportedFrom: <version>
 #     Gives the version number of the first release of ASO that provides 
@@ -565,13 +941,19 @@ status:
 #     the generator to prune these resources from all contexts except their creation context.
 #     A concrete example of this can be seen on LoadBalancer with "resources" like LoadBalancingRule.
 #
-# Available 'property' modifiers:
+# =======================
+#   Property modifiers
+# =======================
 #
-# $armReference: <bool>
-#     Indicates whether this property is an ARM reference to another resource. 
-#     Set to 'true' to confirm the property is an ARM reference.
-#     Set to 'false' to disable our heuristics if a property is incorrectly 
-#     identified as an ARM reference.
+# $description: <string>
+#     Overrides the property description with the provided value.
+#
+# $importConfigMapMode: <optional|required>
+#     Specifies that the property can be imported from a config map.
+#     Optional: The property may be specified as string or imported from a config map.
+#               To achieve this in a non-breaking way, a new property is added to the object living alongside
+#               the existing property. The new property is called <propName>FromConfig.
+#     Required: The property must be specified from a config map, it cannot be given as a raw string.
 #
 # $isSecret: <bool>
 #     Specifies that the property references a secret
@@ -586,6 +968,13 @@ status:
 #     Establishes a connection between the two properties allowing for proper
 #     forward and backward conversion.
 #
+# $referenceType: string
+#     Indicates whether this property is an ARM reference to another resource or some other kind 
+#     of reference.
+#  o  Set to 'arm' to confirm the property is an ARM reference.
+#  o  Set to 'simple' to indicate this is a simple value not requiring special handling. This is 
+#     used disable our heuristics if a property is incorrectly identified as an ARM reference.
+#
 # $resourceLifecycleOwnedByParent: <string>
 #     Specifies that the property references a misbehaving embedded resource, one whose parent
 #     resource owns the lifecycle of the child resource.
@@ -594,7 +983,300 @@ status:
 #     The value should be the name of the parent resource which owns the lifecycle of the
 #     sub-resource.
 #
+# $renameTo: <string>
+#     Changes the name of the property.
+#
+#     The name in the serialized ARM payload does NOT change. This only changes the name of the property
+#     in the ASO types. The shape serialized to ARM uses the original name.
+#
 objectModelConfiguration:
+  alertsmanagement:
+    2021-04-01:
+      SmartDetectorAlertRule:
+        $export: true
+        $supportedFrom: v2.11.0
+      AlertRuleProperties:
+        Scope:
+          $referenceType: arm
+      ActionGroupsInformation:
+        GroupIds:
+          $referenceType: arm
+      Detector:
+        Id:
+          $referenceType: simple
+    2023-03-01:
+      PrometheusRuleGroup:
+        $export: true
+        $supportedFrom: v2.8.0
+      PrometheusRuleGroupProperties:
+        Scopes:
+          $referenceType: arm
+      PrometheusRuleGroupAction:
+        ActionGroupId:
+          $referenceType: arm
+  apimanagement:
+    2022-08-01:
+      AdditionalLocation:
+        PublicIpAddressId:
+          $referenceType: arm
+      ApiCreateOrUpdateProperties:
+        ApiVersionSetId:
+          $referenceType: arm
+        SourceApiId:
+          $referenceType: arm
+      ApiVersionSetContractDetails:
+        Id: 
+          $referenceType: arm
+      ApiManagementServiceProperties:
+        PublicIpAddressId:
+          $referenceType: arm
+      AuthorizationAccessPolicyContractProperties:
+        TenantId:
+          $importConfigMapMode: optional
+        ObjectId:
+          $importConfigMapMode: optional
+      AuthorizationContractProperties:
+        Parameters:
+          $isSecret: true
+      AuthorizationProviderOAuth2GrantTypes:
+        AuthorizationCode:
+          $isSecret: true
+        ClientCredentials:
+          $isSecret: true
+      BackendContractProperties:
+        ResourceId:
+          $referenceType: arm
+      BackendProxyContract:
+        Password:
+          $isSecret: true
+      CertificateInformation:
+        Expiry:
+          $importConfigMapMode: optional
+        Subject:
+          $importConfigMapMode: optional
+        Thumbprint:
+          $importConfigMapMode: optional
+      CertificateConfiguration:
+        CertificatePassword:
+          $isSecret: true
+      HostnameConfiguration:
+        CertificatePassword:
+          $isSecret: true
+        IdentityClientId:
+          $importConfigMapMode: optional
+      KeyVaultContractCreateProperties:
+        IdentityClientId:
+          $importConfigMapMode: optional
+      Service:
+        $export: true
+        $supportedFrom: v2.4.0
+      Service_Api:
+        $exportAs: Api
+        $supportedFrom: v2.4.0
+      Service_ApiVersionSet:
+        $exportAs: ApiVersionSet
+        $supportedFrom: v2.4.0
+      Service_AuthorizationProvider:
+        $exportAs: AuthorizationProvider
+        $supportedFrom: v2.6.0
+      Service_AuthorizationProviders_Authorization:
+        $exportAs: AuthorizationProvidersAuthorization
+        $supportedFrom: v2.6.0
+      Service_AuthorizationProviders_Authorizations_AccessPolicy:
+        $exportAs: AuthorizationProvidersAuthorizationsAccessPolicy
+        $supportedFrom: v2.6.0
+      Service_Backend:
+        $exportAs: Backend
+        $supportedFrom: v2.4.0
+      Service_NamedValue:
+        $exportAs: NamedValue
+        $supportedFrom: v2.4.0
+      Service_Policy:
+        $exportAs: Policy
+        $supportedFrom: v2.4.0
+      Service_PolicyFragment:
+        $exportAs: PolicyFragment
+        $supportedFrom: v2.4.0
+      Service_Product:
+        $exportAs: Product
+        $supportedFrom: v2.4.0
+      Service_Products_Api:
+        $exportAs: ProductApi
+        $supportedFrom: v2.6.0
+      Service_Products_Policy:
+        $exportAs: ProductPolicy
+        $supportedFrom: v2.6.0
+      Service_Subscription:
+        $exportAs: Subscription
+        $supportedFrom: v2.4.0
+        $azureGeneratedSecrets:
+          - PrimaryKey
+          - SecondaryKey
+      SubscriptionCreateParameterProperties:
+        PrimaryKey:
+          $isSecret: true
+        SecondaryKey:
+          $isSecret: true
+        OwnerId:
+          $referenceType: arm
+      VirtualNetworkConfiguration:
+        SubnetResourceId:
+          $referenceType: arm
+    2023-05-01-preview:
+      AdditionalLocation:
+        PublicIpAddressId:
+          $referenceType: arm
+      ApiCreateOrUpdateProperties:
+        ApiVersionSetId:
+          $referenceType: arm
+        SourceApiId:
+          $referenceType: arm
+      ApiVersionSetContractDetails:
+        Id: 
+          $referenceType: arm
+      ApiManagementServiceProperties:
+        PublicIpAddressId:
+          $referenceType: arm
+      AuthorizationAccessPolicyContractProperties:
+        TenantId:
+          $importConfigMapMode: optional
+        ObjectId:
+          $importConfigMapMode: optional
+      AuthorizationContractProperties:
+        Parameters:
+          $isSecret: true
+      AuthorizationProviderOAuth2GrantTypes:
+        AuthorizationCode:
+          $isSecret: true
+        ClientCredentials:
+          $isSecret: true
+      BackendContractProperties:
+        ResourceId:
+          $referenceType: arm
+      BackendProxyContract:
+        Password:
+          $isSecret: true
+      CertificateInformation:
+        Expiry:
+          $importConfigMapMode: optional
+        Subject:
+          $importConfigMapMode: optional
+        Thumbprint:
+          $importConfigMapMode: optional
+      CertificateConfiguration:
+        CertificatePassword:
+          $isSecret: true
+      HostnameConfiguration:
+        CertificatePassword:
+          $isSecret: true
+        IdentityClientId:
+          $importConfigMapMode: optional
+      KeyVaultContractCreateProperties:
+        IdentityClientId:
+          $importConfigMapMode: optional
+      Service:
+        $export: true
+        $supportedFrom: v2.6.0
+      Service_Api:
+        $exportAs: Api
+        $supportedFrom: v2.6.0
+      Service_ApiVersionSet:
+        $exportAs: ApiVersionSet
+        $supportedFrom: v2.6.0
+      Service_AuthorizationProvider:
+        $exportAs: AuthorizationProvider
+        $supportedFrom: v2.6.0
+      Service_AuthorizationProviders_Authorization:
+        $exportAs: AuthorizationProvidersAuthorization
+        $supportedFrom: v2.6.0
+      Service_AuthorizationProviders_Authorizations_AccessPolicy:
+        $exportAs: AuthorizationProvidersAuthorizationsAccessPolicy
+        $supportedFrom: v2.6.0
+      Service_Backend:
+        $exportAs: Backend
+        $supportedFrom: v2.6.0
+      Service_NamedValue:
+        $exportAs: NamedValue
+        $supportedFrom: v2.6.0
+      Service_Policy:
+        $exportAs: Policy
+        $supportedFrom: v2.6.0
+      Service_PolicyFragment:
+        $exportAs: PolicyFragment
+        $supportedFrom: v2.6.0
+      Service_Product:
+        $exportAs: Product
+        $supportedFrom: v2.6.0
+      Service_Products_Api:
+        $exportAs: ProductApi
+        $supportedFrom: v2.6.0
+      Service_Products_Policy:
+        $exportAs: ProductPolicy
+        $supportedFrom: v2.6.0
+      Service_Subscription:
+        $exportAs: Subscription
+        $supportedFrom: v2.6.0
+        $azureGeneratedSecrets:
+          - PrimaryKey
+          - SecondaryKey
+      SubscriptionCreateParameterProperties:
+        PrimaryKey:
+          $isSecret: true
+        SecondaryKey:
+          $isSecret: true
+        OwnerId:
+          $referenceType: arm
+      VirtualNetworkConfiguration:
+        SubnetResourceId:
+          $referenceType: arm
+  app:
+    2024-03-01:
+      ContainerApp:
+        $export: true
+        $supportedFrom: v2.12.0
+        $generatedConfigs:
+          EventStreamEndpoint: $.Status.EventStreamEndpoint
+          Fqdn: $.Status.LatestRevisionFqdn
+      ContainerApps_AuthConfig:
+        $exportAs: AuthConfig
+        $supportedFrom: v2.12.0
+      RegistryCredentials:
+        passwordSecretRef:
+          $isSecret: false
+        Identity:
+          $referenceType: arm
+      ServiceBind:
+        ServiceId:
+          $referenceType: arm
+      Secret:
+        Identity:
+          $referenceType: arm
+      ContainerApp_Spec:
+        ManagedBy:
+          $referenceType: arm
+      ContainerApp_Properties_Spec:
+        EnvironmentId:
+          $referenceType: arm
+        ManagedEnvironmentId:
+          $referenceType: arm
+      CustomDomain:
+        CertificateId:
+          $referenceType: arm
+      OpenIdConnectConfig:
+        TokenEndpoint:
+          $isSecret: false
+      ManagedEnvironment:
+        $export: true
+        $supportedFrom: v2.12.0
+      VnetConfiguration:
+        InfrastructureSubnetId:
+          $referenceType: arm
+      Job:
+        $export: true
+        $supportedFrom: v2.12.0
+      Job_Properties_Spec:
+        EnvironmentId:
+          $referenceType: arm
   appconfiguration:
     2022-05-01:
       ConfigurationStore:
@@ -622,11 +1304,45 @@ objectModelConfiguration:
       RoleAssignment:
         $export: true
         $supportedFrom: v2.0.0-alpha.2
+        $defaultAzureName: false
+        $operatorSpecProperties:
+          - name: NamingConvention
+            type: string
+            description: The uuid generation technique to use for any role without an explicit AzureName. One of 'stable' or 'random'. <br> +kubebuilder:validation:Enum={"random","stable"}
       RoleAssignmentProperties:
+        DelegatedManagedIdentityResourceId:
+          $referenceType: arm 
         RoleDefinitionId:
-          $armReference: true
+          $referenceType: arm
         PrincipalId:
           $importConfigMapMode: optional
+    2022-04-01:
+      RoleAssignment:
+        $export: true
+        $supportedFrom: v2.4.0
+        $defaultAzureName: false
+        $operatorSpecProperties:
+          - name: NamingConvention
+            type: string
+            description: The uuid generation technique to use for any role without an explicit AzureName. One of 'stable' or 'random'. <br> +kubebuilder:validation:Enum={"random","stable"}
+      RoleAssignmentProperties:
+        DelegatedManagedIdentityResourceId:
+          $referenceType: arm
+        RoleDefinitionId:
+          $referenceType: arm
+        PrincipalId:
+          $importConfigMapMode: optional
+      RoleDefinition:
+        $export: true
+        $supportedFrom: v2.8.0
+        $defaultAzureName: false
+        $operatorSpecProperties:
+          - name: NamingConvention
+            type: string
+            description: The uuid generation technique to use for any role without an explicit AzureName. One of 'stable' or 'random'. <br> +kubebuilder:validation:Enum={"random","stable"}
+      RoleDefinitionProperties:
+        AssignableScopes:
+          $referenceType: arm
   batch:
     2021-01-01:
       BatchAccount:
@@ -643,6 +1359,10 @@ objectModelConfiguration:
           - HostName
           - Port
           - SSLPort
+# TODO: Does this need to be uncommented
+#      RedisCreateProperties:
+#        SubnetId:
+#          $referenceType: arm
       Redis_FirewallRule:
         $exportAs: RedisFirewallRule
         $supportedFrom: v2.0.0-alpha.4
@@ -659,67 +1379,272 @@ objectModelConfiguration:
       RedisEnterprise_Database:
         $exportAs: RedisEnterpriseDatabase
         $supportedFrom: v2.0.0-alpha.4
+    2023-04-01:
+      Redis:
+        $export: true
+        $supportedFrom: v2.3.0
+        $azureGeneratedSecrets:
+          - PrimaryKey
+          - SecondaryKey
+          - HostName
+          - Port
+          - SSLPort
+      # TODO: Does this need to be uncommented
+      #      RedisCreateProperties:
+      #        SubnetId:
+      #          $referenceType: arm
+      Redis_FirewallRule:
+        $exportAs: RedisFirewallRule
+        $supportedFrom: v2.3.0
+      Redis_LinkedServer:
+        $exportAs: RedisLinkedServer
+        $supportedFrom: v2.3.0
+      Redis_PatchSchedule:
+        $exportAs: RedisPatchSchedule
+        $supportedFrom: v2.3.0
+    2023-07-01:
+      RedisEnterprise:
+        $export: true
+        $supportedFrom: v2.3.0
+      RedisEnterprise_Database:
+        $exportAs: RedisEnterpriseDatabase
+        $supportedFrom: v2.3.0
+    2023-08-01:
+      Redis:
+        $export: true
+        $supportedFrom: v2.10.0
+        $azureGeneratedSecrets:
+          - PrimaryKey
+          - SecondaryKey
+          - HostName
+          - Port
+          - SSLPort
+      RedisCreateProperties:
+        SubnetId:
+          $referenceType: arm
+      Redis_FirewallRule:
+        $exportAs: RedisFirewallRule
+        $supportedFrom: v2.10.0
+      Redis_LinkedServer:
+        $exportAs: RedisLinkedServer
+        $supportedFrom: v2.10.0
+      RedisLinkedServerCreateProperties:
+        LinkedRedisCacheId:
+          $referenceType: arm
+      Redis_PatchSchedule:
+        $exportAs: RedisPatchSchedule
+        $supportedFrom: v2.10.0
+    2025-04-01:
+      RedisEnterprise:
+        $exportAs: RedisEnterprise
+        $supportedFrom: v2.15.0
+      ClusterProperties_Encryption_CustomerManagedKeyEncryption_KeyEncryptionKeyIdentity:
+        UserAssignedIdentityResourceId:
+          $referenceType: arm
+      RedisEnterprise_Database:
+        $exportAs: RedisEnterpriseDatabase
+        $supportedFrom: v2.15.0
   cdn:
     2021-06-01:
+      # DeepCreatedOriginGroup actually is a resource, for some CDN SKUs it's required to be specified on the CDN endpoint
+      # while for other SKUs it seems to be optional on the endpoint (or may not be allowed to be set on the endpoint at all, I am not sure).
+      # Given the requirement at least for classic CDNs (Sku == Standard_Microsoft) to specify Origin at the Endpoint scope
+      # we can't treat this purely as a resource. Instead, I think this field is like AKS AgentPools - both embedded and not, and
+      # the author of the ASO resource must choose which makes sense for their context.
+      # This comment applies to all the "DeepCreated*" resources.
       DeepCreatedOriginGroup:
-        $isResource: false  # TODO[breaking]: This actually is a resource but we initially had it in our model so leaving it here for now
+        $isResource: false
       DeepCreatedOriginGroup_STATUS:
         $isResource: false
       DeepCreatedOriginGroupProperties:
-        $isResource: false  # TODO[breaking]: This actually is a resource but we initially had it in our model so leaving it here for now
+        $isResource: false
       DeepCreatedOriginGroupProperties_STATUS:
         $isResource: false
       DeepCreatedOrigin:
-        $isResource: false  # TODO[breaking]: This actually is a resource but we initially had it in our model so leaving it here for now
+        $isResource: false
       DeepCreatedOrigin_STATUS:
         $isResource: false
       DeepCreatedOriginProperties:
-        $isResource: false  # TODO[breaking]: This actually is a resource but we initially had it in our model so leaving it here for now
+        $isResource: false
         PrivateLinkLocation:
-          $armReference: true
+          $referenceType: arm
         PrivateLinkResourceId:
-          $armReference: true
+          $referenceType: arm
       DeepCreatedOriginProperties_STATUS:
         $isResource: false
       EndpointProperties_WebApplicationFirewallPolicyLink:
         Id:
-          $armReference: true
+          $referenceType: arm
       Profile:
         $export: true
         $supportedFrom: v2.0.0-beta.1
       Profiles_Endpoint:
         $exportAs: ProfilesEndpoint
         $supportedFrom: v2.0.0-beta.1
+    2023-05-01:
+      # DeepCreatedOriginGroup actually is a resource, for some CDN SKUs it's required to be specified on the CDN endpoint
+      # while for other SKUs it seems to be optional on the endpoint (or may not be allowed to be set on the endpoint at all, I am not sure).
+      # Given the requirement at least for classic CDNs (Sku == Standard_Microsoft) to specify Origin at the Endpoint scope
+      # we can't treat this purely as a resource. Instead, I think this field is like AKS AgentPools - both embedded and not, and
+      # the author of the ASO resource must choose which makes sense for their context.
+      # This comment applies to all the "DeepCreated*" resources.
+      DeepCreatedOriginGroup:
+        $isResource: false
+      DeepCreatedOriginGroup_STATUS:
+        $isResource: false
+      DeepCreatedOriginGroupProperties:
+        $isResource: false
+      DeepCreatedOriginGroupProperties_STATUS:
+        $isResource: false
+      DeepCreatedOrigin:
+        $isResource: false
+      DeepCreatedOrigin_STATUS:
+        $isResource: false
+      DeepCreatedOriginProperties_STATUS:
+        $isResource: false
+      DomainValidationProperties:
+        ValidationToken:
+          $isSecret: false # Not a conventional secret; this is the token someone must provide to prove they own the domain
+      Profile:
+        $export: true
+        $supportedFrom: v2.6.0
+# The below resources could be exported but are part of "CDN classic".
+# This part of the CDN/AzureFrontdoor API is confusing but our understanding is that
+# the "classic" CDN is not preferred compared to AFD, so for now we aren't exporting these.
+#      Profiles_Endpoint:
+#        $exportAs: ProfilesEndpoint
+#        $supportedFrom: v2.6.0
+#      Profiles_Endpoints_OriginGroup:
+#        $exportAs: OriginGroup
+#        $supportedFrom: v2.6.0
+#      Profiles_Endpoints_Origin:
+#        $exportAs: Origin
+#        $supportedFrom: v2.6.0
+#      Profiles_Endpoints_CustomDomain:
+#        $exportAs: CustomDomain
+#        $supportedFrom: v2.6.0
+      Profiles_CustomDomain:
+        $exportAs: AfdCustomDomain
+        $supportedFrom: v2.6.0
+      Profiles_AfdEndpoint:
+        $exportAs: AfdEndpoint
+        $supportedFrom: v2.6.0
+      Profiles_OriginGroup:
+        $exportAs: AfdOriginGroup
+        $supportedFrom: v2.6.0
+      Profiles_OriginGroups_Origin:
+        $exportAs: AfdOrigin
+        $supportedFrom: v2.6.0
+      Profiles_AfdEndpoints_Route:
+        $exportAs: Route
+        $supportedFrom: v2.6.0
+      Profiles_RuleSet:
+        $exportAs: RuleSet
+        $supportedFrom: v2.6.0
+      Profiles_RuleSets_Rule:
+        $exportAs: Rule
+        $supportedFrom: v2.6.0
+      Profiles_RuleSets_Rule_Spec:
+        Conditions:
+          $renameTo: RuleConditions # Renamed to not clash with our "Conditions"
+      Profiles_RuleSets_Rule_STATUS:
+        Conditions:
+          $renameTo: RuleConditions # Renamed to not clash with our "Conditions"
+      Profiles_SecurityPolicy:
+        $exportAs: SecurityPolicy
+        $supportedFrom: v2.6.0
+      Profiles_Secret:
+        $exportAs: Secret
+        $supportedFrom: v2.6.0
+      AFDOriginProperties:
+        HostName:
+          $importConfigMapMode: optional
+  cognitiveservices:
+    2025-06-01:
+      Account:
+        $exportAs: Account
+        $supportedFrom: v2.15.0
+        $azureGeneratedSecrets:
+          - Key1
+          - Key2
+      AccountProperties:
+        MigrationToken:
+          $isSecret: true
+      Accounts_Deployment:
+        $exportAs: Deployment
+        $supportedFrom: v2.15.0
+      ApiProperties:
+        AadTenantId:
+          $importConfigMapMode: optional
+        AadClientId:
+          $importConfigMapMode: optional
+        EventHubConnectionString:
+          $isSecret: true
+        QnaAzureSearchEndpointId:
+          $importConfigMapMode: optional
+        QnaAzureSearchEndpointKey:
+          $isSecret: true
+        QnaRuntimeEndpoint:
+          $importConfigMapMode: optional
+        StorageAccountConnectionString:
+          $isSecret: true
+        SuperUser:
+          $importConfigMapMode: optional
+        WebsiteName:
+          $importConfigMapMode: optional
+      DeploymentModel:
+        Format:
+          $importConfigMapMode: optional
+        Name:
+          $importConfigMapMode: optional
+        Publisher:
+          $importConfigMapMode: optional
+        Source:
+          $referenceType: arm
+        Version:
+          $importConfigMapMode: optional
+      RaiMonitorConfig:
+        AdxStorageResourceId:
+          $referenceType: arm
+      UserOwnedAmlWorkspace:
+        ResourceId:
+          $referenceType: arm
+      UserOwnedStorage:
+        ResourceId:
+          $referenceType: arm
+      VirtualNetworkRule:
+        Id:
+          $referenceType: arm
   compute:
     2020-09-30:
       CreationData:
         SourceResourceId:
-          $armReference: true
+          $referenceType: arm
       Disk:
         $export: true
         $supportedFrom: v2.0.0-alpha.1
       DiskProperties:
         DiskAccessId:
-          $armReference: true
+          $referenceType: arm
       Encryption:
         DiskEncryptionSetId:
-          $armReference: true
+          $referenceType: arm
       ImageDiskReference:
         Id:
-          $armReference: true
+          $referenceType: arm
       Snapshot:
         $export: true
         $supportedFrom: v2.0.0-alpha.4
       SnapshotProperties:
         DiskAccessId: 
-          $armReference: true
+          $referenceType: arm
       SourceVault:
         Id:
-          $armReference: true
+          $referenceType: arm
     2020-12-01:
       ApiEntityReference:
         Id:
-          $armReference: true
+          $referenceType: arm
       ImageReference:
         $isResource: false
       ImageReference_STATUS:
@@ -732,6 +1657,12 @@ objectModelConfiguration:
         $isResource: false
       NetworkInterfaceReference_STATUS:
         $isResource: false
+      SshPublicKeySpec:
+        KeyData:
+          $isSecret: false
+      SshPublicKey_STATUS:
+        KeyData:
+          $isSecret: false
       VirtualMachine:
         $export: true
         $supportedFrom: v2.0.0-alpha.1
@@ -752,6 +1683,18 @@ objectModelConfiguration:
         $isResource: false
       VirtualMachineScaleSetNetworkConfiguration_STATUS:
         $isResource: false
+      VirtualMachines_Extension:
+        $exportAs: VirtualMachinesExtension
+        $supportedFrom: v2.6.0
+      VirtualMachineScaleSets_Extension:
+        $exportAs: VirtualMachineScaleSetsExtension
+        $supportedFrom: v2.6.0
+      VirtualMachineScaleSetExtensionProperties:
+        ProtectedSettings:
+          $isSecret: true
+      VirtualMachineExtensionProperties:
+        ProtectedSettings:
+          $isSecret: true
     2021-07-01:
       Image:
         $export: true
@@ -759,14 +1702,14 @@ objectModelConfiguration:
     2022-03-01:
       ApiEntityReference:
         Id:
-          $armReference: true
+          $referenceType: arm
       Image:
         $export: true
         $supportedFrom: v2.0.0-beta.2
       ImageReference:
         $isResource: false
         Version:
-          $armReference: false
+          $referenceType: simple
       ImageReference_STATUS:
         $isResource: false
       ManagedDiskParameters:
@@ -783,9 +1726,15 @@ objectModelConfiguration:
         $isResource: false
       NetworkProfile_STATUS:
         $isResource: false
+      SshPublicKeySpec:
+        KeyData:
+          $isSecret: false
+      SshPublicKey_STATUS:
+        KeyData:
+          $isSecret: false
       VMGalleryApplication:
         PackageReferenceId:
-          $armReference: true
+          $referenceType: arm
       VirtualMachine:
         $export: true
         $supportedFrom: v2.0.0-beta.2
@@ -806,6 +1755,75 @@ objectModelConfiguration:
         $isResource: false
       VirtualMachineScaleSetNetworkConfiguration_STATUS:
         $isResource: false
+      VirtualMachines_Extension:
+        $exportAs: VirtualMachinesExtension
+        $supportedFrom: v2.6.0
+      VirtualMachineScaleSets_Extension:
+        $exportAs: VirtualMachineScaleSetsExtension
+        $supportedFrom: v2.6.0
+      VirtualMachineScaleSetExtensionProperties:
+        ProtectedSettings:
+          $isSecret: true
+      VirtualMachineExtensionProperties:
+        ProtectedSettings:
+          $isSecret: true
+    2022-07-02:
+      DiskEncryptionSet:
+        $export: true
+        $supportedFrom: v2.3.0
+      SourceVault:
+        Id:
+          $referenceType: arm
+      KeyForDiskEncryptionSet:
+        KeyUrl:
+          $importConfigMapMode: optional
+      EncryptionSetProperties:
+        FederatedClientId:
+          $importConfigMapMode: optional
+    2024-03-02:
+      CreationData:
+        SourceResourceId:
+          $referenceType: arm
+        ElasticSanResourceId:
+          $referenceType: arm
+      Disk:
+        $export: true
+        $supportedFrom: v2.9.0
+      DiskProperties:
+        DiskAccessId:
+          $referenceType: arm
+      Encryption:
+        DiskEncryptionSetId:
+          $referenceType: arm
+      ImageDiskReference:
+        Id:
+          $referenceType: arm
+      Snapshot:
+        $export: true
+        $supportedFrom: v2.9.0
+      SnapshotProperties:
+        DiskAccessId:
+          $referenceType: arm
+      SourceVault:
+        Id:
+          $referenceType: arm
+      DiskAccess:
+        $export: true
+        $supportedFrom: v2.9.0
+      DiskEncryptionSet:
+        $export: true
+        $supportedFrom: v2.9.0
+      KeyForDiskEncryptionSet:
+        KeyUrl:
+          $importConfigMapMode: optional
+      EncryptionSetProperties:
+        FederatedClientId:
+          $importConfigMapMode: optional
+      # TODO: Reorganize this section
+      # TODO: Confirm that these guys are really ARM IDs
+      DiskSecurityProfile:
+        SecureVMDiskEncryptionSetId:
+          $referenceType: arm
   containerinstance:
     2021-10-01:
       ContainerGroup:
@@ -813,38 +1831,381 @@ objectModelConfiguration:
         $supportedFrom: v2.0.0-beta.1
       ContainerGroupSubnetId:
         Id:
-          $armReference: true
+          $referenceType: arm
       LogAnalytics:
         WorkspaceResourceId:
-          $armReference: true
+          $referenceType: arm
   containerregistry:
     2021-09-01:
+      IdentityProperties:
+        PrincipalId:
+          $referenceType: simple
       Registry:
         $export: true
         $supportedFrom: v2.0.0-alpha.6
-      IdentityProperties:
-        PrincipalId:
-          $armReference: false
+    2023-07-01:
+      KeyVaultProperties:
+        Identity: 
+          $importConfigMapMode: optional
+      Registry:
+        $export: true
+        $supportedFrom: v2.12.0
+      Registries_Replication:
+        $exportAs: RegistryReplication
+        $supportedFrom: v2.12.0
   containerservice:
+    $payloadType: explicitCollections
     2021-05-01:
+      ContainerServiceSshPublicKey:
+        KeyData:
+          $isSecret: false
+      ContainerServiceSshPublicKey_STATUS:
+        KeyData:
+          $isSecret: false
       ManagedCluster:
         $export: true
         $supportedFrom: v2.0.0-alpha.1
+        $stripDocumentation: true
         $azureGeneratedSecrets:
           - AdminCredentials
           - UserCredentials
+      ManagedCluster_Spec:
+        Tags:
+          $payloadType: explicitEmptyCollections
       ManagedClusterAgentPoolProfile:
         ProximityPlacementGroupID:
-          $armReference: false  # TODO[breaking]: Delete this and let the ARM value win
+          $referenceType: simple  # This is true in the next version and we have custom conversion to make round-tripping work
+        NodeLabels:
+          $payloadType: explicitEmptyCollections
+        NodeTaints:
+          $payloadType: explicitEmptyCollections
+        Tags:
+          $payloadType: explicitEmptyCollections
       ManagedClusters_AgentPool:
         $exportAs: ManagedClustersAgentPool
         $supportedFrom: v2.0.0-alpha.1
       ManagedClusterAgentPoolProfileProperties:
         ProximityPlacementGroupID:
-          $armReference: false # TODO[breaking]: Delete this and let the ARM value win
+          $referenceType: simple # This is true in the next version and we have custom conversion to make round-tripping work
+        NodeLabels:
+          $payloadType: explicitEmptyCollections
+        NodeTaints:
+          $payloadType: explicitEmptyCollections
+        Tags:
+          $payloadType: explicitEmptyCollections
+      ManagedClusterServicePrincipalProfile:
+        Secret:
+          $isSecret: true
+      ManagedClusterWindowsProfile:
+        AdminPassword:
+          $isSecret: true
       PrivateLinkResource:
         Id:
-          $armReference: true
+          $referenceType: arm
+    2023-02-01:
+      ContainerServiceSshPublicKey:
+        KeyData:
+          $isSecret: false
+      ContainerServiceSshPublicKey_STATUS:
+        KeyData:
+          $isSecret: false
+      ManagedCluster:
+        $export: true
+        $supportedFrom: v2.0.0
+        $stripDocumentation: true
+        $azureGeneratedSecrets:
+          - AdminCredentials
+          - UserCredentials
+        $generatedConfigs:
+          OIDCIssuerProfile: $.Status.OidcIssuerProfile.IssuerURL
+          PrincipalId: $.Status.Identity.PrincipalId
+      ManagedCluster_Spec:
+        Tags:
+          $payloadType: explicitEmptyCollections
+      ManagedClusterAgentPoolProfile:
+        NodeLabels:
+          $payloadType: explicitEmptyCollections
+        NodeTaints:
+          $payloadType: explicitEmptyCollections
+        Tags:
+          $payloadType: explicitEmptyCollections
+      ManagedClusterAgentPoolProfileProperties:
+        NodeLabels:
+          $payloadType: explicitEmptyCollections
+        NodeTaints:
+          $payloadType: explicitEmptyCollections
+        Tags:
+          $payloadType: explicitEmptyCollections
+      ManagedClusters_AgentPool:
+        $exportAs: ManagedClustersAgentPool
+        $supportedFrom: v2.0.0
+      ManagedClusterServicePrincipalProfile:
+        Secret:
+          $isSecret: true
+      ManagedClusterWindowsProfile:
+        AdminPassword:
+          $isSecret: true
+      PrivateLinkResource:
+        Id:
+          $referenceType: arm
+    2023-03-15-preview:
+      Fleet:
+        $export: true
+        $supportedFrom: v2.4.0
+        $azureGeneratedSecrets:
+          - UserCredentials
+      Fleets_Member:
+        $exportAs: FleetsMember
+        $supportedFrom: v2.4.0
+      Fleets_UpdateRun:
+        $exportAs: FleetsUpdateRun
+        $supportedFrom: v2.4.0
+    2023-10-01:
+      ContainerServiceNetworkProfile_NetworkPlugin:
+        $renameTo: NetworkPlugin
+      ContainerServiceSshPublicKey:
+        KeyData:
+          $isSecret: false
+      DelegatedResource:
+        ResourceId:
+          $referenceType: arm
+      ManagedCluster:
+        $export: true
+        $supportedFrom: v2.5.0
+        $azureGeneratedSecrets:
+          - AdminCredentials
+          - UserCredentials
+        $generatedConfigs:
+          OIDCIssuerProfile: $.Status.OidcIssuerProfile.IssuerURL
+          PrincipalId: $.Status.Identity.PrincipalId
+      ManagedCluster_Spec:
+        Tags:
+          $payloadType: explicitEmptyCollections
+      ManagedClusterAgentPoolProfile:
+        NodeLabels:
+          $payloadType: explicitEmptyCollections
+        NodeTaints:
+          $payloadType: explicitEmptyCollections
+        Tags:
+          $payloadType: explicitEmptyCollections
+      ManagedClusterAgentPoolProfileProperties:
+        NodeLabels:
+          $payloadType: explicitEmptyCollections
+        NodeTaints:
+          $payloadType: explicitEmptyCollections
+        Tags:
+          $payloadType: explicitEmptyCollections
+      ManagedClusters_AgentPool:
+        $exportAs: ManagedClustersAgentPool
+        $supportedFrom: v2.5.0
+      ManagedClusterServicePrincipalProfile:
+        Secret:
+          $isSecret: true
+      ManagedClusterWindowsProfile:
+        AdminPassword:
+          $isSecret: true
+      ManagedClusters_TrustedAccessRoleBinding:
+        $exportAs: TrustedAccessRoleBinding
+        $supportedFrom: v2.8.0
+      PrivateLinkResource:
+        Id:
+          $referenceType: arm
+    2023-11-02-preview:
+      ContainerServiceSshPublicKey:
+        KeyData:
+          $isSecret: false
+      ContainerServiceSshPublicKey_STATUS:
+        KeyData:
+          $isSecret: false
+      DelegatedResource:
+        ResourceId:
+          $referenceType: arm
+      ManagedCluster:
+        $export: true
+        $supportedFrom: v2.6.0
+        $stripDocumentation: true
+        $azureGeneratedSecrets:
+          - AdminCredentials
+          - UserCredentials
+        $generatedConfigs:
+          OIDCIssuerProfile: $.Status.OidcIssuerProfile.IssuerURL
+      ManagedCluster_Spec:
+        Tags:
+          $payloadType: explicitEmptyCollections
+      ManagedClusterAgentPoolProfile:
+        NodeLabels:
+          $payloadType: explicitEmptyCollections
+        NodeTaints:
+          $payloadType: explicitEmptyCollections
+        Tags:
+          $payloadType: explicitEmptyCollections
+      ManagedClusterAgentPoolProfileProperties:
+        NodeLabels:
+          $payloadType: explicitEmptyCollections
+        NodeTaints:
+          $payloadType: explicitEmptyCollections
+        Tags:
+          $payloadType: explicitEmptyCollections
+      ManagedClusters_AgentPool:
+        $exportAs: ManagedClustersAgentPool
+        $supportedFrom: v2.6.0
+      ManagedClusterServicePrincipalProfile:
+        Secret:
+          $isSecret: true
+      ManagedClusterWindowsProfile:
+        AdminPassword:
+          $isSecret: true
+      PrivateLinkResource:
+        Id:
+          $referenceType: arm
+    2024-04-02-preview:
+      ContainerServiceSshPublicKey:
+        KeyData:
+          $isSecret: false
+      ContainerServiceSshPublicKey_STATUS:
+        KeyData:
+          $isSecret: false
+      DelegatedResource:
+        ResourceId:
+          $referenceType: arm
+      ManagedCluster:
+        $export: true
+        $supportedFrom: v2.8.0
+        $azureGeneratedSecrets:
+          - AdminCredentials
+          - UserCredentials
+        $generatedConfigs:
+          OIDCIssuerProfile: $.Status.OidcIssuerProfile.IssuerURL
+      ManagedCluster_Spec:
+        Tags:
+          $payloadType: explicitEmptyCollections
+      ManagedClusterAgentPoolProfile:
+        NodeLabels:
+          $payloadType: explicitEmptyCollections
+        NodeTaints:
+          $payloadType: explicitEmptyCollections
+        Tags:
+          $payloadType: explicitEmptyCollections
+      ManagedClusterAgentPoolProfileProperties:
+        NodeLabels:
+          $payloadType: explicitEmptyCollections
+        NodeTaints:
+          $payloadType: explicitEmptyCollections
+        Tags:
+          $payloadType: explicitEmptyCollections
+      ManagedClusters_AgentPool:
+        $exportAs: ManagedClustersAgentPool
+        $supportedFrom: v2.8.0
+      ManagedClusterServicePrincipalProfile:
+        Secret:
+          $isSecret: true
+      ManagedClusterWindowsProfile:
+        AdminPassword:
+          $isSecret: true
+      ManagedClusters_TrustedAccessRoleBinding:
+        $exportAs: TrustedAccessRoleBinding
+        $supportedFrom: v2.8.0
+      PrivateLinkResource:
+        Id:
+          $referenceType: arm
+    2024-09-01:
+      ContainerServiceSshPublicKey:
+        KeyData:
+          $isSecret: false
+      ContainerServiceSshPublicKey_STATUS:
+        KeyData:
+          $isSecret: false
+      DelegatedResource:
+        ResourceId:
+          $referenceType: arm
+      ManagedCluster:
+        $export: true
+        $supportedFrom: v2.11.0
+        $azureGeneratedSecrets:
+          - AdminCredentials
+          - UserCredentials
+        $generatedConfigs:
+          OIDCIssuerProfile: $.Status.OidcIssuerProfile.IssuerURL
+      ManagedCluster_Spec:
+        Tags:
+          $payloadType: explicitEmptyCollections
+      ManagedClusterAgentPoolProfile:
+        NodeLabels:
+          $payloadType: explicitEmptyCollections
+        NodeTaints:
+          $payloadType: explicitEmptyCollections
+        Tags:
+          $payloadType: explicitEmptyCollections
+      ManagedClusterAgentPoolProfileProperties:
+        NodeLabels:
+          $payloadType: explicitEmptyCollections
+        NodeTaints:
+          $payloadType: explicitEmptyCollections
+        Tags:
+          $payloadType: explicitEmptyCollections
+      ManagedClusters_AgentPool:
+        $exportAs: ManagedClustersAgentPool
+        $supportedFrom: v2.11.0
+      ManagedClusterServicePrincipalProfile:
+        Secret:
+          $isSecret: true
+      ManagedClusterWindowsProfile:
+        AdminPassword:
+          $isSecret: true
+      PrivateLinkResource:
+        Id:
+          $referenceType: arm
+      ManagedClusters_TrustedAccessRoleBinding:
+        $exportAs: TrustedAccessRoleBinding
+        $supportedFrom: v2.11.0
+      ManagedClusters_MaintenanceConfiguration:
+        $exportAs: MaintenanceConfiguration
+        $supportedFrom: v2.11.0
+  datafactory:
+    2018-06-01:
+      PurviewConfiguration:
+        PurviewResourceId:
+          $referenceType: arm
+      CMKIdentityDefinition:
+        UserAssignedIdentity:
+          $referenceType: arm
+      Factory:
+        $export: true
+        $supportedFrom: v2.1.0
+  dataprotection: 
+    2023-01-01: 
+      BackupVault: 
+        $export: true 
+        $supportedFrom: v2.2.0 
+        $generatedConfigs:
+          PrincipalId: $.Status.Identity.PrincipalId
+      BackupVaults_BackupPolicy: 
+        $exportAs: BackupVaultsBackupPolicy 
+        $supportedFrom: v2.2.0
+    2023-11-01: 
+      BackupVault: 
+        $export: true 
+        $supportedFrom: v2.7.0 
+        $generatedConfigs:
+          PrincipalId: $.Status.Identity.PrincipalId
+      BackupVaults_BackupPolicy: 
+        $exportAs: BackupVaultsBackupPolicy 
+        $supportedFrom: v2.7.0 
+      BackupVaults_BackupInstance: 
+        $exportAs: BackupVaultsBackupInstance 
+        $supportedFrom: v2.7.0 
+      DatasourceSet:
+        ResourceID:
+          $referenceType: arm
+      Datasource:
+        ResourceID:
+          $referenceType: arm
+      PolicyInfo:
+        PolicyId:
+          $referenceType: arm
+      AzureOperationalStoreParameters:
+        ResourceGroupId:
+          $referenceType: arm
   dbformariadb:
     2018-06-01:
       Server:
@@ -859,24 +2220,140 @@ objectModelConfiguration:
         $exportAs: Database
         $supportedFrom: v2.0.0-beta.1
   dbformysql:
+    v1: # Handcrafted 
+      User:
+        $supportedFrom: v2.0.0
     2021-05-01:
       DataEncryption:
         GeoBackupUserAssignedIdentityId:
-          $armReference: true
+          $referenceType: arm
         PrimaryUserAssignedIdentityId:
-          $armReference: true
+          $referenceType: arm
       FlexibleServer: 
         $export: true
         $supportedFrom: v2.0.0-alpha.2
         $azureGeneratedSecrets:
           - FullyQualifiedDomainName
+        $generatedConfigs:
+          FullyQualifiedDomainName: $.Status.FullyQualifiedDomainName
+          AdministratorLogin: $.Status.AdministratorLogin
       FlexibleServers_Database:
         $exportAs: FlexibleServersDatabase
         $supportedFrom: v2.0.0-alpha.2
       FlexibleServers_FirewallRule:
         $exportAs: FlexibleServersFirewallRule
         $supportedFrom: v2.0.0-alpha.2
+      Identity:
+        $nameInNextVersion: MySQLServerIdentity
+      Identity_STATUS:
+        $nameInNextVersion: MySQLServerIdentity_STATUS
+      Sku:
+        $nameInNextVersion: MySQLServerSku
+      Sku_STATUS:
+        $nameInNextVersion: MySQLServerSku_STATUS
+      ServerProperties:
+        SourceServerResourceId:
+          $referenceType: simple # Actually, this *IS* a resource id, but we want to avoid breaking changes so we're fibbing here
+    2022-01-01:
+      FlexibleServers_Administrator:
+        $exportAs: FlexibleServersAdministrator
+        $supportedFrom: v2.1.0
+      AdministratorProperties:
+        IdentityResourceId:
+          $referenceType: arm # TODO: Upstream to Swagger
+        Sid:
+          $importConfigMapMode: optional
+        TenantId:
+          $importConfigMapMode: optional
+      FlexibleServers_Configuration:
+        $exportAs: FlexibleServersConfiguration
+        $supportedFrom: v2.1.0
+    2023-06-30:
+      DataEncryption:
+        GeoBackupUserAssignedIdentityId:
+          $referenceType: arm
+        PrimaryUserAssignedIdentityId:
+          $referenceType: arm
+      FlexibleServer:
+        $export: true
+        $supportedFrom: v2.7.0
+        $azureGeneratedSecrets:
+          - FullyQualifiedDomainName
+        $generatedConfigs:
+          FullyQualifiedDomainName: $.Status.FullyQualifiedDomainName
+          AdministratorLogin: $.Status.AdministratorLogin
+      FlexibleServers_Administrator:
+        $exportAs: FlexibleServersAdministrator
+        $supportedFrom: v2.7.0
+      AdministratorProperties:
+        IdentityResourceId:
+          $referenceType: arm # TODO: Upstream to Swagger
+        Sid:
+          $importConfigMapMode: optional
+        TenantId:
+          $importConfigMapMode: optional
+      FlexibleServers_Configuration:
+        $exportAs: FlexibleServersConfiguration
+        $supportedFrom: v2.7.0
+      FlexibleServers_Database:
+        $exportAs: FlexibleServersDatabase
+        $supportedFrom: v2.7.0
+      FlexibleServers_FirewallRule:
+        $exportAs: FlexibleServersFirewallRule
+        $supportedFrom: v2.7.0
+      Network:
+        DelegatedSubnetResourceId:
+          $referenceType: arm
+        PrivateDnsZoneResourceId:
+          $referenceType: arm
+      ServerProperties:
+        SourceServerResourceId:
+          $referenceType: arm
+    2023-12-30:
+      DataEncryption:
+        GeoBackupUserAssignedIdentityId:
+          $referenceType: arm
+        PrimaryUserAssignedIdentityId:
+          $referenceType: arm
+      FlexibleServer:
+        $export: true
+        $supportedFrom: v2.13.0
+        $azureGeneratedSecrets:
+          - FullyQualifiedDomainName
+        $generatedConfigs:
+          FullyQualifiedDomainName: $.Status.FullyQualifiedDomainName
+          AdministratorLogin: $.Status.AdministratorLogin
+      FlexibleServers_Administrator:
+        $exportAs: FlexibleServersAdministrator
+        $supportedFrom: v2.13.0
+      AdministratorProperties:
+        IdentityResourceId:
+          $referenceType: arm # TODO: Upstream to Swagger
+        Sid:
+          $importConfigMapMode: optional
+        TenantId:
+          $importConfigMapMode: optional
+      FlexibleServers_Configuration:
+        $exportAs: FlexibleServersConfiguration
+        $supportedFrom: v2.13.0
+      FlexibleServers_Database:
+        $exportAs: FlexibleServersDatabase
+        $supportedFrom: v2.13.0
+      FlexibleServers_FirewallRule:
+        $exportAs: FlexibleServersFirewallRule
+        $supportedFrom: v2.13.0
+      Network:
+        DelegatedSubnetResourceId:
+          $referenceType: arm
+        PrivateDnsZoneResourceId:
+          $referenceType: arm
+      ServerProperties:
+        SourceServerResourceId:
+          $referenceType: arm
   dbforpostgresql:
+    v1: # Handcrafted 
+      User:
+        $supportedFrom: v2.0.0
     2021-06-01:
       FlexibleServer:
         $export: true
@@ -894,11 +2371,12 @@ objectModelConfiguration:
         $supportedFrom: v2.0.0-alpha.2
     2022-01-20-preview:
       FlexibleServer:
+        $azureGeneratedSecrets:
+          - FullyQualifiedDomainName
         $export: true
         $supportedFrom: v2.0.0-beta.4
-      FlexibleServer_STATUS:
-        FullyQualifiedDomainName:
-          $exportAsConfigMapPropertyName: FullyQualifiedDomainName
+        $generatedConfigs:
+          FullyQualifiedDomainName: $.Status.FullyQualifiedDomainName
       FlexibleServers_Configuration:
         $exportAs: FlexibleServersConfiguration
         $supportedFrom: v2.0.0-beta.4
@@ -910,12 +2388,158 @@ objectModelConfiguration:
         $supportedFrom: v2.0.0-beta.4
       ServerProperties:
         SourceServerResourceId:
-          $armReference: true
+          $referenceType: arm
       Network:
         DelegatedSubnetResourceId:
-          $armReference: true
+          $referenceType: arm
         PrivateDnsZoneArmResourceId:
-          $armReference: true
+          $referenceType: arm
+    2022-12-01:
+      DataEncryption:
+        PrimaryKeyURI:
+          $importConfigMapMode: optional
+        PrimaryUserAssignedIdentityId:
+          $referenceType: arm
+      FlexibleServer:
+        $azureGeneratedSecrets:
+          - FullyQualifiedDomainName
+        $export: true
+        $supportedFrom: v2.5.0
+        $generatedConfigs:
+          FullyQualifiedDomainName: $.Status.FullyQualifiedDomainName
+      FlexibleServers_Configuration:
+        $exportAs: FlexibleServersConfiguration
+        $supportedFrom: v2.5.0
+      FlexibleServers_Database:
+        $exportAs: FlexibleServersDatabase
+        $supportedFrom: v2.5.0
+      FlexibleServers_FirewallRule:
+        $exportAs: FlexibleServersFirewallRule
+        $supportedFrom: v2.5.0
+      ServerProperties:
+        SourceServerResourceId:
+          $referenceType: arm
+      Network:
+        DelegatedSubnetResourceId:
+          $referenceType: arm
+        PrivateDnsZoneArmResourceId:
+          $referenceType: arm
+    2023-06-01-preview:
+      DataEncryption:
+        GeoBackupKeyURI:
+          $importConfigMapMode: optional
+        GeoBackupUserAssignedIdentityId:
+          $referenceType: arm
+        PrimaryKeyURI:
+          $importConfigMapMode: optional
+        PrimaryUserAssignedIdentityId:
+          $referenceType: arm
+      FlexibleServer:
+        $azureGeneratedSecrets:
+          - FullyQualifiedDomainName
+        $export: true
+        $supportedFrom: v2.6.0
+        $generatedConfigs:
+          FullyQualifiedDomainName: $.Status.FullyQualifiedDomainName
+      FlexibleServers_Configuration:
+        $exportAs: FlexibleServersConfiguration
+        $supportedFrom: v2.6.0
+      FlexibleServers_Database:
+        $exportAs: FlexibleServersDatabase
+        $supportedFrom: v2.6.0
+      FlexibleServers_FirewallRule:
+        $exportAs: FlexibleServersFirewallRule
+        $supportedFrom: v2.6.0
+      ServerProperties:
+        SourceServerResourceId:
+          $referenceType: arm
+      Network:
+        DelegatedSubnetResourceId:
+          $referenceType: arm
+        PrivateDnsZoneArmResourceId:
+          $referenceType: arm
+    2024-08-01:
+      DataEncryption:
+        GeoBackupKeyURI:
+          $importConfigMapMode: optional
+        GeoBackupUserAssignedIdentityId:
+          $referenceType: arm
+        PrimaryKeyURI:
+          $importConfigMapMode: optional
+        PrimaryUserAssignedIdentityId:
+          $referenceType: arm
+      FlexibleServer:
+        $azureGeneratedSecrets:
+          - FullyQualifiedDomainName
+        $export: true
+        $supportedFrom: v2.13.0
+        $generatedConfigs:
+          FullyQualifiedDomainName: $.Status.FullyQualifiedDomainName
+      FlexibleServers_Configuration:
+        $exportAs: FlexibleServersConfiguration
+        $supportedFrom: v2.13.0
+      FlexibleServers_Database:
+        $exportAs: FlexibleServersDatabase
+        $supportedFrom: v2.13.0
+      FlexibleServers_FirewallRule:
+        $exportAs: FlexibleServersFirewallRule
+        $supportedFrom: v2.13.0
+      FlexibleServers_Backup:  # TODO: net new
+        $exportAs: FlexibleServersBackup
+        $supportedFrom: v2.13.0
+      FlexibleServers_AdvancedThreatProtectionSetting:  # TODO: net new
+        $exportAs: FlexibleServersAdvancedThreatProtectionSettings
+        $supportedFrom: v2.13.0
+      FlexibleServers_VirtualEndpoint:  # TODO: net new
+        $exportAs: FlexibleServersVirtualEndpoint
+        $supportedFrom: v2.13.0
+      ServerProperties:
+        SourceServerResourceId:
+          $referenceType: arm
+      Network:
+        DelegatedSubnetResourceId:
+          $referenceType: arm
+        PrivateDnsZoneArmResourceId:
+          $referenceType: arm
+  devices:
+    2021-07-02:
+      IotHub:
+        $export: true
+        $supportedFrom: v2.1.0
+        $azureGeneratedSecrets:
+          - ServicePrimaryKey
+          - ServiceSecondaryKey
+          - IotHubOwnerPrimaryKey
+          - IotHubOwnerSecondaryKey
+          - DevicePrimaryKey
+          - DeviceSecondaryKey
+          - RegistryReadPrimaryKey
+          - RegistryReadSecondaryKey
+          - RegistryReadWritePrimaryKey
+          - RegistryReadWriteSecondaryKey
+      RoutingServiceBusQueueEndpointProperties:
+        Id:
+          $referenceType: arm
+        ConnectionString:
+          $isSecret: true
+      RoutingEventHubProperties:
+        Id:
+          $referenceType: arm
+        ConnectionString:
+          $isSecret: true
+      RoutingServiceBusTopicEndpointProperties:
+        Id:
+          $referenceType: arm
+        ConnectionString:
+          $isSecret: true
+      RoutingStorageContainerProperties:
+        Id:
+          $referenceType: arm
+        ConnectionString:
+          $isSecret: true
+      StorageEndpointProperties:
+        ConnectionString:
+          $isSecret: true
   documentdb:
     2021-05-15:
       DatabaseAccount:
@@ -929,7 +2553,7 @@ objectModelConfiguration:
           - DocumentEndpoint
       DatabaseAccountCreateUpdateProperties:
         NetworkAclBypassResourceIds:
-          $armReference: false  # TODO[breaking]: Change this to true
+          $referenceType: simple  # TODO[breaking]: Change this to true
       DatabaseAccounts_MongodbDatabase:
         $exportAs: MongodbDatabase
         $supportedFrom: v2.0.0-alpha.2
@@ -963,33 +2587,202 @@ objectModelConfiguration:
       DatabaseAccounts_SqlDatabases_ThroughputSetting:
         $exportAs: SqlDatabaseThroughputSetting
         $supportedFrom: v2.0.0-alpha.2
-      MongoDBCollectionResource:
-        Id:
-          $armReference: false
-      MongoDBDatabaseResource:
-        Id:
-          $armReference: false
-      SqlDatabaseResource:
-        Id:
-          $armReference: false
-      SqlContainerResource:
-        Id:
-          $armReference: false
       DatabaseAccounts_SqlRoleAssignment:
         $exportAs: SqlRoleAssignment
         $supportedFrom: v2.0.0-beta.3
+        $defaultAzureName: false
+      MongoDBCollectionResource:
+        Id:
+          $referenceType: simple
+      MongoDBDatabaseResource:
+        Id:
+          $referenceType: simple
+      SqlDatabaseResource:
+        Id:
+          $referenceType: simple
+      SqlContainerResource:
+        Id:
+          $referenceType: simple
       SqlRoleAssignmentResource:
         PrincipalId:
           $importConfigMapMode: optional
       SqlTriggerResource:
         Id:
-          $armReference: false
+          $referenceType: simple
       SqlStoredProcedureResource:
         Id:
-          $armReference: false
+          $referenceType: simple
       SqlUserDefinedFunctionResource:
         Id:
-          $armReference: false
+          $referenceType: simple
+    2023-11-15:
+      DatabaseAccount:
+        $export: true
+        $supportedFrom: v2.8.0
+        $azureGeneratedSecrets:
+          - PrimaryMasterKey
+          - SecondaryMasterKey
+          - PrimaryReadonlyMasterKey
+          - SecondaryReadonlyMasterKey
+          - DocumentEndpoint
+      DatabaseAccountCreateUpdateProperties:
+        NetworkAclBypassResourceIds:
+          $referenceType: arm
+      DatabaseAccounts_MongodbDatabase:
+        $exportAs: MongodbDatabase
+        $supportedFrom: v2.8.0
+      DatabaseAccounts_MongodbDatabases_Collection:
+        $exportAs: MongodbDatabaseCollection
+        $supportedFrom: v2.8.0
+      DatabaseAccounts_MongodbDatabases_Collections_ThroughputSetting:
+        $exportAs: MongodbDatabaseCollectionThroughputSetting
+        $supportedFrom: v2.8.0
+      DatabaseAccounts_MongodbDatabases_ThroughputSetting:
+        $exportAs: MongodbDatabaseThroughputSetting
+        $supportedFrom: v2.8.0
+      DatabaseAccounts_SqlDatabase:
+        $exportAs: SqlDatabase
+        $supportedFrom: v2.8.0
+      DatabaseAccounts_SqlDatabases_Container:
+        $exportAs: SqlDatabaseContainer
+        $supportedFrom: v2.8.0
+      DatabaseAccounts_SqlDatabases_Containers_StoredProcedure:
+        $exportAs: SqlDatabaseContainerStoredProcedure
+        $supportedFrom: v2.8.0
+      DatabaseAccounts_SqlDatabases_Containers_ThroughputSetting:
+        $exportAs: SqlDatabaseContainerThroughputSetting
+        $supportedFrom: v2.8.0
+      DatabaseAccounts_SqlDatabases_Containers_Trigger:
+        $exportAs: SqlDatabaseContainerTrigger
+        $supportedFrom: v2.8.0
+      DatabaseAccounts_SqlDatabases_Containers_UserDefinedFunction:
+        $exportAs: SqlDatabaseContainerUserDefinedFunction
+        $supportedFrom: v2.8.0
+      DatabaseAccounts_SqlDatabases_ThroughputSetting:
+        $exportAs: SqlDatabaseThroughputSetting
+        $supportedFrom: v2.8.0
+      DatabaseAccounts_SqlRoleAssignment:
+        $exportAs: SqlRoleAssignment
+        $supportedFrom: v2.8.0
+        $defaultAzureName: false
+      MongoDBCollectionResource:
+        Id:
+          $referenceType: simple
+      MongoDBDatabaseResource:
+        Id:
+          $referenceType: simple
+      SqlDatabaseResource:
+        Id:
+          $referenceType: simple
+      SqlContainerResource:
+        Id:
+          $referenceType: simple
+      SqlRoleAssignmentResource:
+        PrincipalId:
+          $importConfigMapMode: optional
+      SqlTriggerResource:
+        Id:
+          $referenceType: simple
+      SqlStoredProcedureResource:
+        Id:
+          $referenceType: simple
+      SqlUserDefinedFunctionResource:
+        Id:
+          $referenceType: simple
+    2024-07-01:
+      MongoCluster:
+        $exportAs: MongoCluster
+        $supportedFrom: v2.14.0
+      MongoClusters_FirewallRule:
+        $exportAs: FirewallRule
+        $supportedFrom: v2.14.0
+    2024-08-15:
+      DatabaseAccount:
+        $export: true
+        $supportedFrom: v2.12.0
+        $azureGeneratedSecrets:
+          - PrimaryMasterKey
+          - SecondaryMasterKey
+          - PrimaryReadonlyMasterKey
+          - SecondaryReadonlyMasterKey
+          - DocumentEndpoint
+      DatabaseAccountCreateUpdateProperties:
+        NetworkAclBypassResourceIds:
+          $referenceType: arm
+      DatabaseAccounts_MongodbDatabase:
+        $exportAs: MongodbDatabase
+        $supportedFrom: v2.12.0
+      DatabaseAccounts_MongodbDatabases_Collection:
+        $exportAs: MongodbDatabaseCollection
+        $supportedFrom: v2.12.0
+      DatabaseAccounts_MongodbDatabases_Collections_ThroughputSetting:
+        $exportAs: MongodbDatabaseCollectionThroughputSetting
+        $supportedFrom: v2.12.0
+      DatabaseAccounts_MongodbDatabases_ThroughputSetting:
+        $exportAs: MongodbDatabaseThroughputSetting
+        $supportedFrom: v2.12.0
+      DatabaseAccounts_SqlDatabase:
+        $exportAs: SqlDatabase
+        $supportedFrom: v2.12.0
+      DatabaseAccounts_SqlDatabases_Container:
+        $exportAs: SqlDatabaseContainer
+        $supportedFrom: v2.12.0
+      DatabaseAccounts_SqlDatabases_Containers_StoredProcedure:
+        $exportAs: SqlDatabaseContainerStoredProcedure
+        $supportedFrom: v2.12.0
+      DatabaseAccounts_SqlDatabases_Containers_ThroughputSetting:
+        $exportAs: SqlDatabaseContainerThroughputSetting
+        $supportedFrom: v2.12.0
+      DatabaseAccounts_SqlDatabases_Containers_Trigger:
+        $exportAs: SqlDatabaseContainerTrigger
+        $supportedFrom: v2.12.0
+      DatabaseAccounts_SqlDatabases_Containers_UserDefinedFunction:
+        $exportAs: SqlDatabaseContainerUserDefinedFunction
+        $supportedFrom: v2.12.0
+      DatabaseAccounts_SqlDatabases_ThroughputSetting:
+        $exportAs: SqlDatabaseThroughputSetting
+        $supportedFrom: v2.12.0
+      DatabaseAccounts_SqlRoleAssignment:
+        $exportAs: SqlRoleAssignment
+        $supportedFrom: v2.12.0
+        $defaultAzureName: false
+      DatabaseAccounts_MongodbUserDefinition:
+        $exportAs: MongodbUserDefinition
+        $supportedFrom: v2.12.0
+      DatabaseAccounts_MongodbRoleDefinition:
+        $exportAs: MongodbRoleDefinition
+        $supportedFrom: v2.14.0
+      MongoDBCollectionResource:
+        Id:
+          $referenceType: simple
+      MongoDBDatabaseResource:
+        Id:
+          $referenceType: simple
+      SqlDatabaseResource:
+        Id:
+          $referenceType: simple
+      SqlContainerResource:
+        Id:
+          $referenceType: simple
+      SqlRoleAssignmentResource:
+        PrincipalId:
+          $importConfigMapMode: optional
+      SqlTriggerResource:
+        Id:
+          $referenceType: simple
+      SqlStoredProcedureResource:
+        Id:
+          $referenceType: simple
+      SqlUserDefinedFunctionResource:
+        Id:
+          $referenceType: simple
+      MongoUserDefinitionResource:
+        password:
+          $isSecret: true
+  entra:
+    v1: # Handcrafted
+      SecurityGroup:
+        $supportedFrom: v2.14.0
   eventgrid:
     2020-06-01:
       Domain:
@@ -1004,57 +2797,248 @@ objectModelConfiguration:
       Topic:
         $export: true
         $supportedFrom: v2.0.0-alpha.3
+        $azureGeneratedSecrets:
+          - Key1
+          - Key2
+        $generatedConfigs:
+          Endpoint: $.Status.Endpoint
   eventhub:
     2021-11-01:
       Destination_Properties:
         StorageAccountResourceId:
-          $armReference: true
+          $referenceType: arm
       Namespace:
         $export: true
         $supportedFrom: v2.0.0-alpha.1
+        $azureGeneratedSecrets:
+          - PrimaryKey
+          - SecondaryKey
+          - PrimaryConnectionString
+          - SecondaryConnectionString
       Namespaces_AuthorizationRule:
         $exportAs: NamespacesAuthorizationRule
         $supportedFrom: v2.0.0-alpha.2
+        $azureGeneratedSecrets:
+          - PrimaryKey
+          - SecondaryKey
+          - PrimaryConnectionString
+          - SecondaryConnectionString
       Namespaces_Eventhub:
         $exportAs: NamespacesEventhub
         $supportedFrom: v2.0.0-alpha.3
       Namespaces_Eventhubs_AuthorizationRule:
         $exportAs: NamespacesEventhubsAuthorizationRule
         $supportedFrom: v2.0.0-alpha.3
+        $azureGeneratedSecrets:
+          - PrimaryKey
+          - SecondaryKey
+          - PrimaryConnectionString
+          - SecondaryConnectionString
       Namespaces_Eventhubs_Consumergroup:
         $exportAs: NamespacesEventhubsConsumerGroup
         $supportedFrom: v2.0.0-alpha.1
       Namespace_Properties_Spec:
         ClusterArmId:
-          $armReference: true
+          $referenceType: arm
 # TODO: I think this has been (correctly) pruned now
 #      PrivateEndpoint:
 #        Id:
-#          $armReference: true
+#          $referenceType: arm
       UserAssignedIdentityProperties:
         UserAssignedIdentity:
-          $armReference: true
-      
+          $referenceType: arm
+    2024-01-01:
+      Destination_Properties:
+        StorageAccountResourceId:
+          $referenceType: arm
+      CaptureIdentity:
+        UserAssignedIdentity:
+          $referenceType: arm
+      Namespace:
+        $export: true
+        $supportedFrom: v2.12.0
+        $azureGeneratedSecrets:
+          - PrimaryKey
+          - SecondaryKey
+          - PrimaryConnectionString
+          - SecondaryConnectionString
+      Namespaces_AuthorizationRule:
+        $exportAs: NamespacesAuthorizationRule
+        $supportedFrom: v2.12.0
+        $azureGeneratedSecrets:
+          - PrimaryKey
+          - SecondaryKey
+          - PrimaryConnectionString
+          - SecondaryConnectionString
+      Namespaces_Eventhub:
+        $exportAs: NamespacesEventhub
+        $supportedFrom: v2.12.0
+      Namespaces_Eventhubs_AuthorizationRule:
+        $exportAs: NamespacesEventhubsAuthorizationRule
+        $supportedFrom: v2.12.0
+        $azureGeneratedSecrets:
+          - PrimaryKey
+          - SecondaryKey
+          - PrimaryConnectionString
+          - SecondaryConnectionString
+      Namespaces_Eventhubs_Consumergroup:
+        $exportAs: NamespacesEventhubsConsumerGroup
+        $supportedFrom: v2.12.0
+      Namespace_Properties_Spec:
+        ClusterArmId:
+          $referenceType: arm
+      UserAssignedIdentityProperties:
+        UserAssignedIdentity:
+          $referenceType: arm
   insights:
+    2017-10-01:
+      Components_PricingPlan:
+        $exportAs: PricingPlan
+        $supportedFrom: v2.15.0
+    2018-03-01:
+      MetricAlert:
+        $export: true
+        $supportedFrom: v2.4.0
+      WebtestLocationAvailabilityCriteria:
+        ComponentId:
+          $referenceType: arm
+      MetricAlertProperties:
+        Scopes:
+          $referenceType: arm
     2018-05-01-preview:
       Webtest:
         $export: true
         $supportedFrom: v2.0.0-alpha.4
       WebTestGeolocation:
         Id:
-          $armReference: false
+          $referenceType: simple
     2020-02-02:
       ApplicationInsightsComponentProperties:
+        HockeyAppToken:
+          $isSecret: false
         WorkspaceResourceId:
-          $armReference: true
+          $referenceType: arm
       Component:
         $export: true
         $supportedFrom: v2.0.0-alpha.2
+        $generatedConfigs:
+          ConnectionString: $.Status.ConnectionString
+          InstrumentationKey: $.Status.InstrumentationKey
+    2020-10-01:
+      ActionGroup:
+        $renameTo: ActionGroupReference
+        ActionGroupId: 
+          $referenceType: arm
+      ActivityLogAlert:
+        $exportAs: ActivityLogAlert
+        $supportedFrom: v2.15.0
+      AlertRuleAnyOfOrLeafCondition:
+        Field:
+          $referenceType: simple
+      AlertRuleLeafCondition:
+        Field:
+          $referenceType: simple
+      AlertRuleProperties:
+        Scopes:
+          $referenceType: arm
+    2021-05-01-preview:
+      DiagnosticSetting:
+        $export: true
+        $supportedFrom: v2.11.0
+      DiagnosticSettings:
+        MarketplacePartnerId:
+          $referenceType: arm
+        WorkspaceId:
+          $referenceType: arm
+        EventHubAuthorizationRuleId:
+          $referenceType: arm
+        StorageAccountId:
+          $referenceType: arm
+    2023-06-01:
+      Workbook:
+        $exportAs: Workbook
+        $supportedFrom: v2.15.0
+      WorkbookProperties:
+        SourceId:
+          $referenceType: arm
+        StorageUri:
+          $referenceType: arm
+    2022-10-01:
+      Autoscalesetting:
+        $exportAs: AutoscaleSetting
+        $supportedFrom: v2.4.0
+      AutoscaleSettingProperties:
+        TargetResourceUri:
+          $referenceType: arm
+      MetricTrigger:
+        MetricResourceUri:
+          $referenceType: arm
+    2022-06-15:
+      ScheduledQueryRule:
+        $export: true
+        $supportedFrom: v2.4.0
+      Actions:
+        ActionGroups:
+          $referenceType: arm
+      Condition:
+        ResourceIdColumn:
+          $referenceType: arm
+      ScheduledQueryRuleProperties:
+        Scopes:
+          $referenceType: arm
+      Webtest:
+        $export: true
+        $supportedFrom: v2.7.0
+      WebTestGeolocation:
+        Id:
+          $referenceType: simple
+    2023-01-01:
+      ActionGroup:
+        $export: true
+        $supportedFrom: v2.4.0
+      AutomationRunbookReceiver:
+        WebhookResourceId:
+          $referenceType: arm
+      AzureFunctionReceiver:
+        FunctionAppResourceId:
+          $referenceType: arm
+      LogicAppReceiver:
+        ResourceId:
+          $referenceType: arm
+    2023-03-11:
+      DataCollectionEndpoint:
+        $exportAs: DataCollectionEndpoint
+        $supportedFrom: v2.15.0
+      DataCollectionRuleAssociation:
+        $exportAs: DataCollectionRuleAssociation
+        $supportedFrom: v2.15.0
+      DataCollectionRuleAssociationSpec:
+        DataCollectionEndpointId: 
+          $referenceType: arm
+        DataCollectionRuleId: 
+          $referenceType: arm
+    2024-01-01-preview:
+      ScheduledQueryRule:
+        $export: true
+        $supportedFrom: v2.12.0
+      Actions:
+        ActionGroups:
+          $referenceType: arm
+      Condition:
+        ResourceIdColumn:
+          $referenceType: arm
+      ScheduledQueryRuleProperties:
+        Scopes:
+          $referenceType: arm
+
   keyvault:
     2021-04-01-preview:
       Vault:
         $export: true
         $supportedFrom: v2.0.0-beta.1
+      VaultProperties:
+        TenantId:
+          $importConfigMapMode: optional
       AccessPolicyEntry:
         TenantId:
           $importConfigMapMode: optional
@@ -1064,32 +3048,185 @@ objectModelConfiguration:
           $importConfigMapMode: optional
       VirtualNetworkRule:
         Id:
-          $armReference: true
+          $referenceType: arm
+    2023-07-01:
+      Vault:
+        $export: true
+        $supportedFrom: v2.5.0
+      VaultProperties:
+        TenantId:
+          $importConfigMapMode: optional
+      AccessPolicyEntry:
+        TenantId:
+          $importConfigMapMode: optional
+        ApplicationId:
+          $importConfigMapMode: optional
+        ObjectId:
+          $importConfigMapMode: optional
+      VirtualNetworkRule:
+        Id:
+          $referenceType: arm
+          
+  kubernetesconfiguration:
+    2023-05-01:
+      Extension:
+        $export: true
+        $supportedFrom: v2.4.0
+        $generatedConfigs:
+          PrincipalId: $.Status.AksAssignedIdentity.PrincipalId
+      FluxConfiguration:
+        $export: true
+        $supportedFrom: v2.10.0
+      ServicePrincipalDefinition:
+        ClientId:
+          $importConfigMapMode: optional
+        TenantId:
+          $importConfigMapMode: optional
+      BucketDefinition:
+        AccessKey:
+          $isSecret: true
+      GitRepositoryDefinition:
+        HttpsCACert:
+          $isSecret: true
+    2024-11-01:
+      Extension:
+        $export: true
+        $supportedFrom: v2.13.0
+        $generatedConfigs:
+          PrincipalId: $.Status.AksAssignedIdentity.PrincipalId
+      FluxConfiguration:
+        $export: true
+        $supportedFrom: v2.13.0
+      ServicePrincipalDefinition:
+        ClientId:
+          $importConfigMapMode: optional
+        TenantId:
+          $importConfigMapMode: optional
+      BucketDefinition:
+        AccessKey:
+          $isSecret: true
+      GitRepositoryDefinition:
+        HttpsCACert:
+          $isSecret: true
+
+  kusto:
+    2023-08-15:
+      Cluster:
+        $export: true
+        $supportedFrom: v2.13.0
+      VirtualNetworkConfiguration:
+        DataManagementPublicIpId:
+          $referenceType: arm
+        SubnetId:
+          $referenceType: arm
+        EnginePublicIpId:
+          $referenceType: arm
+      KeyVaultProperties:
+        UserIdentity:
+          $referenceType: arm
+      Clusters_Database:
+        $exportAs: Database
+        $supportedFrom: v2.13.0
+      ReadWriteDatabase:
+        $resourceEmbeddedInParent: Clusters_Database
+      ReadWriteDatabase_STATUS:
+        $resourceEmbeddedInParent: Clusters_Database
+      Clusters_Databases_DataConnection:
+        $exportAs: DataConnection
+        $supportedFrom: v2.13.0
+      CosmosDbDataConnection:
+        $resourceEmbeddedInParent: Clusters_Databases_DataConnection
+      CosmosDbDataConnection_STATUS:
+        $resourceEmbeddedInParent: Clusters_Databases_DataConnection
+      CosmosDbDataConnectionProperties:
+        ManagedIdentityResourceId:
+          $referenceType: arm
+        CosmosDbAccountResourceId:
+          $referenceType: arm
+      EventGridDataConnection:
+        $resourceEmbeddedInParent: Clusters_Databases_DataConnection
+      EventGridDataConnection_STATUS:
+        $resourceEmbeddedInParent: Clusters_Databases_DataConnection
+      EventGridConnectionProperties:
+        EventGridResourceId:
+          $referenceType: arm
+        ManagedIdentityResourceId:
+          $referenceType: arm
+        EventHubResourceId:
+          $referenceType: arm
+        StorageAccountResourceId:
+          $referenceType: arm
+      EventHubDataConnection:
+        $resourceEmbeddedInParent: Clusters_Databases_DataConnection
+      EventHubDataConnection_STATUS:
+        $resourceEmbeddedInParent: Clusters_Databases_DataConnection
+      EventHubConnectionProperties:
+        EventHubResourceId:
+          $referenceType: arm
+        ManagedIdentityResourceId:
+          $referenceType: arm
+      IotHubDataConnection:
+        $resourceEmbeddedInParent: Clusters_Databases_DataConnection
+      IotHubDataConnection_STATUS:
+        $resourceEmbeddedInParent: Clusters_Databases_DataConnection
+      IotHubConnectionProperties:
+        IotHubResourceId:
+          $referenceType: arm
+
   managedidentity:
     2018-11-30:
       UserAssignedIdentity:
         $export: true
         $supportedFrom: v2.0.0-alpha.1
-      UserAssignedIdentity_STATUS:
-        ClientId:
-          $exportAsConfigMapPropertyName: ClientId
-        PrincipalId:
-          $exportAsConfigMapPropertyName: PrincipalId
-        TenantId:
-          $exportAsConfigMapPropertyName: TenantId
+        $generatedConfigs:
+          ClientId: $.Status.ClientId
+          PrincipalId: $.Status.PrincipalId
+          TenantId: $.Status.TenantId
     2022-01-31-preview:
       # Not adding UserAssignedIdentity here because it's identical to the one in 2018
       UserAssignedIdentities_FederatedIdentityCredential:
         $exportAs: FederatedIdentityCredential
         $supportedFrom: v2.0.0-beta.3
+      FederatedIdentityCredentialProperties:
+        Issuer:
+          $importConfigMapMode: optional
+        Subject:
+          $importConfigMapMode: optional
+    2023-01-31:
+      UserAssignedIdentity:
+        $export: true
+        $supportedFrom: v2.5.0
+        $azureGeneratedSecrets:
+          - ClientId
+          - PrincipalId
+          - TenantId
+        $generatedConfigs:
+          ClientId: $.Status.ClientId
+          PrincipalId: $.Status.PrincipalId
+          TenantId: $.Status.TenantId
+      UserAssignedIdentities_FederatedIdentityCredential:
+        $exportAs: FederatedIdentityCredential
+        $supportedFrom: v2.5.0
+      FederatedIdentityCredentialProperties:
+        Issuer:
+          $importConfigMapMode: optional
+        Subject:
+          $importConfigMapMode: optional
   machinelearningservices:
     2021-07-01:
       AksNetworkingConfiguration:
         SubnetId:
-          $armReference: true
+          $referenceType: arm
+      IdentityForCmk:
+        UserAssignedIdentity:
+          $referenceType: simple # Actually, this *IS* a resource id, but we want to avoid breaking changes so we're fibbing here
+      KeyVaultProperties:
+        $nameInNextVersion: EncryptionKeyVaultProperties
+        KeyVaultArmId:
+          $referenceType: simple # Actually, this *IS* a resource id, but we want to avoid breaking changes so we're fibbing here
       Kubernetes:
         ResourceId:
-          $armReference: true
+          $referenceType: arm
       Workspace:
         $export: true
         $supportedFrom: v2.0.0-beta.2
@@ -1103,51 +3240,54 @@ objectModelConfiguration:
           - UserStorageKey
       WorkspaceProperties:
         ApplicationInsights:
-          $armReference: true
+          $referenceType: arm
         ContainerRegistry:
-          $armReference: true
+          $referenceType: arm
         KeyVault:
-          $armReference: true
+          $referenceType: arm
         PrimaryUserAssignedIdentity:
-          $armReference: true
+          $referenceType: arm
         StorageAccount:
-          $armReference: true
+          $referenceType: arm
       SharedPrivateLinkResourceProperty:
         PrivateLinkResourceId:
-          $armReference: true
+          $referenceType: arm
       Workspaces_Compute:
         $exportAs: WorkspacesCompute
         $supportedFrom: v2.0.0-beta.2
       HDInsight:
         ResourceId:
-          $armReference: true
+          $referenceType: arm
       DataFactory:
         ResourceId:
-          $armReference: true
+          $referenceType: arm
       DataLakeAnalytics:
         ResourceId:
-          $armReference: true
+          $referenceType: arm
       Databricks:
         ResourceId:
-          $armReference: true
+          $referenceType: arm
+      DatabricksProperties:
+        DatabricksAccessToken:
+          $isSecret: true
       AKS:
         ResourceId:
-          $armReference: true
+          $referenceType: arm
       ComputeInstance:
         ResourceId:
-          $armReference: true
+          $referenceType: arm
       SynapseSpark:
         ResourceId:
-          $armReference: true
+          $referenceType: arm
       AmlCompute:
         ResourceId:
-          $armReference: true
+          $referenceType: arm
       VirtualMachine:
         ResourceId:
-          $armReference: true
+          $referenceType: arm
       VirtualMachineImage:
         Id:
-          $armReference: true
+          $referenceType: arm
       UserAccountCredentials:
         AdminUserPassword:
           $isSecret: true
@@ -1156,14 +3296,247 @@ objectModelConfiguration:
       VirtualMachineSshCredentials:
         Password:
           $isSecret: true
+        PrivateKeyData:
+          $isSecret: true
+        PublicKeyData:
+          $isSecret: true
       Workspaces_Connection:
         $exportAs: WorkspacesConnection
         $supportedFrom: v2.0.0-beta.2
+      Identity:
+        $nameInNextVersion: ManagedServiceIdentity
+      KeyVaultProperties_STATUS:
+        $nameInNextVersion: EncryptionKeyVaultProperties_STATUS
+      Identity_STATUS:
+        $nameInNextVersion: ManagedServiceIdentity_STATUS
+      SslConfiguration:
+        Key:
+          $isSecret: true
+        Cert:
+          $isSecret: true
+    2024-04-01:
+      AksNetworkingConfiguration:
+        SubnetId:
+          $referenceType: arm
+      IdentityForCmk:
+        UserAssignedIdentity:
+          $referenceType: arm
+      Kubernetes:
+        ResourceId:
+          $referenceType: arm
+      Workspace:
+        $export: true
+        $supportedFrom: v2.10.0
+        $azureGeneratedSecrets:
+          - AppInsightsInstrumentationKey
+          - ContainerRegistryUserName
+          - ContainerRegistryPassword
+          - ContainerRegistryPassword2
+          - PrimaryNotebookAccessKey
+          - SecondaryNotebookAccessKey
+          - UserStorageKey
+      WorkspaceConnectionUsernamePassword:
+        Password:
+          $isSecret: true
+      WorkspaceConnectionPersonalAccessToken:
+        Pat:
+          $isSecret: true
+      WorkspaceProperties:
+        HubResourceId:
+          $referenceType: arm
+        ApplicationInsights:
+          $referenceType: arm
+        ContainerRegistry:
+          $referenceType: arm
+        KeyVault:
+          $referenceType: arm
+        PrimaryUserAssignedIdentity:
+          $referenceType: arm
+        StorageAccount:
+          $referenceType: arm
+      WorkspaceConnectionManagedIdentity:
+        ResourceId:
+          $referenceType: arm
+        ClientId:
+          $importConfigMapMode: optional
+      ScheduleBase:
+        Id:
+          $referenceType: arm
+      EncryptionKeyVaultProperties:
+        KeyVaultArmId:
+          $referenceType: arm
+        IdentityClientId:
+          $importConfigMapMode: optional
+      SharedPrivateLinkResourceProperty:
+        PrivateLinkResourceId:
+          $referenceType: arm
+      Workspaces_Compute:
+        $exportAs: WorkspacesCompute
+        $supportedFrom: v2.10.0
+      HDInsight:
+        ResourceId:
+          $referenceType: arm
+      DataFactory:
+        ResourceId:
+          $referenceType: arm
+      DataLakeAnalytics:
+        ResourceId:
+          $referenceType: arm
+      Databricks:
+        ResourceId:
+          $referenceType: arm
+      AKS:
+        ResourceId:
+          $referenceType: arm
+      ComputeInstance:
+        ResourceId:
+          $referenceType: arm
+      SynapseSpark:
+        ResourceId:
+          $referenceType: arm
+      AmlCompute:
+        ResourceId:
+          $referenceType: arm
+      VirtualMachine:
+        ResourceId:
+          $referenceType: arm
+      VirtualMachineImage:
+        Id:
+          $referenceType: arm
+      UserAccountCredentials:
+        AdminUserPassword:
+          $isSecret: true
+      VirtualMachineSshCredentials:
+        Password:
+          $isSecret: true
+        PrivateKeyData:
+          $isSecret: true
+      Workspaces_Connection:
+        $exportAs: WorkspacesConnection
+        $supportedFrom: v2.10.0
+      AssignedUser:
+        ObjectId:
+          $importConfigMapMode: optional
+        TenantId:
+          $importConfigMapMode: optional
+      KubernetesProperties:
+        ExtensionPrincipalId:
+          $importConfigMapMode: optional
+      PrivateEndpointDestination:
+        SubresourceTarget:
+          $referenceType: arm
+      AKS_Properties:
+        LoadBalancerSubnet:
+          $referenceType: arm
+      DatabricksProperties:
+        DatabricksAccessToken:
+          $isSecret: true
+      WorkspaceConnectionAccessKey:
+        SecretAccessKey:
+          $isSecret: true
+      WorkspaceConnectionApiKey:
+        Key:
+          $isSecret: true
+      CustomKeys:
+        Keys:
+          $isSecret: true
+      WorkspaceConnectionSharedAccessSignature:
+        Sas:
+          $isSecret: true
+      WorkspaceConnectionOAuth2:
+        ClientId:
+          $importConfigMapMode: optional
+        TenantId:
+          $importConfigMapMode: optional
+      WorkspaceConnectionServicePrincipal:
+        ClientId:
+          $importConfigMapMode: optional
+        TenantId:
+          $importConfigMapMode: optional
+      Registry:
+        $export: true
+        $supportedFrom: v2.10.0
+        $generatedConfigs:
+          DiscoveryUrl: $.Status.DiscoveryUrl
+          MlFlowRegistryUri: $.Status.MlFlowRegistryUri
+      PrivateEndpointResource:
+        SubnetArmId:
+          $referenceType: arm
+      ArmResourceId:
+        ResourceId:
+          $referenceType: arm
+      RegistryPrivateEndpointConnection:
+        Id:
+          $referenceType: arm
+  monitor:
+    2023-04-03:
+      Account:
+        $export: true
+        $supportedFrom: v2.8.0
   network:
+    2018-05-01:
+      DnsZone:
+        $export: true
+        $supportedFrom: v2.1.0
+      DnsZones_A:
+        $exportAs: DnsZonesARecord
+        $supportedFrom: v2.1.0
+      DnsZones_AAAA:
+        $exportAs: DnsZonesAAAARecord
+        $supportedFrom: v2.1.0
+      DnsZones_CAA:
+        $exportAs: DnsZonesCAARecord
+        $supportedFrom: v2.1.0
+      DnsZones_CNAME:
+        $exportAs: DnsZonesCNAMERecord
+        $supportedFrom: v2.1.0
+      DnsZones_MX:
+        $exportAs: DnsZonesMXRecord
+        $supportedFrom: v2.1.0
+      DnsZones_NS:
+        $exportAs: DnsZonesNSRecord
+        $supportedFrom: v2.1.0
+      DnsZones_SRV:
+        $exportAs: DnsZonesSRVRecord
+        $supportedFrom: v2.1.0
+      DnsZones_PTR:
+        $exportAs: DnsZonesPTRRecord
+        $supportedFrom: v2.1.0
+      DnsZones_TXT:
+        $exportAs: DnsZonesTXTRecord
+        $supportedFrom: v2.1.0
+      SubResource:
+        Id:
+          $referenceType: arm
     2018-09-01:
       PrivateDnsZone:
         $export: true
         $supportedFrom: v2.0.0-beta.2
+    2020-06-01:
+      PrivateDnsZones_VirtualNetworkLink:
+        $exportAs: PrivateDnsZonesVirtualNetworkLink
+        $supportedFrom: v2.0.0
+      PrivateDnsZones_A:
+        $exportAs: PrivateDnsZonesARecord
+        $supportedFrom: v2.0.0
+      PrivateDnsZones_AAAA:
+        $exportAs: PrivateDnsZonesAAAARecord
+        $supportedFrom: v2.0.0
+      PrivateDnsZones_CNAME:
+        $exportAs: PrivateDnsZonesCNAMERecord
+        $supportedFrom: v2.0.0
+      PrivateDnsZones_MX:
+        $exportAs: PrivateDnsZonesMXRecord
+        $supportedFrom: v2.0.0
+      PrivateDnsZones_SRV:
+        $exportAs: PrivateDnsZonesSRVRecord
+        $supportedFrom: v2.0.0
+      PrivateDnsZones_PTR:
+        $exportAs: PrivateDnsZonesPTRRecord
+        $supportedFrom: v2.0.0
+      PrivateDnsZones_TXT:
+        $exportAs: PrivateDnsZonesTXTRecord
+        $supportedFrom: v2.0.0
     2020-11-01:
       BackendAddressPool:
         # TODO[breaking]: This is actually a real resource that can be created as a child of a loadbalancer,
@@ -1181,6 +3554,9 @@ objectModelConfiguration:
         $resourceEmbeddedInParent: LoadBalancer # Can GET (has ID) but can't create
       FrontendIPConfiguration_STATUS:
         $resourceEmbeddedInParent: LoadBalancer
+      LoadBalancers_InboundNatRule: # TODO: There must always be a parent and child in the same API version. See https://github.com/Azure/azure-service-operator/issues/3002
+        $exportAs: LoadBalancersInboundNatRule
+        $supportedFrom: v2.1.0
       InboundNatRule:
         # TODO[breaking]: This is actually a real resource that can be created as a child of a loadbalancer,
         # but we didn't model it that way initially, so marking it as not a resource for now to maintain backcompat
@@ -1211,6 +3587,9 @@ objectModelConfiguration:
       NetworkSecurityGroups_SecurityRule:
         $exportAs: NetworkSecurityGroupsSecurityRule
         $supportedFrom: v2.0.0-alpha.1
+      NetworkSecurityGroupPropertiesFormat:
+        SecurityRules:
+          $resourceLifecycleOwnedByParent: NetworkSecurityGroup
       OutboundRule:
         $resourceEmbeddedInParent: LoadBalancer  # Not a real resource, can GET but not PUT
       OutboundRule_STATUS:
@@ -1228,18 +3607,18 @@ objectModelConfiguration:
       RouteTablePropertiesFormat:
         Routes:
           $resourceLifecycleOwnedByParent: RouteTable
-      RouteTables_Route:
+      RouteTables_Route: # TODO: There must always be a parent and child in the same API version. See https://github.com/Azure/azure-service-operator/issues/3002
         $exportAs: RouteTablesRoute
         $supportedFrom: v2.0.0-beta.1
 #      SecurityRule_NetworkInterface_SubResourceEmbedded:
 #        Id:
-#          $armReference: true
+#          $referenceType: arm
 #      SecurityRule_VirtualNetworksSubnet_SubResourceEmbedded:
 #        Id:
-#          $armReference: true
+#          $referenceType: arm
 #      Subnet_VirtualNetwork_SubResourceEmbedded:
 #        Id:
-#          $armReference: true
+#          $referenceType: arm
       VirtualNetwork:
         $export: true
         $supportedFrom: v2.0.0-alpha.1
@@ -1248,7 +3627,9 @@ objectModelConfiguration:
         $supportedFrom: v2.0.0-alpha.1
       VirtualNetworkGatewayPropertiesFormat:
         VNetExtendedLocationResourceId:
-          $armReference: true
+          $referenceType: arm
+      VirtualNetworkGateway_STATUS:
+        $nameInNextVersion: VirtualNetworkGateway_STATUS_VirtualNetworkGateway_SubResourceEmbedded # TODO: See if we can get rid of this
       VirtualNetworkGatewayIPConfiguration:
         $resourceEmbeddedInParent: VirtualNetworkGateway
       VirtualNetworkGatewayIPConfiguration_STATUS:
@@ -1268,12 +3649,412 @@ objectModelConfiguration:
           # Technically this resource behaves fine (updating the vnet doesn't delete these if they
           # aren't included in the payload). Marking it here so that the pruning takes effect.
           $resourceLifecycleOwnedByParent: VirtualNetwork
-      VirtualNetworks_Subnet:
+      VirtualNetworks_Subnet: # TODO: There must always be a parent and child in the same API version. See https://github.com/Azure/azure-service-operator/issues/3002
         $exportAs: VirtualNetworksSubnet
         $supportedFrom: v2.0.0-alpha.1
+      VirtualNetworksSubnet_STATUS:
+        IpConfigurations:
+          $description: "An array of references to the network interface IP configurations using subnet. This field is not included if there are more than 2000 entries."
       VirtualNetworks_VirtualNetworkPeering:
         $exportAs: VirtualNetworksVirtualNetworkPeering
         $supportedFrom: v2.0.0-alpha.1
+    2022-04-01:
+      # Note that this is versioned separately from other networking resources (https://github.com/Azure/azure-rest-api-specs/tree/main/specification/trafficmanager/resource-manager/Microsoft.Network/stable)
+      TrafficManagerProfile:
+        # Hacking around here to use camel case. Normally the resource gets exported as Trafficmanagerprofile
+        $exportAs: TrafficManagerProfile
+        $supportedFrom: v2.4.0
+        $generatedConfigs:
+          DnsConfigFqdn: $.Status.DnsConfig.Fqdn
+      TrafficManagerProfiles_AzureEndpoint:
+        $exportAs: TrafficManagerProfilesAzureEndpoint
+        $supportedFrom: v2.4.0
+      TrafficManagerProfiles_ExternalEndpoint:
+        $exportAs: TrafficManagerProfilesExternalEndpoint
+        $supportedFrom: v2.4.0
+      TrafficManagerProfiles_NestedEndpoint:
+        $exportAs: TrafficManagerProfilesNestedEndpoint
+        $supportedFrom: v2.4.0
+      EndpointProperties:
+        TargetResourceId:
+          $referenceType: arm
+    2022-07-01:
+      ApplicationGateway:
+        $export: true
+        $supportedFrom: v2.4.0
+      ApplicationGatewayBackendAddressPool:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewayBackendHttpSettings:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewayBackendSettings:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewayFrontendIPConfiguration:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewayFrontendPort:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewayIPConfiguration:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewayHttpListener:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewayListener:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewayLoadDistributionPolicy:
+         $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewayPathRule:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewayPrivateLinkConfiguration:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewayProbe:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewayRedirectConfiguration:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewayRequestRoutingRule:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewayRewriteRuleSet:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewayRoutingRule:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewaySslCertificate:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewaySslCertificatePropertiesFormat:
+        Data:
+          $isSecret: true
+        Password:
+          $isSecret: true    
+      ApplicationGatewaySslProfile:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewayTrustedClientCertificate:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewayTrustedClientCertificatePropertiesFormat:
+        Data:
+          $isSecret: true
+      ApplicationGatewayTrustedRootCertificate:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewayTrustedRootCertificatePropertiesFormat:
+        Data:
+          $isSecret: true      
+      ApplicationGatewayUrlPathMap:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewayAuthenticationCertificate:
+        $resourceEmbeddedInParent: ApplicationGateway
+      ApplicationGatewayAuthenticationCertificatePropertiesFormat:
+        Data:
+          $isSecret: true
+      BastionHost:
+        # This technically supports 2022-09-01 API version too, but it's identical to the 2022-07-01 version
+        # so limiting proliferation of APIVersions and using 2022-07-01 for it
+        $export: true
+        $supportedFrom: v2.1.0
+      BastionHostIPConfiguration:
+        $resourceEmbeddedInParent: BastionHost
+      # DNSResolver and related resources are versioned differently than main networking resources, see https://github.com/Azure/azure-rest-api-specs/tree/main/specification/dnsresolver/resource-manager/Microsoft.Network
+      DnsResolver:
+        $export: true
+        $supportedFrom: v2.2.0
+      DnsResolvers_InboundEndpoint:
+        $exportAs: DnsResolversInboundEndpoint
+        $supportedFrom: v2.2.0
+      DnsResolvers_OutboundEndpoint:
+        $exportAs: DnsResolversOutboundEndpoint
+        $supportedFrom: v2.2.0
+      DnsForwardingRuleSet:
+        $export: true
+        $supportedFrom: v2.2.0
+      DnsForwardingRuleSets_ForwardingRule:
+        $exportAs: DnsForwardingRuleSetsForwardingRule
+        $supportedFrom: v2.2.0
+      DnsForwardingRuleSets_VirtualNetworkLink:
+        $exportAs: DnsForwardingRuleSetsVirtualNetworkLink
+        $supportedFrom: v2.10.0
+      TargetDnsServer:
+        IpAddress:
+          $importConfigMapMode: optional
+      NatGateway:
+        $export: true
+        $supportedFrom: v2.1.0
+      PublicIPPrefix:
+        $export: true
+        $supportedFrom: v2.1.0
+      PrivateEndpoint:
+        $export: true
+        $supportedFrom: v2.0.0
+        $manualConfigs:
+          - PrimaryNicPrivateIpAddress
+      PrivateLinkService:
+        $export: true
+        $supportedFrom: v2.0.0
+        $generatedConfigs:
+          Alias: $.Status.Alias
+      PrivateLinkServiceConnection:
+        $resourceEmbeddedInParent: PrivateEndpoint
+      PrivateLinkServiceConnection_STATUS:
+        $resourceEmbeddedInParent: PrivateEndpoint
+      PrivateLinkServiceConnectionProperties:
+        PrivateLinkServiceId:
+          $referenceType: arm
+      PrivateLinkServiceIpConfiguration:
+        $resourceEmbeddedInParent: PrivateLinkService
+      PrivateLinkServiceIpConfiguration_STATUS:
+        $resourceEmbeddedInParent: PrivateLinkService
+      PrivateEndpoints_PrivateDnsZoneGroup:
+        $exportAs: PrivateEndpointsPrivateDnsZoneGroup
+        $supportedFrom: v2.0.0
+      PrivateDnsZonePropertiesFormat:
+        PrivateDnsZoneId:
+          $referenceType: arm
+    2024-01-01:
+      ApplicationGatewayWebApplicationFirewallPolicy:
+        $exportAs: WebApplicationFirewallPolicy
+        $supportedFrom: v2.10.0
+      ApplicationSecurityGroup:
+        $export: true
+        $supportedFrom: v2.10.0
+    2024-03-01:
+      AzureFirewall:
+        $exportAs: AzureFirewall
+        $supportedFrom: v2.15.0
+      FirewallPolicy:
+        $exportAs: FirewallPolicy
+        $supportedFrom: v2.15.0
+      AzureFirewallIPConfiguration:
+        $resourceEmbeddedInParent: AzureFirewall
+      AzureFirewallApplicationRuleCollection:
+        $resourceEmbeddedInParent: AzureFirewall
+      AzureFirewallNatRuleCollection:
+        $resourceEmbeddedInParent: AzureFirewall
+      AzureFirewallNetworkRuleCollection:
+        $resourceEmbeddedInParent: AzureFirewall
+      FirewallPolicies_RuleCollectionGroup:
+        $exportAs: FirewallPoliciesRuleCollectionGroup
+        $supportedFrom: v2.15.0
+      # Tested this but it didn't seem to work in tests, always got an ERROR CODE UNAVAILABLE
+      # FirewallPolicies_SignatureOverride:
+      #   $exportAs: FirewallPoliciesSignatureOverride
+      #   $supportedFrom: v2.15.0
+      FirewallPolicyIntrusionDetectionSignatureSpecification:
+        Id:
+          $referenceType: simple
+      BastionHost:
+        $export: true
+        $supportedFrom: v2.11.0
+      BastionHostIPConfiguration:
+        $resourceEmbeddedInParent: BastionHost
+      NatGateway:
+        $export: true
+        $supportedFrom: v2.11.0
+      PublicIPPrefix:
+        $export: true
+        $supportedFrom: v2.11.0
+      PrivateEndpoint:
+        $export: true
+        $supportedFrom: v2.11.0
+        $manualConfigs:
+          - PrimaryNicPrivateIpAddress
+      PrivateLinkService:
+        $export: true
+        $supportedFrom: v2.11.0
+        $generatedConfigs:
+          Alias: $.Status.Alias
+      PrivateLinkServiceConnection:
+        $resourceEmbeddedInParent: PrivateEndpoint
+      PrivateLinkServiceConnection_STATUS:
+        $resourceEmbeddedInParent: PrivateEndpoint
+      PrivateLinkServiceConnectionProperties:
+        PrivateLinkServiceId:
+          $referenceType: arm
+      PrivateLinkServiceIpConfiguration:
+        $resourceEmbeddedInParent: PrivateLinkService
+      PrivateLinkServiceIpConfiguration_STATUS:
+        $resourceEmbeddedInParent: PrivateLinkService
+      PrivateEndpoints_PrivateDnsZoneGroup:
+        $exportAs: PrivateEndpointsPrivateDnsZoneGroup
+        $supportedFrom: v2.11.0
+      PrivateDnsZonePropertiesFormat:
+        PrivateDnsZoneId:
+          $referenceType: arm
+      BackendAddressPool:
+        # TODO[breaking]: This is actually a real resource that can be created as a child of a loadbalancer,
+        # but we didn't model it that way initially, so marking it as not a resource for now to maintain backcompat
+        $resourceEmbeddedInParent: LoadBalancer
+      BackendAddressPool_STATUS:
+        $resourceEmbeddedInParent: LoadBalancer
+      Delegation:
+        $isResource: false
+        #$resourceEmbeddedInParent: VirtualNetworks_Subnet
+      Delegation_STATUS:
+        $isResource: false
+        #$resourceEmbeddedInParent: VirtualNetworks_Subnet
+      FrontendIPConfiguration:
+        $resourceEmbeddedInParent: LoadBalancer # Can GET (has ID) but can't create
+      FrontendIPConfiguration_STATUS:
+        $resourceEmbeddedInParent: LoadBalancer
+      LoadBalancers_InboundNatRule: # TODO: There must always be a parent and child in the same API version. See https://github.com/Azure/azure-service-operator/issues/3002
+        $exportAs: LoadBalancersInboundNatRule
+        $supportedFrom: v2.11.0
+      InboundNatRule:
+        # TODO[breaking]: This is actually a real resource that can be created as a child of a loadbalancer,
+        # but we didn't model it that way initially, so marking it as not a resource for now to maintain backcompat
+        $resourceEmbeddedInParent: LoadBalancer
+      InboundNatRule_STATUS:
+        $resourceEmbeddedInParent: LoadBalancer
+      InboundNatPool:
+        $resourceEmbeddedInParent: LoadBalancer # This is not a real resource
+      InboundNatPool_STATUS:
+        $resourceEmbeddedInParent: LoadBalancer
+      LoadBalancer:
+        $export: true
+        $supportedFrom: v2.11.0
+      LoadBalancingRule:
+        $resourceEmbeddedInParent: LoadBalancer # This is not a real resource, can GET but can't PUT
+      LoadBalancingRule_STATUS:
+        $resourceEmbeddedInParent: LoadBalancer
+      NetworkInterface:
+        $export: true
+        $supportedFrom: v2.11.0
+      NetworkInterfaceIPConfiguration:
+        $resourceEmbeddedInParent: NetworkInterface  # Not a real resource, can GET but not PUT
+      NetworkInterfaceIPConfiguration_STATUS:
+        $resourceEmbeddedInParent: NetworkInterface
+      NetworkSecurityGroup:
+        $export: true
+        $supportedFrom: v2.11.0
+      NetworkSecurityGroups_SecurityRule:
+        $exportAs: NetworkSecurityGroupsSecurityRule
+        $supportedFrom: v2.11.0
+      NetworkSecurityGroupPropertiesFormat:
+        SecurityRules:
+          $resourceLifecycleOwnedByParent: NetworkSecurityGroup
+      NetworkSecurityGroupPropertiesFormat_STATUS:
+        FlowLogs:
+          $resourceLifecycleOwnedByParent: NetworkSecurityGroup
+      OutboundRule:
+        $resourceEmbeddedInParent: LoadBalancer  # Not a real resource, can GET but not PUT
+      OutboundRule_STATUS:
+        $resourceEmbeddedInParent: LoadBalancer
+      Probe:
+        $resourceEmbeddedInParent: LoadBalancer  # Not a real resource, can GET but not PUT
+      Probe_STATUS:
+        $resourceEmbeddedInParent: LoadBalancer
+      PublicIPAddress:
+        $exportAs: PublicIPAddress
+        $supportedFrom: v2.11.0
+      RouteTable:
+        $export: true
+        $supportedFrom: v2.11.0
+      RouteTablePropertiesFormat:
+        Routes:
+          $resourceLifecycleOwnedByParent: RouteTable
+      RouteTables_Route: # TODO: There must always be a parent and child in the same API version. See https://github.com/Azure/azure-service-operator/issues/3002
+        $exportAs: RouteTablesRoute
+        $supportedFrom: v2.11.0
+      VirtualNetwork:
+        $export: true
+        $supportedFrom: v2.11.0
+      VirtualNetworkGateway:
+        $export: true
+        $supportedFrom: v2.11.0
+      VirtualNetworkGatewayPropertiesFormat:
+        VNetExtendedLocationResourceId:
+          $referenceType: arm
+      VirtualNetworkGatewayIPConfiguration:
+        $resourceEmbeddedInParent: VirtualNetworkGateway
+      VirtualNetworkGatewayIPConfiguration_STATUS:
+        $resourceEmbeddedInParent: VirtualNetworkGateway
+      VpnClientRevokedCertificate:
+        $resourceEmbeddedInParent: VirtualNetworkGateway
+      VpnClientRevokedCertificate_STATUS:
+        $resourceEmbeddedInParent: VirtualNetworkGateway
+      VpnClientRootCertificate:
+        $resourceEmbeddedInParent: VirtualNetworkGateway
+      VpnClientRootCertificate_STATUS:
+        $resourceEmbeddedInParent: VirtualNetworkGateway
+      VirtualNetworkGatewayNatRule:  # TODO: New resource, should add?
+        $resourceEmbeddedInParent: VirtualNetworkGateway
+      VirtualNetworkGatewayNatRule_STATUS:
+        $resourceEmbeddedInParent: VirtualNetworkGateway
+      VirtualNetworkGatewayPolicyGroup:  # TODO: New resource, should add?
+        $resourceEmbeddedInParent: VirtualNetworkGateway
+      VirtualNetworkGatewayPolicyGroup_STATUS:
+        $resourceEmbeddedInParent: VirtualNetworkGateway
+      VirtualNetworkPropertiesFormat:
+        Subnets:
+          $resourceLifecycleOwnedByParent: VirtualNetwork
+        VirtualNetworkPeerings:
+          # Technically this resource behaves fine (updating the vnet doesn't delete these if they
+          # aren't included in the payload). Marking it here so that the pruning takes effect.
+          $resourceLifecycleOwnedByParent: VirtualNetwork
+      VirtualNetworks_Subnet: # TODO: There must always be a parent and child in the same API version. See https://github.com/Azure/azure-service-operator/issues/3002
+        $exportAs: VirtualNetworksSubnet
+        $supportedFrom: v2.11.0
+      VirtualNetworksSubnet_STATUS:
+        IpConfigurations:
+          $description: "An array of references to the network interface IP configurations using subnet. This field is not included if there are more than 2000 entries."
+      VirtualNetworks_VirtualNetworkPeering:
+        $exportAs: VirtualNetworksVirtualNetworkPeering
+        $supportedFrom: v2.11.0
+    2024-06-01:
+      # Private DNS Zone + related -- this is versioned separately than most of the rest of Microsoft.Network (https://github.com/Azure/azure-rest-api-specs/tree/main/specification/privatedns/resource-manager/Microsoft.Network/stable)
+      PrivateDnsZone:
+        $export: true
+        $supportedFrom: v2.11.0
+      PrivateDnsZones_VirtualNetworkLink:
+        $exportAs: PrivateDnsZonesVirtualNetworkLink
+        $supportedFrom: v2.11.0
+      PrivateDnsZones_A:
+        $exportAs: PrivateDnsZonesARecord
+        $supportedFrom: v2.11.0
+      PrivateDnsZones_AAAA:
+        $exportAs: PrivateDnsZonesAAAARecord
+        $supportedFrom: v2.11.0
+      PrivateDnsZones_CNAME:
+        $exportAs: PrivateDnsZonesCNAMERecord
+        $supportedFrom: v2.11.0
+      PrivateDnsZones_MX:
+        $exportAs: PrivateDnsZonesMXRecord
+        $supportedFrom: v2.11.0
+      PrivateDnsZones_SRV:
+        $exportAs: PrivateDnsZonesSRVRecord
+        $supportedFrom: v2.11.0
+      PrivateDnsZones_PTR:
+        $exportAs: PrivateDnsZonesPTRRecord
+        $supportedFrom: v2.11.0
+      PrivateDnsZones_TXT:
+        $exportAs: PrivateDnsZonesTXTRecord
+        $supportedFrom: v2.11.0
+  network.frontdoor:
+    2022-05-01:
+      FrontDoorWebApplicationFirewallPolicy:
+        $exportAs: WebApplicationFirewallPolicy
+        $supportedFrom: v2.6.0
+  notificationhubs:
+    2023-09-01:
+      Namespace:
+        $export: true
+        $supportedFrom: v2.12.0
+        $azureGeneratedSecrets:
+          - PrimaryConnectionString
+          - SecondaryConnectionString
+          - PrimaryKey
+          - SecondaryKey
+        $generatedConfigs:
+          ServiceBusEndpoint: $.Status.Properties.ServiceBusEndpoint
+      Namespaces_AuthorizationRule:
+        $exportAs: NamespacesAuthorizationRule
+        $supportedFrom: v2.12.0
+      Namespaces_NotificationHub:
+        $exportAs: NotificationHub
+        $supportedFrom: v2.12.0
+        $azureGeneratedSecrets:
+          - PrimaryConnectionString
+          - SecondaryConnectionString
+          - PrimaryKey
+          - SecondaryKey
+      Namespaces_NotificationHubs_AuthorizationRule:
+        $exportAs: NotificationHubsAuthorizationRule
+        $supportedFrom: v2.12.0
+      NotificationHubProperties:
+        AuthorizationRules:
+          $isSecret: false
   operationalinsights:
     2021-06-01:
       Workspace:
@@ -1281,46 +4062,367 @@ objectModelConfiguration:
         $supportedFrom: v2.0.0-alpha.4
       WorkspaceFeatures:
         ClusterResourceId:
-          $armReference: true
+          $referenceType: arm
+  resources:
+    2020-06-01:
+      ResourceGroup:
+        $export: true
+        $supportedFrom: v2.0.0-alpha.1
+  redhatopenshift:
+    2023-11-22:
+      OpenShiftCluster:
+        $export: true
+        $supportedFrom: v2.9.0
+        $azureGeneratedSecrets:
+          - AdminCredentials
+          - Username
+          - Password
+      WorkerProfile:
+        SubnetId:
+          $referenceType: arm
+        DiskEncryptionSetId:
+          $referenceType: arm
+      MasterProfile:
+        SubnetId:
+          $referenceType: arm
+        DiskEncryptionSetId:
+          $referenceType: arm
+      ClusterProfile:
+        PullSecret:
+          $isSecret: true
+      ServicePrincipalProfile:
+        ClientSecret:
+          $isSecret: true
+        ClientId:
+          $importConfigMapMode: optional
+  search:
+    2022-09-01:
+      SearchService:
+        $exportAs: SearchService
+        $supportedFrom: v2.1.0
+        $azureGeneratedSecrets:
+          - AdminPrimaryKey
+          - AdminSecondaryKey
+          - QueryKey
+        $generatedConfigs:
+          IdentityPrincipalId: $.Status.Identity.PrincipalId
+          IdentityTenantId: $.Status.Identity.TenantId
+    2023-11-01:
+      SearchService:
+        $exportAs: SearchService
+        $supportedFrom: v2.14.0
+        $azureGeneratedSecrets:
+          - AdminPrimaryKey
+          - AdminSecondaryKey
+          - QueryKey
+        $generatedConfigs:
+          IdentityPrincipalId: $.Status.Identity.PrincipalId
+          IdentityTenantId: $.Status.Identity.TenantId
   servicebus:
     2021-01-01-preview:
+      DictionaryValue_STATUS:
+        $nameInNextVersion: UserAssignedIdentity_STATUS
       Namespace:
         $export: true
         $supportedFrom: v2.0.0-alpha.1
         $azureGeneratedSecrets:
           - Endpoint
+          - PrimaryKey
+          - PrimaryConnectionString
+          - SecondaryKey
+          - SecondaryConnectionString
+      Namespaces_AuthorizationRule:
+        $exportAs: NamespacesAuthorizationRule
+        $supportedFrom: v2.1.0
+        $azureGeneratedSecrets:
+          - PrimaryKey
+          - PrimaryConnectionString
+          - SecondaryKey
+          - SecondaryConnectionString
       Namespaces_Queue:
         $exportAs: NamespacesQueue
         $supportedFrom: v2.0.0-alpha.1
       Namespaces_Topic:
         $exportAs: NamespacesTopic
         $supportedFrom: v2.0.0-alpha.1
-# TODO: What happened to this?
-#      PrivateEndpoint:
-#        Id:
-#          $armReference: false # TODO: should be removed
       UserAssignedIdentityProperties:
         UserAssignedIdentity:
-          $armReference: true
+          $referenceType: arm
       Namespaces_Topics_Subscription:
         $exportAs: NamespacesTopicsSubscription
         $supportedFrom: v2.0.0-beta.3
       Namespaces_Topics_Subscriptions_Rule:
         $exportAs: NamespacesTopicsSubscriptionsRule
         $supportedFrom: v2.0.0-beta.3
+    2021-11-01:
+      Namespace:
+        $export: true
+        $supportedFrom: v2.3.0
+        $azureGeneratedSecrets:
+          - Endpoint
+          - PrimaryKey
+          - PrimaryConnectionString
+          - SecondaryKey
+          - SecondaryConnectionString
+      Namespaces_AuthorizationRule:
+        $exportAs: NamespacesAuthorizationRule
+        $supportedFrom: v2.3.0
+        $azureGeneratedSecrets:
+          - PrimaryKey
+          - PrimaryConnectionString
+          - SecondaryKey
+          - SecondaryConnectionString
+      Namespaces_Queue:
+        $exportAs: NamespacesQueue
+        $supportedFrom: v2.3.0
+      Namespaces_Topic:
+        $exportAs: NamespacesTopic
+        $supportedFrom: v2.3.0
+      UserAssignedIdentityProperties:
+        UserAssignedIdentity:
+          $referenceType: arm
+      Namespaces_Topics_Subscription:
+        $exportAs: NamespacesTopicsSubscription
+        $supportedFrom: v2.3.0
+      Namespaces_Topics_Subscriptions_Rule:
+        $exportAs: NamespacesTopicsSubscriptionsRule
+        $supportedFrom: v2.3.0
+    2022-10-01-preview:
+      Namespace:
+        $export: true
+        $supportedFrom: v2.3.0
+        $azureGeneratedSecrets:
+          - Endpoint
+          - PrimaryKey
+          - PrimaryConnectionString
+          - SecondaryKey
+          - SecondaryConnectionString
+      Namespaces_AuthorizationRule:
+        $exportAs: NamespacesAuthorizationRule
+        $supportedFrom: v2.3.0
+        $azureGeneratedSecrets:
+          - PrimaryKey
+          - PrimaryConnectionString
+          - SecondaryKey
+          - SecondaryConnectionString
+      Namespaces_Queue:
+        $exportAs: NamespacesQueue
+        $supportedFrom: v2.3.0
+      Namespaces_Topic:
+        $exportAs: NamespacesTopic
+        $supportedFrom: v2.3.0
+      UserAssignedIdentityProperties:
+        UserAssignedIdentity:
+          $referenceType: arm
+      Namespaces_Topics_Subscription:
+        $exportAs: NamespacesTopicsSubscription
+        $supportedFrom: v2.3.0
+      Namespaces_Topics_Subscriptions_Rule:
+        $exportAs: NamespacesTopicsSubscriptionsRule
+        $supportedFrom: v2.3.0
+    2024-01-01:
+      Namespace:
+        $export: true
+        $supportedFrom: v2.12.0
+        $azureGeneratedSecrets:
+          - Endpoint
+          - PrimaryKey
+          - PrimaryConnectionString
+          - SecondaryKey
+          - SecondaryConnectionString
+      Namespaces_AuthorizationRule:
+        $exportAs: NamespacesAuthorizationRule
+        $supportedFrom: v2.12.0
+        $azureGeneratedSecrets:
+          - PrimaryKey
+          - PrimaryConnectionString
+          - SecondaryKey
+          - SecondaryConnectionString
+      Namespaces_Queue:
+        $exportAs: NamespacesQueue
+        $supportedFrom: v2.12.0
+      Namespaces_Topic:
+        $exportAs: NamespacesTopic
+        $supportedFrom: v2.12.0
+      UserAssignedIdentityProperties:
+        UserAssignedIdentity:
+          $referenceType: arm
+      Namespaces_Topics_Subscription:
+        $exportAs: NamespacesTopicsSubscription
+        $supportedFrom: v2.12.0
+      Namespaces_Topics_Subscriptions_Rule:
+        $exportAs: NamespacesTopicsSubscriptionsRule
+        $supportedFrom: v2.12.0
+      Namespaces_Topics_AuthorizationRule:
+        $exportAs: TopicAuthorizationRule
+        $supportedFrom: v2.13.0
+      Namespaces_Topics_AuthorizationRule_Properties_Rights_Spec:
+        $renameTo: TopicAuthorizationRuleRights_Spec
+      Namespaces_Topics_AuthorizationRule_Properties_Rights_STATUS:
+        $renameTo: TopicAuthorizationRuleRights_STATUS
+        
   signalrservice:
     2021-10-01:
       SignalR:
         $export: true
         $supportedFrom: v2.0.0-alpha.4
+        $azureGeneratedSecrets:
+          - PrimaryKey
+          - PrimaryConnectionString
+          - SecondaryKey
+          - SecondaryConnectionString
+    2024-03-01:
+      SignalR:
+        $export: true
+        $supportedFrom: v2.12.0
+        $azureGeneratedSecrets:
+          - PrimaryKey
+          - PrimaryConnectionString
+          - SecondaryKey
+          - SecondaryConnectionString
+      SignalR_Replica:
+        $exportAs: Replica
+        $supportedFrom: v2.12.0
+      SignalR_CustomDomain:
+        $exportAs: CustomDomain
+        $supportedFrom: v2.12.0
+      SignalR_CustomCertificate:
+        $exportAs: CustomCertificate
+        $supportedFrom: v2.12.0
+      CustomCertificateProperties:
+        KeyVaultBaseURI:
+          $importConfigMapMode: optional
+      ResourceReference:
+        Id:
+          $referenceType: arm
+  sql:
+    v1: # Handcrafted 
+      User:
+        $supportedFrom: v2.0.0
+    2021-11-01:
+      # Note that there are a few commented out resources which we are not exporting for sql. They're commented out as
+      # they seem of questionable value to users, but if we get an ask for them we can add them in.
+      Server:
+        $export: true
+        $supportedFrom: v2.0.0
+        $generatedConfigs:
+          FullyQualifiedDomainName: $.Status.FullyQualifiedDomainName
+      Servers_Administrator:
+        $exportAs: ServersAdministrator
+        $supportedFrom: v2.0.0
+      AdministratorProperties:
+        Sid:
+          $importConfigMapMode: optional
+        TenantId:
+          $importConfigMapMode: optional
+      Servers_SecurityAlertPolicy:
+        $exportAs: ServersSecurityAlertPolicy
+        $supportedFrom: v2.0.0
+      Servers_AdvancedThreatProtectionSetting:
+        $exportAs: ServersAdvancedThreatProtectionSetting
+        $supportedFrom: v2.0.0
+      Servers_AuditingSetting:
+        $exportAs: ServersAuditingSetting
+        $supportedFrom: v2.0.0
+      Servers_AzureADOnlyAuthentication:
+        $exportAs: ServersAzureADOnlyAuthentication
+        $supportedFrom: v2.0.0
+      Servers_ConnectionPolicy:
+        $exportAs: ServersConnectionPolicy
+        $supportedFrom: v2.0.0
+#      Servers_DnsAliase: # TODO: Not sure how this works - it has no properties but name?
+#        $exportAs: ServersDnsAliases
+#        $supportedFrom: v2.0.0
+      Servers_ElasticPool:
+        $exportAs: ServersElasticPool
+        $supportedFrom: v2.0.0
+      Servers_FailoverGroup:
+        $exportAs: ServersFailoverGroup
+        $supportedFrom: v2.0.0
+      Servers_FirewallRule:
+        $exportAs: ServersFirewallRule
+        $supportedFrom: v2.0.0
+      Servers_Ipv6FirewallRule:
+        $exportAs: ServersIPV6FirewallRule
+        $supportedFrom: v2.0.0
+#      Servers_JobAgent:
+#        $exportAs: ServersJobAgent
+#        $supportedFrom: v2.0.0
+      Servers_OutboundFirewallRule:
+        $exportAs: ServersOutboundFirewallRule
+        $supportedFrom: v2.0.0
+#      Servers_SyncAgent:
+#        $exportAs: ServersSyncAgent
+#        $supportedFrom: v2.0.0
+      Servers_VirtualNetworkRule:
+        $exportAs: ServersVirtualNetworkRule
+        $supportedFrom: v2.0.0
+      Servers_VulnerabilityAssessment:
+        $exportAs: ServersVulnerabilityAssessment
+        $supportedFrom: v2.0.0
+      ServerVulnerabilityAssessmentProperties:
+        StorageContainerPath:
+          $importConfigMapMode: optional
+      Servers_Database:
+        $exportAs: ServersDatabase
+        $supportedFrom: v2.0.0
+      Servers_Databases_BackupLongTermRetentionPolicy:
+        $exportAs: ServersDatabasesBackupLongTermRetentionPolicy
+        $supportedFrom: v2.0.0
+      Servers_Databases_BackupShortTermRetentionPolicy:
+        $exportAs: ServersDatabasesBackupShortTermRetentionPolicy
+        $supportedFrom: v2.0.0
+      Servers_Databases_AdvancedThreatProtectionSetting:
+        $exportAs: ServersDatabasesAdvancedThreatProtectionSetting
+        $supportedFrom: v2.0.0
+      Servers_Databases_AuditingSetting:
+        $exportAs: ServersDatabasesAuditingSetting
+        $supportedFrom: v2.0.0
+#      Servers_Databases_DataMaskingPolicy: # there's also a "Rules" subresource here
+#        $exportAs: ServersDatabasesDataMaskingPolicy
+#        $supportedFrom: v2.0.0
+#      Servers_Databases_ExtendedAuditingSetting: # TODO: Not sure what the difference is between this and the normal auditing setting
+#        $exportAs: ServersDatabasesExtendedAuditingSetting
+#        $supportedFrom: v2.0.0
+#      Servers_Databases_GeoBackupPolicy:  # TODO: Not actually supported in ARM at the moment
+#        $exportAs: ServersDatabasesGeoBackupPolicy
+#        $supportedFrom: v2.0.0
+#      Servers_Databases_MaintenanceWindow: # TODO: Seems to have name Servers_Databases_MaintenanceWindows_Current, not sure why
+#        $exportAs: ServersDatabasesMaintenanceWindow
+#        $supportedFrom: v2.0.0
+      Servers_Databases_SecurityAlertPolicy:
+        $exportAs: ServersDatabasesSecurityAlertPolicy
+        $supportedFrom: v2.0.0
+#      Servers_Databases_SyncGroup:
+#        $exportAs: ServersDatabasesSyncGroups
+#        $supportedFrom: v2.0.0
+#      Servers_Databases_SyncGroups_SyncMember:
+#        $exportAs: ServersDatabasesSyncGroupsSyncMember
+#        $supportedFrom: v2.0.0
+      Servers_Databases_TransparentDataEncryption:
+        $exportAs: ServersDatabasesTransparentDataEncryption
+        $supportedFrom: v2.0.0
+      Servers_Databases_VulnerabilityAssessment:
+        $exportAs: ServersDatabasesVulnerabilityAssessment
+        $supportedFrom: v2.0.0
+      DatabaseVulnerabilityAssessmentsDatabaseVulnerabilityAssessmentProperties:
+        StorageContainerPath:
+          $importConfigMapMode: optional
+#      Servers_Databases_WorkloadGroup:
+#        $exportAs: ServersDatabasesWorkloadGroup
+#        $supportedFrom: v2.0.0
+#      Servers_Databases_WorkloadGroups_WorkloadClassifier:
+#        $exportAs: ServersDatabasesWorkloadGroupsWorkloadClassifier
+#        $supportedFrom: v2.0.0
   storage:
+    $payloadType: explicitCollections
     2021-04-01:
       EncryptionIdentity:
         UserAssignedIdentity:
-          $armReference: true
+          $referenceType: arm
       ResourceAccessRule:
         ResourceId:
-          $armReference: true
+          $referenceType: arm
       StorageAccount:
         $export: true
         $supportedFrom: v2.0.0-alpha.1
@@ -1333,6 +4435,13 @@ objectModelConfiguration:
           - QueueEndpoint
           - TableEndpoint
           - DfsEndpoint
+        $generatedConfigs:
+          WebEndpoint: $.Status.PrimaryEndpoints.Web
+          BlobEndpoint: $.Status.PrimaryEndpoints.Blob
+          FileEndpoint: $.Status.PrimaryEndpoints.File
+          QueueEndpoint: $.Status.PrimaryEndpoints.Queue
+          TableEndpoint: $.Status.PrimaryEndpoints.Table
+          DfsEndpoint: $.Status.PrimaryEndpoints.Dfs
       StorageAccounts_BlobService:
         $exportAs: StorageAccountsBlobService
         $supportedFrom: v2.0.0-alpha.1
@@ -1350,31 +4459,188 @@ objectModelConfiguration:
         $supportedFrom: v2.0.0-alpha.6
       VirtualNetworkRule:
         Id:
-          $armReference: true
+          $referenceType: arm
+      IPRule:
+        Value:
+          $importConfigMapMode: optional
+    2022-09-01:
+      StorageAccount:
+        $export: true
+        $supportedFrom: v2.1.0
+        $azureGeneratedSecrets:
+          - Key1
+          - Key2
+          - WebEndpoint
+          - BlobEndpoint
+          - FileEndpoint
+          - QueueEndpoint
+          - TableEndpoint
+          - DfsEndpoint
+        $generatedConfigs:
+          WebEndpoint: $.Status.PrimaryEndpoints.Web
+          BlobEndpoint: $.Status.PrimaryEndpoints.Blob
+          FileEndpoint: $.Status.PrimaryEndpoints.File
+          QueueEndpoint: $.Status.PrimaryEndpoints.Queue
+          TableEndpoint: $.Status.PrimaryEndpoints.Table
+          DfsEndpoint: $.Status.PrimaryEndpoints.Dfs
+      StorageAccounts_BlobService:
+        $exportAs: StorageAccountsBlobService
+        $supportedFrom: v2.1.0
+      StorageAccounts_BlobServices_Container:
+        $exportAs: StorageAccountsBlobServicesContainer
+        $supportedFrom: v2.1.0
+      StorageAccounts_QueueService:
+        $exportAs: StorageAccountsQueueService
+        $supportedFrom: v2.1.0
+      StorageAccounts_QueueServices_Queue:
+        $exportAs: StorageAccountsQueueServicesQueue
+        $supportedFrom: v2.1.0
+      StorageAccounts_ManagementPolicy:
+        $exportAs: StorageAccountsManagementPolicy
+        $supportedFrom: v2.1.0
+      VirtualNetworkRule:
+        Id:
+          $referenceType: arm
+      EncryptionIdentity:
+        UserAssignedIdentity:
+          $referenceType: arm
+      ResourceAccessRule:
+        ResourceId:
+          $referenceType: arm
+      StorageAccounts_TableService:
+        $exportAs: StorageAccountsTableService
+        $supportedFrom: v2.1.0
+      StorageAccounts_TableServices_Table:
+        $exportAs: StorageAccountsTableServicesTable
+        $supportedFrom: v2.1.0
+      TableSignedIdentifier:
+        Id:
+          $referenceType: arm
+      StorageAccounts_FileService:
+        $exportAs: StorageAccountsFileService
+        $supportedFrom: v2.1.0
+      StorageAccounts_FileServices_Share:
+        $exportAs: StorageAccountsFileServicesShare
+        $supportedFrom: v2.1.0
+      SignedIdentifier:
+        Id:
+          $referenceType: arm
+      IPRule:
+        Value:
+          $importConfigMapMode: optional
+    2023-01-01:
+      StorageAccount:
+        $export: true
+        $supportedFrom: v2.5.0
+        $azureGeneratedSecrets:
+          - Key1
+          - Key2
+          - WebEndpoint
+          - BlobEndpoint
+          - FileEndpoint
+          - QueueEndpoint
+          - TableEndpoint
+          - DfsEndpoint
+        $generatedConfigs:
+          WebEndpoint: $.Status.PrimaryEndpoints.Web
+          BlobEndpoint: $.Status.PrimaryEndpoints.Blob
+          FileEndpoint: $.Status.PrimaryEndpoints.File
+          QueueEndpoint: $.Status.PrimaryEndpoints.Queue
+          TableEndpoint: $.Status.PrimaryEndpoints.Table
+          DfsEndpoint: $.Status.PrimaryEndpoints.Dfs
+      StorageAccounts_BlobService:
+        $exportAs: StorageAccountsBlobService
+        $supportedFrom: v2.5.0
+      StorageAccounts_BlobServices_Container:
+        $exportAs: StorageAccountsBlobServicesContainer
+        $supportedFrom: v2.5.0
+      StorageAccounts_QueueService:
+        $exportAs: StorageAccountsQueueService
+        $supportedFrom: v2.5.0
+      StorageAccounts_QueueServices_Queue:
+        $exportAs: StorageAccountsQueueServicesQueue
+        $supportedFrom: v2.5.0
+      StorageAccounts_ManagementPolicy:
+        $exportAs: StorageAccountsManagementPolicy
+        $supportedFrom: v2.5.0
+      VirtualNetworkRule:
+        Id:
+          $referenceType: arm
+      EncryptionIdentity:
+        UserAssignedIdentity:
+          $referenceType: arm
+      ResourceAccessRule:
+        ResourceId:
+          $referenceType: arm
+      StorageAccounts_TableService:
+        $exportAs: StorageAccountsTableService
+        $supportedFrom: v2.5.0
+      StorageAccounts_TableServices_Table:
+        $exportAs: StorageAccountsTableServicesTable
+        $supportedFrom: v2.5.0
+      TableSignedIdentifier:
+        Id:
+          $referenceType: arm
+      StorageAccounts_FileService:
+        $exportAs: StorageAccountsFileService
+        $supportedFrom: v2.5.0
+      StorageAccounts_FileServices_Share:
+        $exportAs: StorageAccountsFileServicesShare
+        $supportedFrom: v2.5.0
+      SignedIdentifier:
+        Id:
+          $referenceType: arm
+      IPRule:
+        Value:
+          $importConfigMapMode: optional
   subscription:
     2021-10-01:
       Alias:
         $export: true
         $supportedFrom: v2.0.0-beta.2
+  synapse:
+    2021-06-01:
+      KekIdentityProperties:
+        UserAssignedIdentity:
+          $referenceType: arm
+      DataLakeStorageAccountDetails:
+        ResourceId:
+          $referenceType: arm
+        AccountUrl:
+          $importConfigMapMode: optional
+      PurviewConfiguration:
+        PurviewResourceId:
+          $referenceType: arm
+      Workspace:
+        $export: true
+        $supportedFrom: v2.0.0
+      WorkspaceProperties:
+        SqlAdministratorLoginPassword:
+          $isSecret: true
+      Workspaces_BigDataPool:
+        $export: true
+        $exportAs: WorkspacesBigDataPool
+        $supportedFrom: v2.0.0
+
   web:
     2022-03-01:
       ApiManagementConfig:
         Id:
-          $armReference: true
+          $referenceType: arm
       CloningInfo:
         TrafficManagerProfileId:
-          $armReference: true
+          $referenceType: arm
         SourceWebAppId:
-          $armReference: true
+          $referenceType: arm
       HostingEnvironmentProfile:
         Id:
-          $armReference: true
+          $referenceType: arm
       IpSecurityRestriction:
         VnetSubnetResourceId:
-          $armReference: true
+          $referenceType: arm
       KubeEnvironmentProfile:
         Id:
-          $armReference: true
+          $referenceType: arm
       PushSettings:
         # This actually is a resource I think, but as far as I can tell in the context it's used
         # here as part of SitesConfig it has to be embedded as there is no writable ID field
@@ -1389,6 +4655,9 @@ objectModelConfiguration:
         $supportedFrom: v2.0.0-beta.3
       Site_Properties_Spec:
         ServerFarmId:
-          $armReference: true
+          $referenceType: arm
         VirtualNetworkSubnetId:
-          $armReference: true
+          $referenceType: arm
+      Sites_Sourcecontrol:
+        $exportAs: SitesSourcecontrol
+        $supportedFrom: v2.12.0
